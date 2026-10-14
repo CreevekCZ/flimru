@@ -44,6 +44,20 @@ If the terminal disappears, the launcher automatically stops its owned run
 and discovery processes. Mouse hovering does not trigger continuous redraws;
 updates are limited to 30 frames per second and idle redraws to once per second.
 
+Every page has an **Actions** button (**Menu** in narrow terminals), also opened
+with **F4**. It includes all page commands: filtering, favorites, refreshing,
+configuration reload, saved logs, Flutter reload/restart/help/DevTools, animation
+speed, colors, and exit. Commands remain reachable at the minimum 34 × 12 size.
+Use arrows, Tab/Shift+Tab, Home/End or PageUp/PageDown to navigate the menu;
+Enter/Space activates, and Esc/F4 closes. The mouse supports clicks, wheel
+scrolling, and scrollbar dragging. Tab also opens the menu from a picker or
+saved console; live-console Tab continues to go to Flutter.
+
+Click **Filter /** or press `/` to edit the list filter. Type or paste the
+query, then click **Apply** or press Enter. **Clear** or Esc clears it. Search
+input is bounded to 512 characters. The compact help fits the smallest supported
+terminal; even smaller windows retain a clickable exit when space permits.
+
 In the console, Flutter receives normal typing directly. `r`, `R`, `h`, and
 `v` are forwarded to Flutter for reload, restart, help, and DevTools. `q` or
 `Esc` requests a graceful stop; builds and tests receive an interrupt after
@@ -53,6 +67,22 @@ forcefully completed automatically after eight seconds. `PgUp`/`PgDn` scroll a
 scrolls the console, and its scrollbar supports clicks and dragging.
 Only the latest console is retained, and a new successful run releases the
 previous history. Background discovery and console output queues are bounded.
+
+Console ANSI colors (including 256-color and RGB), backgrounds, and emphasis are
+preserved in live output and saved history. Plain recognized severity prefixes
+receive fallback colors: errors red, warnings amber, info cyan, and debug gray.
+This includes Android logcat priorities and `[logger] LEVEL:` / `[LEVEL]` forms.
+Lines with supplied ANSI colors keep their original styling; ordinary messages
+are not classified from words buried in their text.
+
+**F3**, the color button, or **Actions → Colors** toggles output colors without
+restarting. `--color auto` is the default and respects nonempty `NO_COLOR`;
+`--color always` explicitly enables colors, while `--color never` starts in
+monochrome. New sessions request matching child color output and advertise a
+truecolor-capable PTY. Explicit `launch.json` environment values are applied last.
+Changing F3 affects rendering immediately; child environment changes apply to
+the next session. Home/End and the matching menu commands jump to oldest/latest
+output in both the live and saved console.
 
 Press **F2** or click the animation speed button to toggle normal / **5× slower**,
 using the same Flutter `timeDilation` control as DevTools. The button displays

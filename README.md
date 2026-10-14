@@ -10,6 +10,8 @@ configuration, and run. When the session ends, the picker is ready for the next 
 - Refreshes devices in the background; cached favorites stay selectable.
 - Runs Flutter in an interactive console with its usual keyboard shortcuts.
 - Supports mouse selection, wheel scrolling, and a draggable console scrollbar.
+- Preserves ANSI colors and highlights plain log severity; toggle colors with **F3**.
+- Provides every command through the clickable **Actions** menu or **F4**.
 - Toggles normal / **5× slower animations** with **F2**, showing the confirmed state.
 - Confirms launcher exit and cleans up owned processes when the terminal closes.
 
@@ -36,12 +38,14 @@ configuration, or `--help` for all options.
 | Picker | `f`, `r`, `/`, `l` | Favorite, refresh, filter, last console |
 | Console | `r`, `R`, `h`, `v` | Flutter reload, restart, help, DevTools |
 | Console | `F2` | Toggle animation speed in supported debug/profile apps |
+| Anywhere | `F3`, `F4` | Toggle colors, open the Actions menu |
 | Console | `PgUp` / `PgDn`, `End` | Scroll history, follow output |
 | Console | `q` / `Esc` | Stop session and return to the picker |
 | Anywhere | `F1`, `Ctrl+q` | Help, confirm launcher exit |
 
 Mouse controls are enabled by default. Use `--no-mouse` for terminal text
 selection. Animation control requires Flutter's VM Service extension.
+Use `--color always` to override `NO_COLOR`, or `--color never` for monochrome.
 
 See the [usage guide](docs/usage.md) for configuration support and limitations,
 or start with the [example launch file](examples/launch.json).

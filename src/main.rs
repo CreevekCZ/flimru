@@ -1,3 +1,4 @@
+mod console_style;
 mod terminal_input;
 mod ui;
 
@@ -62,6 +63,9 @@ struct Options {
     /// Leave mouse input to your terminal (for text selection/copying).
     #[arg(long)]
     no_mouse: bool,
+    /// Color output policy. Auto follows NO_COLOR.
+    #[arg(long, value_enum, default_value_t = console_style::ColorMode::Auto)]
+    color: console_style::ColorMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +101,11 @@ impl Drop for RestoreTerminal {
 }
 
 pub(crate) struct App {
+    colors: bool,
+    actions_open: bool,
+    action_index: usize,
+    action_offset: usize,
+    action_scroll_drag: bool,
     launch: LaunchFile,
     tool: FlutterTool,
     discovery: Discovery,
@@ -220,6 +229,11 @@ fn main() -> Result<()> {
     let ownit = !options.no_project_helpers && has_ownit_helpers(&workspace);
     let discovery = Discovery::start(tool.clone(), Duration::from_secs(options.refresh_interval));
     let mut app = App {
+        colors: options.color.enabled(),
+        actions_open: false,
+        action_index: 0,
+        action_offset: 0,
+        action_scroll_drag: false,
         launch,
         tool,
         discovery,
@@ -255,6 +269,7 @@ fn main() -> Result<()> {
     let signal_quit = quit.clone();
     ctrlc::set_handler(move || signal_quit.store(true, Ordering::Relaxed))?;
     let restore_terminal = RestoreTerminal;
+    crossterm::style::force_color_output(app.colors);
     let mut terminal = ratatui::try_init()?;
     // ratatui's panic hook restores raw mode and the alternate screen.
     let result = (|| -> Result<()> {
@@ -272,6 +287,7 @@ fn main() -> Result<()> {
         let mut last_draw = Instant::now();
         let mut previous_size = terminal.size()?;
         let mut previous_animations = None;
+        let mut previous_colors = app.colors;
         while !quit.load(Ordering::Relaxed) {
             let frame_started = Instant::now();
             if !terminal_input::connected()? {
@@ -279,6 +295,15 @@ fn main() -> Result<()> {
             }
             redraw |= app.tick()?;
             let area = terminal.size()?;
+            if app.colors != previous_colors {
+                execute!(std::io::stdout(), crossterm::style::ResetColor)?;
+                crossterm::style::force_color_output(app.colors);
+                // Repaint without clear()'s cursor-position query: terminals
+                // which cannot answer it must still support the color toggle.
+                terminal.resize(ratatui::layout::Rect::new(0, 0, area.width, area.height))?;
+                previous_colors = app.colors;
+                redraw = true;
+            }
             redraw |= area != previous_size;
             previous_size = area;
             if app.page == Page::Console
@@ -301,6 +326,12 @@ fn main() -> Result<()> {
                     &mut app,
                     ratatui::layout::Rect::new(0, 0, area.width, area.height),
                 );
+                if app.actions_open {
+                    ui::update_action_viewport(
+                        &mut app,
+                        ratatui::layout::Rect::new(0, 0, area.width, area.height),
+                    );
+                }
                 terminal.draw(|frame| ui::draw(frame, &app))?;
                 last_draw = Instant::now();
                 redraw = false;
@@ -323,15 +354,9 @@ fn main() -> Result<()> {
                             break;
                         }
                     }
-                    Event::Paste(text) if app.page == Page::Console => {
+                    Event::Paste(text) => {
                         redraw = true;
-                        if !app.quit_confirmation
-                            && !app.help
-                            && let Some(session) = &mut app.session
-                            && let Err(error) = session.send(text.as_bytes())
-                        {
-                            app.status = error.to_string();
-                        }
+                        app.paste(&text);
                     }
                     Event::Mouse(event)
                         if !options.no_mouse && event.kind != MouseEventKind::Moved =>
@@ -365,11 +390,14 @@ fn main() -> Result<()> {
     })();
     // Stop owned children before restoring the user's terminal, even on errors.
     app.session.take();
-    if !terminal_input::connected().unwrap_or(false) {
+    let disconnected = !terminal_input::connected().unwrap_or(false);
+    if disconnected {
         let _ = terminal_input::detach_output();
     }
     drop(restore_terminal);
-    result
+    // A hangup can race with drawing/resizing and produce an I/O error after
+    // the health check. It is still a normal terminal-loss shutdown.
+    if disconnected { Ok(()) } else { result }
 }
 
 impl App {
@@ -534,6 +562,7 @@ impl App {
                 );
                 self.session.take();
                 self.page = Page::Devices;
+                self.actions_open = false;
                 self.selected_device = None;
                 self.search = None;
                 self.merge();
@@ -543,6 +572,7 @@ impl App {
     }
 
     fn back(&mut self) {
+        self.actions_open = false;
         self.page = Page::Devices;
         self.search = None;
         self.searching = false;
@@ -562,7 +592,68 @@ impl App {
             return Ok(false);
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+            self.actions_open = false;
             self.quit_confirmation = true;
+            return Ok(false);
+        }
+        if key.code == KeyCode::F(4)
+            || (key.code == KeyCode::Tab
+                && self.page != Page::Console
+                && !self.searching
+                && !self.actions_open)
+        {
+            self.actions_open = !self.actions_open;
+            self.searching = false;
+            self.help = false;
+            self.dragging_scrollbar = None;
+            self.action_scroll_drag = false;
+            self.action_index = 0;
+            self.action_offset = 0;
+            return Ok(false);
+        }
+        if self.actions_open {
+            let actions = ui::available_actions(self);
+            match key.code {
+                KeyCode::BackTab => {
+                    self.action_index = self
+                        .action_index
+                        .checked_sub(1)
+                        .unwrap_or(actions.len().saturating_sub(1))
+                }
+                KeyCode::Tab => self.action_index = (self.action_index + 1) % actions.len().max(1),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.action_index = self.action_index.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.action_index =
+                        (self.action_index + 1).min(actions.len().saturating_sub(1));
+                }
+                KeyCode::PageUp => {
+                    self.action_index = self
+                        .action_index
+                        .saturating_sub(rows.saturating_sub(5).max(1) as usize)
+                }
+                KeyCode::PageDown => {
+                    self.action_index = self
+                        .action_index
+                        .saturating_add(rows.saturating_sub(5).max(1) as usize)
+                        .min(actions.len().saturating_sub(1))
+                }
+                KeyCode::Home => self.action_index = 0,
+                KeyCode::End => self.action_index = actions.len().saturating_sub(1),
+                KeyCode::Esc => self.actions_open = false,
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    let action = actions.get(self.action_index).map(|item| item.action);
+                    self.actions_open = false;
+                    if let Some(action) = action {
+                        return self.activate(action, ratatui::layout::Rect::new(0, 0, cols, rows));
+                    }
+                }
+                _ => {
+                    self.actions_open = false;
+                    return self.key(key, cols, rows);
+                }
+            }
             return Ok(false);
         }
         if key.code == KeyCode::F(1) {
@@ -571,6 +662,16 @@ impl App {
         }
         if self.help {
             self.help = false;
+            return Ok(false);
+        }
+        if key.code == KeyCode::F(3) {
+            self.colors = !self.colors;
+            self.status = if self.colors {
+                "Console colors enabled (F3 toggles)."
+            } else {
+                "Console colors disabled (F3 toggles)."
+            }
+            .into();
             return Ok(false);
         }
         if self.page != Page::Console
@@ -595,6 +696,10 @@ impl App {
                     }
                     KeyCode::PageDown => {
                         session.scroll(-(rows.saturating_sub(9).max(1) as isize));
+                        Ok(())
+                    }
+                    KeyCode::Home => {
+                        session.parser.screen_mut().set_scrollback(usize::MAX);
                         Ok(())
                     }
                     KeyCode::End => {
@@ -625,6 +730,7 @@ impl App {
                     self.last_log_offset = self.last_log_offset.saturating_sub(1)
                 }
                 KeyCode::End => self.last_log_offset = 0,
+                KeyCode::Home => self.last_log_offset = self.last_log_max_offset(),
                 _ => self.back(),
             }
             self.prepare_last_log(page as u16);
@@ -644,7 +750,8 @@ impl App {
                 KeyCode::Char(c)
                     if !key
                         .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        && query.chars().count() < 512 =>
                 {
                     query.push(c);
                 }
@@ -672,7 +779,7 @@ impl App {
             KeyCode::Home => *index = 0,
             KeyCode::End => *index = count.saturating_sub(1),
             KeyCode::Char('/') => {
-                self.search = Some(String::new());
+                self.search.get_or_insert_default();
                 self.searching = true;
             }
             KeyCode::Char('?') => self.help = true,
@@ -745,7 +852,12 @@ impl App {
                         .tool
                         .plan(&config, &device.id, self.ownit)
                         .and_then(|plan| {
-                            Session::start(&plan, rows.saturating_sub(9), cols.saturating_sub(3))
+                            Session::start_with_color(
+                                &plan,
+                                rows.saturating_sub(9),
+                                cols.saturating_sub(3),
+                                Some(self.colors),
+                            )
                         }) {
                         Ok(mut session) => {
                             if config.is_test() {
@@ -777,20 +889,60 @@ impl App {
 }
 
 impl App {
+    fn paste(&mut self, text: &str) {
+        if self.quit_confirmation || self.help || self.actions_open {
+            return;
+        }
+        if self.page == Page::Console {
+            if let Some(session) = &mut self.session
+                && let Err(error) = session.send(text.as_bytes())
+            {
+                self.status = error.to_string();
+            }
+        } else if self.searching {
+            let query = self.search.get_or_insert_default();
+            let remaining = 512_usize.saturating_sub(query.chars().count());
+            query.extend(
+                text.chars()
+                    .filter(|character| !character.is_control())
+                    .take(remaining),
+            );
+            self.device_index = 0;
+            self.config_index = 0;
+        }
+    }
+
     fn mouse(&mut self, event: MouseEvent, area: ratatui::layout::Rect) -> Result<bool> {
         self.prepare_last_log(area.height.saturating_sub(9).max(1));
         ui::update_picker_viewport(self, area);
+        // Menu clicks use the viewport actually drawn, not a pending keyboard
+        // or wheel selection which has not reached the next frame yet.
         if matches!(event.kind, MouseEventKind::Up(MouseButton::Left)) {
             self.dragging_scrollbar = None;
+            self.action_scroll_drag = false;
             return Ok(false);
         }
         if !self.quit_confirmation && !self.help {
+            if self.actions_open
+                && self.action_scroll_drag
+                && matches!(event.kind, MouseEventKind::Drag(MouseButton::Left))
+            {
+                self.action_index = ui::action_scroll_index(self, area, event.row);
+                return Ok(false);
+            }
             let wheel = match event.kind {
                 MouseEventKind::ScrollUp => Some(-1),
                 MouseEventKind::ScrollDown => Some(1),
                 _ => None,
             };
             if let Some(direction) = wheel {
+                if self.actions_open {
+                    self.action_index = self
+                        .action_index
+                        .saturating_add_signed(direction)
+                        .min(ui::available_actions(self).len().saturating_sub(1));
+                    return Ok(false);
+                }
                 match self.page {
                     Page::Console => {
                         if let Some(session) = &mut self.session {
@@ -835,8 +987,52 @@ impl App {
         let Some(action) = ui::mouse_action(self, area, event) else {
             return Ok(false);
         };
+        self.activate(action, area)
+    }
+
+    fn activate(&mut self, action: ui::MouseAction, area: ratatui::layout::Rect) -> Result<bool> {
         use ui::MouseAction;
         let key = match action {
+            MouseAction::ScrollActions(index) => {
+                self.action_index = index;
+                self.action_scroll_drag = true;
+                return Ok(false);
+            }
+            MouseAction::Actions => KeyCode::F(4),
+            MouseAction::DismissActions => {
+                self.actions_open = false;
+                return Ok(false);
+            }
+            MouseAction::SelectAction(index) => {
+                let action = ui::available_actions(self)
+                    .get(index)
+                    .map(|item| item.action);
+                self.actions_open = false;
+                if let Some(action) = action {
+                    return self.activate(action, area);
+                }
+                return Ok(false);
+            }
+            MouseAction::Filter => {
+                self.search.get_or_insert_default();
+                self.searching = true;
+                return Ok(false);
+            }
+            MouseAction::ApplyFilter => {
+                self.searching = false;
+                return Ok(false);
+            }
+            MouseAction::ClearFilter => {
+                self.search = None;
+                self.searching = false;
+                self.device_index = 0;
+                self.config_index = 0;
+                return Ok(false);
+            }
+            MouseAction::ToggleColors => KeyCode::F(3),
+            MouseAction::FlutterKey(key) => KeyCode::Char(key),
+            MouseAction::OldestOutput => KeyCode::Home,
+            MouseAction::FollowOutput => KeyCode::End,
             MouseAction::SelectDevice(index) => {
                 self.searching = false;
                 self.device_index = index;
@@ -874,6 +1070,7 @@ impl App {
                 KeyCode::Char('l')
             }
             MouseAction::Quit => {
+                self.actions_open = false;
                 self.quit_confirmation = true;
                 return Ok(false);
             }
@@ -884,8 +1081,9 @@ impl App {
             }
             MouseAction::Help | MouseAction::DismissHelp => KeyCode::F(1),
             MouseAction::ToggleAnimations => KeyCode::F(2),
-            MouseAction::ConsoleScroll(_) => {
-                self.begin_scrollbar_drag(event.row, ui::console_scrollbar_area(area));
+            MouseAction::ConsoleScroll(row) => {
+                let track = ui::console_scrollbar_area(area);
+                self.begin_scrollbar_drag(track.y.saturating_add(row), track);
                 return Ok(false);
             }
         };
@@ -1030,6 +1228,11 @@ mod tests {
         ]}"#, &workspace.join("launch.json"), &workspace).unwrap();
         let discovery = Discovery::start(tool.clone(), Duration::from_secs(3600));
         let mut app = App {
+            colors: true,
+            actions_open: false,
+            action_index: 0,
+            action_offset: 0,
+            action_scroll_drag: false,
             launch,
             tool,
             discovery,
@@ -1176,6 +1379,72 @@ mod tests {
             )
             .unwrap()
         );
+    }
+
+    #[test]
+    fn filter_and_color_commands_agree_between_keyboard_and_pointer_actions() {
+        let mut keyboard = app();
+        let mut pointer = app();
+        let area = ratatui::layout::Rect::new(0, 0, 34, 12);
+        keyboard
+            .key(
+                KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+                34,
+                12,
+            )
+            .unwrap();
+        pointer.activate(ui::MouseAction::Filter, area).unwrap();
+        assert_eq!(keyboard.searching, pointer.searching);
+        keyboard.paste("phone\r\n");
+        pointer.paste("phone\r\n");
+        assert_eq!(keyboard.search.as_deref(), Some("phone"));
+        assert_eq!(keyboard.search, pointer.search);
+        keyboard
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 34, 12)
+            .unwrap();
+        pointer
+            .activate(ui::MouseAction::ApplyFilter, area)
+            .unwrap();
+        assert!(!keyboard.searching && !pointer.searching);
+        keyboard
+            .key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 34, 12)
+            .unwrap();
+        pointer
+            .activate(ui::MouseAction::ClearFilter, area)
+            .unwrap();
+        assert_eq!(keyboard.search, pointer.search);
+        keyboard
+            .key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE), 34, 12)
+            .unwrap();
+        pointer
+            .activate(ui::MouseAction::ToggleColors, area)
+            .unwrap();
+        assert_eq!(keyboard.colors, pointer.colors);
+    }
+
+    #[test]
+    fn action_menu_is_modal_and_filters_bound_pasted_input() {
+        let mut app = app();
+        app.searching = true;
+        app.paste(&"é".repeat(600));
+        assert_eq!(app.search.as_ref().unwrap().chars().count(), 512);
+        app.key(KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE), 34, 12)
+            .unwrap();
+        app.paste("ignored");
+        assert_eq!(app.search.as_ref().unwrap().chars().count(), 512);
+        assert!(app.actions_open);
+        app.key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), 34, 12)
+            .unwrap();
+        assert!(
+            !app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 34, 12)
+                .unwrap()
+        );
+        assert!(app.quit_confirmation && !app.actions_open);
+        assert!(
+            !app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 34, 12)
+                .unwrap()
+        );
+        assert!(!app.quit_confirmation);
     }
 
     #[test]

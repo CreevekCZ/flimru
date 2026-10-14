@@ -33,6 +33,162 @@ pub enum MouseAction {
     ConsoleScroll(u16),
     ConfirmQuit,
     CancelQuit,
+    Actions,
+    DismissActions,
+    SelectAction(usize),
+    Filter,
+    ApplyFilter,
+    ClearFilter,
+    ToggleColors,
+    FlutterKey(char),
+    OldestOutput,
+    FollowOutput,
+    ScrollActions(usize),
+}
+
+pub struct ActionItem {
+    pub label: String,
+    pub shortcut: &'static str,
+    pub action: MouseAction,
+}
+
+/// One command inventory drives the menu for both pointer and keyboard input.
+pub fn available_actions(app: &App) -> Vec<ActionItem> {
+    let mut items = Vec::new();
+    let mut add = |label: &str, shortcut, action| {
+        items.push(ActionItem {
+            label: label.into(),
+            shortcut,
+            action,
+        });
+    };
+    match app.page {
+        Page::Devices | Page::Configs => {
+            if app.page == Page::Configs {
+                add("Back to devices", "Esc", MouseAction::Back);
+            }
+            add(
+                if app.page == Page::Devices {
+                    "Choose device"
+                } else {
+                    "Run configuration"
+                },
+                "Enter",
+                MouseAction::NextOrRun,
+            );
+            add("Filter list", "/", MouseAction::Filter);
+            if app.search.is_some() {
+                add("Apply filter", "Enter", MouseAction::ApplyFilter);
+                add("Clear filter", "Esc", MouseAction::ClearFilter);
+            }
+            if app.page == Page::Devices && !app.visible_devices().is_empty() {
+                add(
+                    "Toggle favorite",
+                    "f",
+                    MouseAction::ToggleFavorite(app.device_index),
+                );
+            }
+            add("Refresh devices", "r", MouseAction::Refresh);
+            add("Reload configs", "c", MouseAction::ReloadConfigs);
+            if app.last_log.is_some() {
+                add("Last console", "l", MouseAction::LastLog);
+            }
+        }
+        Page::Console => {
+            add("Hot reload", "r", MouseAction::FlutterKey('r'));
+            add("Hot restart", "R", MouseAction::FlutterKey('R'));
+            add("Flutter help", "h", MouseAction::FlutterKey('h'));
+            add("Open DevTools", "v", MouseAction::FlutterKey('v'));
+            add("Animation speed", "F2", MouseAction::ToggleAnimations);
+            add("Oldest output", "Home", MouseAction::OldestOutput);
+            add("Follow output", "End", MouseAction::FollowOutput);
+            add("Stop session", "q / Esc", MouseAction::Back);
+        }
+        Page::LastLog => {
+            add("Back to devices", "Esc", MouseAction::Back);
+            add("Oldest output", "Home", MouseAction::OldestOutput);
+            add("Latest output", "End", MouseAction::FollowOutput);
+        }
+    }
+    add(
+        if app.colors {
+            "Colors: on"
+        } else {
+            "Colors: off"
+        },
+        "F3",
+        MouseAction::ToggleColors,
+    );
+    add("Launcher help", "F1", MouseAction::Help);
+    add("Quit launcher", "Ctrl+q", MouseAction::Quit);
+    items
+}
+
+fn action_menu_layout(area: Rect, count: usize) -> (Rect, Rect, Rect) {
+    let width = area.width.saturating_sub(2).min(66);
+    let height =
+        (count.saturating_add(3).min(u16::MAX as usize) as u16).min(area.height.saturating_sub(2));
+    let modal = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    let inner = modal.inner(ratatui::layout::Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    (
+        modal,
+        Rect::new(
+            inner.x,
+            inner.y,
+            inner.width,
+            inner.height.saturating_sub(1),
+        ),
+        Rect::new(
+            inner.x,
+            inner.bottom().saturating_sub(1),
+            inner.width,
+            inner.height.min(1),
+        ),
+    )
+}
+
+fn search_buttons(area: Rect) -> (Rect, Rect) {
+    let x = area.right().saturating_sub(15).max(area.x);
+    (
+        Rect::new(x, area.y, 7.min(area.width), area.height.min(1)),
+        Rect::new(
+            x.saturating_add(8),
+            area.y,
+            7.min(area.width),
+            area.height.min(1),
+        ),
+    )
+}
+
+pub fn update_action_viewport(app: &mut App, area: Rect) {
+    let count = available_actions(app).len();
+    let (_, list, _) = action_menu_layout(area, count);
+    let height = usize::from(list.height).max(1);
+    app.action_index = app.action_index.min(count.saturating_sub(1));
+    app.action_offset = app.action_offset.min(count.saturating_sub(height));
+    if app.action_index < app.action_offset {
+        app.action_offset = app.action_index;
+    } else if app.action_index >= app.action_offset + height {
+        app.action_offset = app.action_index.saturating_sub(height - 1);
+    }
+}
+
+pub fn action_scroll_index(app: &App, area: Rect, row: u16) -> usize {
+    let count = available_actions(app).len();
+    let (_, list, _) = action_menu_layout(area, count);
+    let relative = row
+        .saturating_sub(list.y)
+        .min(list.height.saturating_sub(1));
+    usize::from(relative) * count.saturating_sub(1)
+        / usize::from(list.height.saturating_sub(1)).max(1)
 }
 
 fn body_layout(area: Rect) -> std::rc::Rc<[Rect]> {
@@ -169,12 +325,24 @@ fn controls(app: &App, area: Rect) -> Vec<Control> {
                     MouseAction::ToggleAnimations,
                 ));
             }
+            buttons.push((
+                format!("F3 Colors {}", if app.colors { "on" } else { "off" }),
+                MouseAction::ToggleColors,
+            ));
         }
         Page::LastLog => buttons.push(("Back".into(), MouseAction::Back)),
     }
+    buttons.push((
+        if compact {
+            "Menu".into()
+        } else {
+            "F4 Actions".into()
+        },
+        MouseAction::Actions,
+    ));
     buttons.push(("Help".into(), MouseAction::Help));
     buttons.push(("Quit".into(), MouseAction::Quit));
-    let essential_start = buttons.len() - 2;
+    let essential_start = buttons.len() - 3;
     let mut x = area.x + 1;
     buttons
         .into_iter()
@@ -183,7 +351,7 @@ fn controls(app: &App, area: Rect) -> Vec<Control> {
             // Keep Help and Quit visible even if an externally changed animation
             // factor needs more space than the usual 1× / 5× label.
             let reserved = if index < essential_start {
-                if compact { 14 } else { 18 }
+                if compact { 21 } else { 33 }
             } else {
                 0
             };
@@ -237,6 +405,15 @@ fn quit_modal(area: Rect) -> (Rect, Rect, Rect) {
     )
 }
 
+fn small_exit_buttons(area: Rect) -> Option<(Rect, Rect)> {
+    (area.width >= 18 && area.height >= 3).then(|| {
+        (
+            Rect::new(area.x + 1, area.bottom() - 1, 6, 1),
+            Rect::new(area.x + 9, area.bottom() - 1, 8, 1),
+        )
+    })
+}
+
 /// The scrollbar gutter for the full terminal area, shared with pointer dragging.
 pub fn console_scrollbar_area(area: Rect) -> Rect {
     let inner = panel(String::new()).inner(body_layout(area)[2]);
@@ -249,11 +426,22 @@ pub fn console_scrollbar_area(area: Rect) -> Rect {
 }
 
 pub fn mouse_action(app: &App, area: Rect, event: MouseEvent) -> Option<MouseAction> {
-    if area.width < 34
-        || area.height < 12
-        || !matches!(event.kind, MouseEventKind::Down(MouseButton::Left))
-    {
+    if !matches!(event.kind, MouseEventKind::Down(MouseButton::Left)) {
         return None;
+    }
+    if area.width < 34 || area.height < 12 {
+        let (quit, cancel) = small_exit_buttons(area)?;
+        return if quit.contains((event.column, event.row).into()) {
+            Some(if app.quit_confirmation {
+                MouseAction::ConfirmQuit
+            } else {
+                MouseAction::Quit
+            })
+        } else if app.quit_confirmation && cancel.contains((event.column, event.row).into()) {
+            Some(MouseAction::CancelQuit)
+        } else {
+            None
+        };
     }
     if app.quit_confirmation {
         let (_, quit, cancel) = quit_modal(area);
@@ -268,7 +456,36 @@ pub fn mouse_action(app: &App, area: Rect, event: MouseEvent) -> Option<MouseAct
     if app.help {
         return Some(MouseAction::DismissHelp);
     }
+    if app.actions_open {
+        let count = available_actions(app).len();
+        let (_, list, _) = action_menu_layout(area, count);
+        return if list.contains((event.column, event.row).into()) {
+            if count > usize::from(list.height) && event.column == list.right().saturating_sub(1) {
+                return Some(MouseAction::ScrollActions(action_scroll_index(
+                    app, area, event.row,
+                )));
+            }
+            let index = app.action_offset + usize::from(event.row - list.y);
+            (index < count).then_some(MouseAction::SelectAction(index))
+        } else {
+            Some(MouseAction::DismissActions)
+        };
+    }
     let parts = body_layout(area);
+    if matches!(app.page, Page::Devices | Page::Configs)
+        && parts[3].contains((event.column, event.row).into())
+    {
+        let (apply, clear) = search_buttons(parts[3]);
+        return Some(
+            if app.search.is_some() && clear.contains((event.column, event.row).into()) {
+                MouseAction::ClearFilter
+            } else if app.search.is_some() && apply.contains((event.column, event.row).into()) {
+                MouseAction::ApplyFilter
+            } else {
+                MouseAction::Filter
+            },
+        );
+    }
     for control in controls(app, parts[0]) {
         if control.rect.contains((event.column, event.row).into()) {
             return Some(control.action);
@@ -344,6 +561,19 @@ pub fn draw(frame: &mut Frame, app: &App) {
             .wrap(Wrap { trim: false }),
             area,
         );
+        if let Some((quit, cancel)) = small_exit_buttons(area) {
+            frame.render_widget(Clear, Rect::new(area.x, quit.y, area.width, 1));
+            frame.render_widget(
+                Paragraph::new("[Quit]").style(Style::default().fg(Color::Yellow)),
+                quit,
+            );
+            if app.quit_confirmation {
+                frame.render_widget(
+                    Paragraph::new("[Cancel]").style(Style::default().fg(ACCENT)),
+                    cancel,
+                );
+            }
+        }
         return;
     }
     let parts = body_layout(area);
@@ -411,6 +641,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
                     session.parser.screen(),
                     session.scrollback_len,
                     None,
+                    app.colors,
                     parts[2],
                     &format!(
                         " {} · {}{} ",
@@ -435,6 +666,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
                     parser.screen(),
                     app.last_log_scrollback,
                     Some(app.last_log_offset),
+                    app.colors,
                     parts[2],
                     &format!(" Last console · {} ", app.active_config),
                 );
@@ -455,24 +687,47 @@ pub fn draw(frame: &mut Frame, app: &App) {
     } else {
         format!("  {}", app.status)
     };
+    let picker = matches!(app.page, Page::Devices | Page::Configs);
+    let mut status_area = parts[3];
+    if picker {
+        let (apply, clear) = search_buttons(parts[3]);
+        if app.search.is_some() {
+            status_area.width = apply.x.saturating_sub(status_area.x);
+            frame.render_widget(
+                Paragraph::new("[Apply]").style(Style::default().fg(ACCENT)),
+                apply,
+            );
+            frame.render_widget(
+                Paragraph::new("[Clear]").style(Style::default().fg(ACCENT)),
+                clear,
+            );
+        } else {
+            let filter = Rect::new(parts[3].right().saturating_sub(10), parts[3].y, 10, 1);
+            status_area.width = filter.x.saturating_sub(status_area.x);
+            frame.render_widget(
+                Paragraph::new("[Filter /]").style(Style::default().fg(ACCENT)),
+                filter,
+            );
+        }
+    }
     frame.render_widget(
         Paragraph::new(status)
             .style(Style::default().fg(if app.search.is_some() { ACCENT } else { MUTED }))
             .wrap(Wrap { trim: false }),
-        parts[3],
+        status_area,
     );
     let help = match app.page {
         Page::Devices => {
-            "  Click/↑↓ select · click ☆/f favorite · Enter next\n  r refresh · c configs · / filter · q quit · F1 help"
+            "  Click/↑↓ select · click ☆/f favorite · Enter next\n  F4/Menu all actions · / filter · Ctrl+q quit · F1 help"
         }
         Page::Configs => {
-            "  Click/↑↓ select · Enter run · Esc back · / filter\n  r refresh · c configs · Ctrl+q quit · F1 help"
+            "  Click/↑↓ select · Enter run · Esc back · / filter\n  F4/Menu all actions · Ctrl+q quit · F1 help"
         }
         Page::Console => {
-            "  r reload · R restart · h help · v DevTools · F2 slow\n  Wheel/PgUp/PgDn scroll · End follow · q/Esc stop"
+            "  r reload · R restart · F2 slow · F3 colors · F4 menu\n  Wheel/PgUp/PgDn scroll · Home/End · q/Esc stop"
         }
         Page::LastLog => {
-            "  Wheel/PgUp/PgDn scroll · drag scrollbar · End latest\n  Esc back · Ctrl+q quit launcher · F1 help"
+            "  Wheel/PgUp/PgDn scroll · Home/End · F3 colors\n  F4/Menu all actions · Esc back · Ctrl+q quit"
         }
     };
     frame.render_widget(
@@ -481,6 +736,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     );
     if app.help {
         help_overlay(frame);
+    }
+    if app.actions_open {
+        actions_overlay(frame, app);
     }
     if app.quit_confirmation {
         quit_overlay(frame, app);
@@ -712,6 +970,7 @@ fn console(
     screen: &vt100::Screen,
     scrollback_len: usize,
     snapshot_offset: Option<usize>,
+    colors: bool,
     area: Rect,
     title: &str,
 ) {
@@ -745,16 +1004,20 @@ fn console(
     let lines: Vec<_> = (0..rows.saturating_sub(start_row).min(content.height))
         .map(|row| {
             let mut spans = Vec::new();
+            let mut plain = String::new();
+            let mut ansi_colors = false;
             for col in 0..cols.min(content.width) {
                 if let Some(cell) = screen.cell(start_row + row, col) {
                     if cell.is_wide_continuation() {
                         continue;
                     }
                     let mut style = Style::default();
-                    if cell.fgcolor() != vt100::Color::Default {
+                    ansi_colors |= cell.fgcolor() != vt100::Color::Default
+                        || cell.bgcolor() != vt100::Color::Default;
+                    if colors && cell.fgcolor() != vt100::Color::Default {
                         style = style.fg(terminal_color(cell.fgcolor()));
                     }
-                    if cell.bgcolor() != vt100::Color::Default {
+                    if colors && cell.bgcolor() != vt100::Color::Default {
                         style = style.bg(terminal_color(cell.bgcolor()));
                     }
                     if cell.bold() {
@@ -772,14 +1035,21 @@ fn console(
                     if cell.inverse() {
                         style = style.reversed();
                     }
-                    spans.push(Span::styled(
-                        if cell.has_contents() {
-                            cell.contents().to_string()
-                        } else {
-                            " ".into()
-                        },
-                        style,
-                    ));
+                    let text = if cell.has_contents() {
+                        cell.contents().to_string()
+                    } else {
+                        " ".into()
+                    };
+                    plain.push_str(&text);
+                    spans.push(Span::styled(text, style));
+                }
+            }
+            if colors
+                && !ansi_colors
+                && let Some(color) = crate::console_style::fallback_color(&plain)
+            {
+                for span in &mut spans {
+                    span.style = span.style.fg(color);
                 }
             }
             Line::from(spans)
@@ -807,10 +1077,60 @@ fn console(
     }
 }
 
+fn actions_overlay(frame: &mut Frame, app: &App) {
+    let actions = available_actions(app);
+    let (modal, list, footer) = action_menu_layout(frame.area(), actions.len());
+    frame.render_widget(Clear, modal);
+    frame.render_widget(panel(" Actions · F4 / Esc close ".into()), modal);
+    let width = list.width.saturating_sub(1);
+    let rows = actions
+        .iter()
+        .skip(app.action_offset)
+        .take(list.height as usize)
+        .enumerate();
+    for (row, action) in rows {
+        let hint_width = (action.shortcut.chars().count() as u16).min(width);
+        let label_width = width.saturating_sub(hint_width + 5) as usize;
+        let label: String = action.label.chars().take(label_width).collect();
+        let hint = format!("{:>width$}", action.shortcut, width = hint_width as usize);
+        let selected = app.action_offset + row == app.action_index;
+        let line = Line::from(vec![
+            Span::raw(if selected { "› " } else { "  " }),
+            Span::raw(format!("{label:<label_width$}  ")),
+            Span::styled(hint, Style::default().fg(MUTED)),
+        ]);
+        frame.render_widget(
+            Paragraph::new(line).style(if selected {
+                Style::default().bg(Color::Rgb(34, 64, 78)).fg(Color::White)
+            } else {
+                Style::default()
+            }),
+            Rect::new(list.x, list.y + row as u16, width, 1),
+        );
+    }
+    if actions.len() > usize::from(list.height) {
+        let mut state = ScrollbarState::new(actions.len())
+            .position(app.action_index)
+            .viewport_content_length(list.height as usize);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .style(Style::default().fg(ACCENT)),
+            list,
+            &mut state,
+        );
+    }
+    frame.render_widget(
+        Paragraph::new("↑↓ / wheel · Enter / click").style(Style::default().fg(MUTED)),
+        footer,
+    );
+}
+
 fn help_overlay(frame: &mut Frame) {
     let area = frame.area();
     let width = area.width.saturating_sub(4).min(76);
-    let height = area.height.saturating_sub(2).min(22);
+    let height = area.height.saturating_sub(2).min(10);
     let modal = Rect::new(
         area.x + (area.width - width) / 2,
         area.y + (area.height - height) / 2,
@@ -818,7 +1138,7 @@ fn help_overlay(frame: &mut Frame) {
         height,
     );
     frame.render_widget(Clear, modal);
-    frame.render_widget(Paragraph::new("DEVICE / CONFIGURATION\nClick / ↑↓  Select device or configuration\nWheel / j/k Move selection\nEnter       Choose device / start configuration\nClick ☆ / f Save or remove a favorite device\n/           Filter; Enter applies, Esc clears\nr / c       Refresh devices / reload launch.json\nl           Inspect the last session console\nEsc         Back; quits from the device list\n\nLIVE CONSOLE\nFlutter receives typing directly, including r/R/h/v.\nF2          Toggle normal / 5× slower animations\nq or Esc    Stop; press again to force stop\nWheel / PgUp/PgDn   Scroll console history\nDrag scrollbar     Move through history\nEnd         Follow current output\nCtrl+q      Quit launcher and stop its processes\n\nF1 / any key or click closes this help.").block(panel(" Keyboard and mouse shortcuts ".into())).wrap(Wrap { trim: false }), modal);
+    frame.render_widget(Paragraph::new("↑↓ / click: select\nEnter: next / run\nF4 / Menu: all commands\nConsole: type Flutter keys\nWheel / PgUp/PgDn: scroll\nF2: slow · F3: colors\nCtrl+q: confirm quit\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
 }
 
 fn quit_overlay(frame: &mut Frame, app: &App) {
@@ -874,6 +1194,224 @@ mod tests {
         (area.x..area.right())
             .map(|x| buffer[(x, y)].symbol())
             .collect()
+    }
+
+    #[test]
+    fn console_preserves_ansi_palette_rgb_background_and_modifiers() {
+        let mut parser = vt100::Parser::new(5, 60, 10);
+        parser.process(b"\x1b[1;3;4;31;44mRED\x1b[0m plain\r\n\x1b[38;5;208mINDEX\x1b[0m\r\n\x1b[38;2;12;200;99mRGB\x1b[0m\r\nWARNING: \x1b[35mcustom\x1b[0m body");
+        let mut terminal = Terminal::new(TestBackend::new(64, 7)).unwrap();
+        terminal
+            .draw(|frame| {
+                console(
+                    frame,
+                    parser.screen(),
+                    0,
+                    None,
+                    true,
+                    frame.area(),
+                    " Test ",
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let red = &buffer[(1, 1)];
+        assert_eq!(red.fg, Color::Indexed(1));
+        assert_eq!(red.bg, Color::Indexed(4));
+        assert!(
+            red.modifier
+                .contains(Modifier::BOLD | Modifier::ITALIC | Modifier::UNDERLINED)
+        );
+        assert_eq!(buffer[(5, 1)].fg, Color::Reset);
+        assert_eq!(buffer[(1, 2)].fg, Color::Indexed(208));
+        assert_eq!(buffer[(1, 3)].fg, Color::Rgb(12, 200, 99));
+        // Do not repaint an ANSI-authored line, including its reset-to-default cells.
+        assert_eq!(buffer[(1, 4)].fg, Color::Reset);
+        assert_eq!(buffer[(10, 4)].fg, Color::Indexed(5));
+    }
+
+    #[test]
+    fn plain_severity_colors_work_in_live_and_saved_console_and_can_be_disabled() {
+        let mut parser = vt100::Parser::new(3, 60, 10);
+        parser.process(b"flutter: [Orders] WARNING: retry\r\nflutter: [Orders] SEVERE: failed");
+        let mut terminal = Terminal::new(TestBackend::new(64, 5)).unwrap();
+        for snapshot in [None, Some(0)] {
+            terminal
+                .draw(|frame| {
+                    console(
+                        frame,
+                        parser.screen(),
+                        0,
+                        snapshot,
+                        true,
+                        frame.area(),
+                        " Test ",
+                    )
+                })
+                .unwrap();
+            assert_eq!(
+                terminal.backend().buffer()[(1, 1)].fg,
+                Color::Rgb(255, 205, 112)
+            );
+            assert_eq!(
+                terminal.backend().buffer()[(1, 2)].fg,
+                Color::Rgb(255, 128, 142)
+            );
+        }
+        terminal
+            .draw(|frame| {
+                console(
+                    frame,
+                    parser.screen(),
+                    0,
+                    None,
+                    false,
+                    frame.area(),
+                    " Test ",
+                )
+            })
+            .unwrap();
+        assert_eq!(terminal.backend().buffer()[(1, 1)].fg, Color::Reset);
+    }
+
+    #[test]
+    fn every_menu_command_remains_visible_and_clickable_at_all_supported_sizes() {
+        let mut app = crate::tests::app();
+        app.last_log = Some(vt100::Parser::new(2, 2, 0));
+        for page in [Page::Devices, Page::Configs, Page::Console, Page::LastLog] {
+            app.page = page;
+            for (width, height) in [(34, 12), (80, 24), (120, 40)] {
+                let area = Rect::new(0, 0, width, height);
+                assert!(
+                    controls(&app, body_layout(area)[0])
+                        .iter()
+                        .any(|control| control.action == MouseAction::Actions)
+                );
+                app.actions_open = true;
+                let actions = available_actions(&app);
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                for index in 0..actions.len() {
+                    app.action_index = index;
+                    update_action_viewport(&mut app, area);
+                    terminal.draw(|frame| draw(frame, &app)).unwrap();
+                    let (_, list, _) = action_menu_layout(area, actions.len());
+                    let row = list.y + (index - app.action_offset) as u16;
+                    assert!(row < list.bottom());
+                    assert_eq!(
+                        mouse_action(&app, area, click(list.x + 1, row)),
+                        Some(MouseAction::SelectAction(index))
+                    );
+                    assert!(
+                        row_text(terminal.backend().buffer(), list, row)
+                            .contains(actions[index].shortcut)
+                    );
+                }
+                app.actions_open = false;
+            }
+        }
+    }
+
+    #[test]
+    fn filter_field_apply_and_clear_have_pointer_targets() {
+        let mut app = crate::tests::app();
+        let area = Rect::new(0, 0, 34, 12);
+        let status = body_layout(area)[3];
+        assert_eq!(
+            mouse_action(&app, area, click(status.x, status.y)),
+            Some(MouseAction::Filter)
+        );
+        app.search = Some("phone".into());
+        let (apply, clear) = search_buttons(status);
+        assert_eq!(
+            mouse_action(&app, area, click(apply.x, apply.y)),
+            Some(MouseAction::ApplyFilter)
+        );
+        assert_eq!(
+            mouse_action(&app, area, click(clear.x, clear.y)),
+            Some(MouseAction::ClearFilter)
+        );
+    }
+
+    #[test]
+    fn action_scrollbar_positions_do_not_activate_commands_and_tiny_exit_is_clickable() {
+        let mut app = crate::tests::app();
+        app.page = Page::Console;
+        app.actions_open = true;
+        let area = Rect::new(0, 0, 34, 12);
+        let count = available_actions(&app).len();
+        let (_, list, _) = action_menu_layout(area, count);
+        assert_eq!(
+            mouse_action(&app, area, click(list.right() - 1, list.y)),
+            Some(MouseAction::ScrollActions(0))
+        );
+        assert_eq!(
+            mouse_action(&app, area, click(list.right() - 1, list.bottom() - 1)),
+            Some(MouseAction::ScrollActions(count - 1))
+        );
+        app.actions_open = false;
+        let tiny = Rect::new(0, 0, 20, 5);
+        let (quit, cancel) = small_exit_buttons(tiny).unwrap();
+        assert_eq!(
+            mouse_action(&app, tiny, click(quit.x, quit.y)),
+            Some(MouseAction::Quit)
+        );
+        app.quit_confirmation = true;
+        assert_eq!(
+            mouse_action(&app, tiny, click(quit.x, quit.y)),
+            Some(MouseAction::ConfirmQuit)
+        );
+        assert_eq!(
+            mouse_action(&app, tiny, click(cancel.x, cancel.y)),
+            Some(MouseAction::CancelQuit)
+        );
+    }
+
+    #[test]
+    fn menu_clicks_follow_drawn_rows_while_keyboard_scroll_is_pending() {
+        let mut app = crate::tests::app();
+        app.actions_open = true;
+        let area = Rect::new(0, 0, 34, 12);
+        update_action_viewport(&mut app, area);
+        let actions = available_actions(&app);
+        let help = actions
+            .iter()
+            .position(|item| item.action == MouseAction::Help)
+            .unwrap();
+        let (_, list, _) = action_menu_layout(area, actions.len());
+        assert!(help < usize::from(list.height));
+        let row = list.y + help as u16;
+        app.action_index = actions.len() - 1; // Keyboard selection awaits a draw.
+        app.mouse(click(list.x + 1, row), area).unwrap();
+        assert!(app.help);
+        assert!(!app.quit_confirmation);
+    }
+
+    #[test]
+    fn menu_scrollbar_drag_never_sends_a_command_and_help_fits_the_minimum_size() {
+        let mut app = crate::tests::app();
+        app.page = Page::Console;
+        app.actions_open = true;
+        let area = Rect::new(0, 0, 34, 12);
+        let count = available_actions(&app).len();
+        let (_, list, _) = action_menu_layout(area, count);
+        app.mouse(click(list.right() - 1, list.bottom() - 1), area)
+            .unwrap();
+        assert_eq!(app.action_index, count - 1);
+        let mut event = click(list.right() - 1, list.y);
+        event.kind = MouseEventKind::Drag(MouseButton::Left);
+        app.mouse(event, area).unwrap();
+        assert_eq!(app.action_index, 0);
+        assert!(app.actions_open && !app.quit_confirmation);
+        app.actions_open = false;
+        app.help = true;
+        let mut terminal = Terminal::new(TestBackend::new(34, 12)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let text = (0..12)
+            .map(|row| row_text(terminal.backend().buffer(), area, row))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Any key / click: close"));
+        assert!(text.contains("F4 / Menu: all commands"));
     }
 
     #[test]
@@ -1060,7 +1598,17 @@ mod tests {
             parser.screen_mut().set_scrollback(0);
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal
-                .draw(|frame| console(frame, parser.screen(), scrollback_len, None, body, " Test "))
+                .draw(|frame| {
+                    console(
+                        frame,
+                        parser.screen(),
+                        scrollback_len,
+                        None,
+                        true,
+                        body,
+                        " Test ",
+                    )
+                })
                 .unwrap();
             assert_eq!(
                 terminal.backend().buffer()[(track.x, track.bottom() - 1)].symbol(),
@@ -1068,7 +1616,17 @@ mod tests {
             );
             parser.screen_mut().set_scrollback(scrollback_len);
             terminal
-                .draw(|frame| console(frame, parser.screen(), scrollback_len, None, body, " Test "))
+                .draw(|frame| {
+                    console(
+                        frame,
+                        parser.screen(),
+                        scrollback_len,
+                        None,
+                        true,
+                        body,
+                        " Test ",
+                    )
+                })
                 .unwrap();
             assert_eq!(
                 terminal.backend().buffer()[(track.x, track.y)].symbol(),
@@ -1096,7 +1654,17 @@ mod tests {
         let inner = panel(String::new()).inner(body);
         assert_eq!(inner.height, 8);
         terminal
-            .draw(|frame| console(frame, &snapshot, scrollback_len, Some(0), body, " Saved "))
+            .draw(|frame| {
+                console(
+                    frame,
+                    &snapshot,
+                    scrollback_len,
+                    Some(0),
+                    true,
+                    body,
+                    " Saved ",
+                )
+            })
             .unwrap();
         let visible = (inner.y..inner.bottom())
             .map(|y| row_text(terminal.backend().buffer(), inner, y))
@@ -1119,6 +1687,7 @@ mod tests {
                     &snapshot,
                     scrollback_len,
                     Some(virtual_offset),
+                    true,
                     body,
                     " Saved ",
                 )
@@ -1145,6 +1714,7 @@ mod tests {
                     &snapshot,
                     scrollback_len,
                     Some(0),
+                    true,
                     expanded_body,
                     " Saved ",
                 )

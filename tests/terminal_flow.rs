@@ -22,6 +22,10 @@ struct Terminal {
 
 impl Terminal {
     fn start(project: &Path, state: &Path) -> Self {
+        Self::start_with_color(project, state, "always")
+    }
+
+    fn start_with_color(project: &Path, state: &Path, color: &str) -> Self {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 32,
@@ -49,8 +53,13 @@ impl Terminal {
             state.to_str().unwrap(),
             "--refresh-interval",
             "2",
+            "--color",
+            color,
         ]);
         command.env("TERM", "xterm-256color");
+        // Reproduce launchers/shells which suppress color. --color always must
+        // override this for both the terminal backend and its Flutter child.
+        command.env("NO_COLOR", "1");
         command.env("FAKE_LOG", project.join("session.log"));
         command.env("FAKE_PID", project.join("child.pid"));
         command.env("FAKE_SCRIPT", project.join("probe.dart"));
@@ -107,6 +116,134 @@ impl Terminal {
 
     fn mouse(&mut self, code: u16, column: u16, row: u16) {
         self.send(format!("\x1b[<{code};{};{}M", column + 1, row + 1).as_bytes());
+    }
+
+    fn cell_at_text(&self, needle: &str) -> Option<&vt100::Cell> {
+        let (rows, cols) = self.screen.screen().size();
+        for (row, text) in self
+            .screen
+            .screen()
+            .rows(0, cols)
+            .enumerate()
+            .take(rows as usize)
+        {
+            if let Some(column) = text.find(needle) {
+                // Fixture prefixes and UI borders are single-column characters.
+                let column = text[..column].chars().count();
+                return self.screen.screen().cell(row as u16, column as u16);
+            }
+        }
+        None
+    }
+
+    fn until_color(&mut self, needle: &str, color: vt100::Color) {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        loop {
+            self.read();
+            if self
+                .cell_at_text(needle)
+                .is_some_and(|cell| cell.fgcolor() == color)
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Missing color {color:?} on {needle:?}: {}",
+                self.screen.screen().contents()
+            );
+            thread::sleep(Duration::from_millis(15));
+        }
+    }
+
+    fn click_text(&mut self, label: &str) {
+        self.read();
+        let (_, cols) = self.screen.screen().size();
+        let (column, row) = self
+            .screen
+            .screen()
+            .rows(0, cols)
+            .enumerate()
+            .find_map(|(row, text)| {
+                text.find(label)
+                    .map(|column| (text[..column].chars().count() as u16, row as u16))
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "Cannot click {label:?}: {}",
+                    self.screen.screen().contents()
+                )
+            });
+        self.mouse(0, column, row);
+    }
+
+    fn menu_click(&mut self, label: &str) {
+        self.read();
+        if self.cell_at_text("[Menu]").is_some() {
+            self.click_text("[Menu]");
+        } else {
+            self.click_text("F4 Actions");
+        }
+        self.until("Actions ·");
+        for _ in 0..20 {
+            self.read();
+            let (_, cols) = self.screen.screen().size();
+            let hit = self
+                .screen
+                .screen()
+                .rows(0, cols)
+                .enumerate()
+                .find_map(|(row, text)| {
+                    text.find(label)
+                        .map(|column| (text[..column].chars().count() as u16, row as u16))
+                });
+            if let Some((column, row)) = hit {
+                self.mouse(0, column, row);
+                let deadline = Instant::now() + Duration::from_secs(3);
+                loop {
+                    self.read();
+                    if !self.screen.screen().contents().contains("Actions ·") {
+                        return;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "Menu action {label} did not close"
+                    );
+                    thread::sleep(Duration::from_millis(15));
+                }
+            }
+            // Acknowledge each wheel response before issuing another one. This
+            // models a user clicking the row they actually see, not queuing a
+            // click against an older frame while more wheel events are pending.
+            let selected = self
+                .screen
+                .screen()
+                .rows(0, cols)
+                .find(|text| text.contains('›'))
+                .unwrap();
+            self.mouse(65, 10, 5);
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                self.read();
+                if self
+                    .screen
+                    .screen()
+                    .rows(0, cols)
+                    .find(|text| text.contains('›'))
+                    .is_some_and(|text| text != selected)
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "Menu wheel did not update selection"
+                );
+                thread::sleep(Duration::from_millis(15));
+            }
+        }
+        panic!(
+            "Menu action {label:?} not visible: {}",
+            self.screen.screen().contents()
+        );
     }
 
     fn hang_up(&mut self) {
@@ -203,6 +340,14 @@ while :; do
   if [ "$key" = o ]; then
     for ((i=0;i<100;i++)); do printf 'history-line:%03d\r\n' "$i"; done
   fi
+  if [ "$key" = c ]; then
+    printf '\033[38;5;208mINDEXED COLOR\033[0m\r\n'
+    printf '\033[38;2;12;200;99mTRUE COLOR\033[0m\r\n'
+    printf 'flutter: [Orders] WARNING: retry\r\n'
+    printf 'I/flutter: [Orders] SEVERE: failed\r\n'
+    printf 'flutter: [Feed] INFO: connected\r\n'
+    printf 'ENV:TERM=%s COLORTERM=%s FORCE_COLOR=%s NO_COLOR=%s\r\n' "$TERM" "$COLORTERM" "$FORCE_COLOR" "${NO_COLOR-unset}"
+  fi
   [ "$key" = q ] && exit 0
 done
 "#,
@@ -214,6 +359,141 @@ done
     )
     .unwrap();
     directory
+}
+
+#[test]
+fn colors_survive_pty_scrollback_saved_logs_and_runtime_toggle() {
+    let project = project();
+    let state = project.path().join("state.json");
+    std::fs::write(
+        &state,
+        r#"{"favorites":[{"id":"demo-device","name":"Saved phone","platform":"ios"}]}"#,
+    )
+    .unwrap();
+    let mut tui = Terminal::start(project.path(), &state);
+    tui.until("Saved phone");
+    tui.send(b"\r");
+    tui.until("Demo debug");
+    tui.send(b"\r");
+    tui.until_color("SESSION READY", vt100::Color::Idx(2));
+    tui.send(b"c");
+    tui.until("NO_COLOR=unset");
+    tui.until_color("INDEXED COLOR", vt100::Color::Idx(208));
+    tui.until_color("TRUE COLOR", vt100::Color::Rgb(12, 200, 99));
+    tui.until_color("WARNING:", vt100::Color::Rgb(255, 205, 112));
+    tui.until_color("SEVERE:", vt100::Color::Rgb(255, 128, 142));
+    tui.until_color("INFO:", vt100::Color::Rgb(96, 210, 225));
+    tui.send(b"\x1bOR"); // F3
+    tui.until_color("WARNING:", vt100::Color::Default);
+    tui.send(b"\x1bOR");
+    tui.until_color("WARNING:", vt100::Color::Rgb(255, 205, 112));
+    tui.send(b"o");
+    tui.until("history-line:099");
+    tui.menu_click("Oldest output");
+    tui.until_color("TRUE COLOR", vt100::Color::Rgb(12, 200, 99));
+    tui.until_color("WARNING:", vt100::Color::Rgb(255, 205, 112));
+    tui.menu_click("Follow output");
+    tui.until("history-line:099");
+    tui.send(b"q");
+    tui.until("ended (");
+    tui.send(b"l");
+    tui.until("Last console ·");
+    tui.menu_click("Oldest output");
+    tui.until_color("TRUE COLOR", vt100::Color::Rgb(12, 200, 99));
+    tui.until_color("WARNING:", vt100::Color::Rgb(255, 205, 112));
+    tui.quit();
+}
+
+#[test]
+fn auto_and_never_color_modes_respect_inherited_no_color() {
+    for mode in ["auto", "never"] {
+        let project = project();
+        let state = project.path().join("state.json");
+        std::fs::write(
+            &state,
+            r#"{"favorites":[{"id":"demo-device","name":"Saved phone","platform":"ios"}]}"#,
+        )
+        .unwrap();
+        let mut tui = Terminal::start_with_color(project.path(), &state, mode);
+        tui.until("Saved phone");
+        tui.send(b"\r");
+        tui.until("Demo debug");
+        tui.send(b"\r");
+        tui.until_color("SESSION READY", vt100::Color::Default);
+        tui.send(b"c");
+        tui.until("NO_COLOR=1");
+        tui.until_color("INDEXED COLOR", vt100::Color::Default);
+        tui.until_color("WARNING:", vt100::Color::Default);
+        tui.send(b"q");
+        tui.until("ended (");
+        tui.quit();
+    }
+}
+
+#[test]
+fn compact_actions_support_pointer_commands_and_keyboard_navigation() {
+    let project = project();
+    let state = project.path().join("state.json");
+    std::fs::write(
+        &state,
+        r#"{"favorites":[{"id":"demo-device","name":"Saved phone","platform":"ios"}]}"#,
+    )
+    .unwrap();
+    let mut tui = Terminal::start(project.path(), &state);
+    tui.until("Saved phone");
+    tui.master
+        .resize(PtySize {
+            rows: 12,
+            cols: 34,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    tui.screen.screen_mut().set_size(12, 34);
+    tui.until("[Menu]");
+    tui.menu_click("Filter list");
+    tui.until("[Apply]");
+    tui.send(b"\x1b[200~Saved\x1b[201~");
+    tui.until("/ Saved");
+    tui.click_text("[Apply]");
+    tui.click_text("[Clear]");
+    tui.until("[Filter /]");
+    tui.menu_click("Reload configs");
+    tui.until("reloaded.");
+    tui.click_text("[Next]");
+    tui.until("[Run]");
+    tui.click_text("[Run]");
+    tui.until("SESSION READY");
+    for (label, key) in [
+        ("Hot reload", 'r'),
+        ("Hot restart", 'R'),
+        ("Flutter help", 'h'),
+        ("Open DevTools", 'v'),
+    ] {
+        tui.menu_click(label);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !std::fs::read_to_string(project.path().join("session.log"))
+            .unwrap()
+            .contains(&format!("key:{key}\n"))
+        {
+            assert!(
+                Instant::now() < deadline,
+                "Mouse command {label} was not sent"
+            );
+            thread::sleep(Duration::from_millis(15));
+        }
+    }
+    tui.menu_click("Stop session");
+    tui.until("ended");
+    tui.send(b"\x1bOS"); // Keyboard F4, End, Enter selects Quit.
+    tui.until("Actions ·");
+    tui.send(b"\x1b[F");
+    tui.until("Quit launcher");
+    tui.send(b"\r");
+    tui.until("Quit Flutter Run?");
+    tui.send(b"\r"); // Safe default remains Cancel.
+    tui.until("[Menu]");
+    tui.quit();
 }
 
 #[test]
