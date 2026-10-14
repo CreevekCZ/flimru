@@ -1,0 +1,8 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::sync::mpsc::channel", reason = "Use a bounded sync_channel with cancellation-aware backpressure." },
+    { path = "std::mem::forget", reason = "Resources must retain an owner and be released through Drop." },
+]

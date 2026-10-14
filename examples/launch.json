@@ -1,0 +1,32 @@
+{
+  // Example JSONC accepted by flutter-run-tui.
+  "configurations": [
+    {
+      "name": "Debug flavor",
+      "type": "dart",
+      "request": "launch",
+      "flutterMode": "debug",
+      "toolArgs": ["--flavor", "debug"],
+    },
+    {
+      "name": "Profile",
+      "type": "dart",
+      "request": "launch",
+      "flutterMode": "profile",
+    },
+    {
+      "name": "Widgetbook web server",
+      "type": "dart",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/widgetbook",
+      "program": "lib/main.dart",
+      "deviceId": "web-server",
+    },
+    {
+      "name": "Flutter tests",
+      "type": "dart",
+      "request": "launch",
+      "program": "test",
+    },
+  ],
+}

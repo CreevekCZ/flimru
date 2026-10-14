@@ -1,0 +1,1162 @@
+use crate::{App, Page};
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::{
+    Frame,
+    layout::{Constraint, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span, Text},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
+    },
+};
+
+const ACCENT: Color = Color::Rgb(96, 210, 225);
+const MUTED: Color = Color::Rgb(151, 163, 180);
+const GREEN: Color = Color::Rgb(128, 214, 159);
+const PANEL: Color = Color::Rgb(22, 28, 39);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseAction {
+    SelectDevice(usize),
+    SelectConfig(usize),
+    ToggleFavorite(usize),
+    NextOrRun,
+    Back,
+    Refresh,
+    ReloadConfigs,
+    LastLog,
+    Quit,
+    Help,
+    DismissHelp,
+    ToggleAnimations,
+    ConsoleScroll(u16),
+    ConfirmQuit,
+    CancelQuit,
+}
+
+fn body_layout(area: Rect) -> std::rc::Rc<[Rect]> {
+    Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Min(4),
+        Constraint::Length(2),
+        Constraint::Length(2),
+    ])
+    .split(area)
+}
+
+fn picker_layout(area: Rect) -> std::rc::Rc<[Rect]> {
+    if area.width >= 90 {
+        Layout::horizontal([Constraint::Percentage(53), Constraint::Percentage(47)]).split(area)
+    } else {
+        Layout::horizontal([Constraint::Percentage(100), Constraint::Length(0)]).split(area)
+    }
+}
+
+fn list_offset(selected: usize, count: usize, height: u16, previous: usize) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    let capacity = usize::from(height / 2).max(1);
+    let selected = selected.min(count - 1);
+    let offset = previous.min(count.saturating_sub(capacity));
+    if selected < offset {
+        selected
+    } else if selected >= offset + capacity {
+        selected.saturating_sub(capacity - 1)
+    } else {
+        offset
+    }
+}
+
+pub fn update_picker_viewport(app: &mut App, area: Rect) {
+    let list = picker_layout(body_layout(area)[2])[0];
+    let height = panel(String::new()).inner(list).height;
+    app.device_list_offset = list_offset(
+        app.device_index,
+        app.visible_devices().len(),
+        height,
+        app.device_list_offset,
+    );
+    app.config_list_offset = list_offset(
+        app.config_index,
+        app.visible_configs().len(),
+        height,
+        app.config_list_offset,
+    );
+}
+
+fn list_hit(
+    inner: Rect,
+    selected: usize,
+    count: usize,
+    previous: usize,
+    x: u16,
+    y: u16,
+) -> Option<usize> {
+    if !inner.contains((x, y).into()) || inner.height < 2 {
+        return None;
+    }
+    let row = usize::from((y - inner.y) / 2);
+    // The list only renders complete two-line entries; ignore the spare bottom row.
+    if row >= usize::from(inner.height / 2) {
+        return None;
+    }
+    let index = list_offset(selected, count, inner.height, previous) + row;
+    (index < count).then_some(index)
+}
+
+fn navigation_tabs(area: Rect) -> Vec<(&'static str, Rect)> {
+    let labels = if area.width < 52 {
+        ["  1 Device", " › 2 Config", " › 3 Console"]
+    } else {
+        [
+            "  1  Device",
+            "   ›   2  Configuration",
+            "   ›   3  Console",
+        ]
+    };
+    let mut x = area.x;
+    labels
+        .into_iter()
+        .map(|label| {
+            let width = (label.chars().count() as u16).min(area.right().saturating_sub(x));
+            let rect = Rect::new(x, area.y, width, area.height.min(1));
+            x += width;
+            (label, rect)
+        })
+        .collect()
+}
+
+struct Control {
+    label: String,
+    rect: Rect,
+    action: MouseAction,
+}
+
+fn controls(app: &App, area: Rect) -> Vec<Control> {
+    let compact = area.width < 76;
+    let mut buttons = vec![];
+    match app.page {
+        Page::Devices => {
+            buttons.push(("Next".into(), MouseAction::NextOrRun));
+            if !compact {
+                buttons.push(("Refresh".into(), MouseAction::Refresh));
+                buttons.push(("Configs".into(), MouseAction::ReloadConfigs));
+                buttons.push(("Last console".into(), MouseAction::LastLog));
+            } else if area.width >= 34 {
+                buttons.push(("Refresh".into(), MouseAction::Refresh));
+            }
+        }
+        Page::Configs => {
+            buttons.push(("Back".into(), MouseAction::Back));
+            buttons.push(("Run".into(), MouseAction::NextOrRun));
+            if !compact {
+                buttons.push(("Refresh".into(), MouseAction::Refresh));
+                buttons.push(("Configs".into(), MouseAction::ReloadConfigs));
+            }
+        }
+        Page::Console => {
+            buttons.push(("Stop".into(), MouseAction::Back));
+            if let Some(session) = &app.session {
+                buttons.push((
+                    if compact {
+                        format!("F2 {}", session.animations.short_label())
+                    } else {
+                        format!("F2 {}", session.animations.label())
+                    },
+                    MouseAction::ToggleAnimations,
+                ));
+            }
+        }
+        Page::LastLog => buttons.push(("Back".into(), MouseAction::Back)),
+    }
+    buttons.push(("Help".into(), MouseAction::Help));
+    buttons.push(("Quit".into(), MouseAction::Quit));
+    let essential_start = buttons.len() - 2;
+    let mut x = area.x + 1;
+    buttons
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, (mut label, action))| {
+            // Keep Help and Quit visible even if an externally changed animation
+            // factor needs more space than the usual 1× / 5× label.
+            let reserved = if index < essential_start {
+                if compact { 14 } else { 18 }
+            } else {
+                0
+            };
+            let available = area.right().saturating_sub(x).saturating_sub(reserved);
+            let padding = if compact { 2 } else { 4 };
+            if action == MouseAction::ToggleAnimations
+                && label.chars().count() + padding > usize::from(available)
+            {
+                let limit = usize::from(available).saturating_sub(padding);
+                label = label
+                    .chars()
+                    .take(limit.saturating_sub(1))
+                    .collect::<String>();
+                label.push('…');
+            }
+            let label = if compact {
+                format!("[{label}]")
+            } else {
+                format!("[ {label} ]")
+            };
+            let width = label.chars().count() as u16;
+            if width > available {
+                return None;
+            }
+            let rect = Rect::new(x, area.y + 1, width, 1);
+            x += width + 1;
+            Some(Control {
+                label,
+                rect,
+                action,
+            })
+        })
+        .collect()
+}
+
+fn quit_modal(area: Rect) -> (Rect, Rect, Rect) {
+    let width = area.width.saturating_sub(4).min(54);
+    let height = area.height.saturating_sub(2).min(8);
+    let modal = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    let buttons_x = modal.x + (width.saturating_sub(21)) / 2;
+    let y = modal.bottom().saturating_sub(3);
+    (
+        modal,
+        Rect::new(buttons_x, y, 8, 1),
+        Rect::new(buttons_x + 11, y, 10, 1),
+    )
+}
+
+/// The scrollbar gutter for the full terminal area, shared with pointer dragging.
+pub fn console_scrollbar_area(area: Rect) -> Rect {
+    let inner = panel(String::new()).inner(body_layout(area)[2]);
+    Rect::new(
+        inner.right().saturating_sub(1),
+        inner.y,
+        inner.width.min(1),
+        inner.height,
+    )
+}
+
+pub fn mouse_action(app: &App, area: Rect, event: MouseEvent) -> Option<MouseAction> {
+    if area.width < 34
+        || area.height < 12
+        || !matches!(event.kind, MouseEventKind::Down(MouseButton::Left))
+    {
+        return None;
+    }
+    if app.quit_confirmation {
+        let (_, quit, cancel) = quit_modal(area);
+        return if quit.contains((event.column, event.row).into()) {
+            Some(MouseAction::ConfirmQuit)
+        } else if cancel.contains((event.column, event.row).into()) {
+            Some(MouseAction::CancelQuit)
+        } else {
+            None
+        };
+    }
+    if app.help {
+        return Some(MouseAction::DismissHelp);
+    }
+    let parts = body_layout(area);
+    for control in controls(app, parts[0]) {
+        if control.rect.contains((event.column, event.row).into()) {
+            return Some(control.action);
+        }
+    }
+    for (index, (_, rect)) in navigation_tabs(parts[1]).iter().enumerate() {
+        if rect.contains((event.column, event.row).into()) {
+            return match (index, app.page) {
+                (0, Page::Configs | Page::LastLog) => Some(MouseAction::Back),
+                (1, Page::Devices) => Some(MouseAction::NextOrRun),
+                (2, Page::Devices | Page::Configs) if app.last_log.is_some() => {
+                    Some(MouseAction::LastLog)
+                }
+                _ => None,
+            };
+        }
+    }
+    match app.page {
+        Page::Devices | Page::Configs => {
+            let list = picker_layout(parts[2])[0];
+            let inner = panel(String::new()).inner(list);
+            let (selected, count, previous) = if app.page == Page::Devices {
+                (
+                    app.device_index,
+                    app.visible_devices().len(),
+                    app.device_list_offset,
+                )
+            } else {
+                (
+                    app.config_index,
+                    app.visible_configs().len(),
+                    app.config_list_offset,
+                )
+            };
+            list_hit(inner, selected, count, previous, event.column, event.row).map(|index| {
+                if app.page == Page::Configs {
+                    MouseAction::SelectConfig(index)
+                } else if event.column == inner.x + 3 && (event.row - inner.y).is_multiple_of(2) {
+                    MouseAction::ToggleFavorite(index)
+                } else {
+                    MouseAction::SelectDevice(index)
+                }
+            })
+        }
+        Page::Console | Page::LastLog => {
+            let track = console_scrollbar_area(area);
+            track
+                .contains((event.column, event.row).into())
+                .then_some(MouseAction::ConsoleScroll(
+                    event.row.saturating_sub(track.y),
+                ))
+        }
+    }
+}
+
+pub fn draw(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    frame.render_widget(
+        Block::default().style(
+            Style::default()
+                .bg(Color::Rgb(14, 19, 27))
+                .fg(Color::Rgb(224, 232, 240)),
+        ),
+        area,
+    );
+    if area.width < 34 || area.height < 12 {
+        frame.render_widget(
+            Paragraph::new(if app.quit_confirmation {
+                "Quit Flutter Run?\ny quits · Enter/Esc cancels"
+            } else {
+                "Enlarge the terminal to at least 34 × 12.\nCtrl+q opens quit confirmation."
+            })
+            .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
+    let parts = body_layout(area);
+    let project = app
+        .launch
+        .workspace
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let mut title = vec![
+        Span::styled("  FLUTTER RUN ", Style::default().fg(ACCENT).bold()),
+        Span::styled(format!(" / {project}"), Style::default().fg(MUTED)),
+    ];
+    if app.busy {
+        title.push(Span::styled(
+            "    ◌ discovering",
+            Style::default().fg(ACCENT),
+        ));
+    } else if let Some(when) = app.refreshed {
+        title.push(Span::styled(
+            format!("    updated {}s ago", when.elapsed().as_secs()),
+            Style::default().fg(MUTED),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(title)), parts[0]);
+    for control in controls(app, parts[0]) {
+        frame.render_widget(
+            Paragraph::new(control.label).style(Style::default().fg(ACCENT)),
+            control.rect,
+        );
+    }
+    let active = match app.page {
+        Page::Devices => 0,
+        Page::Configs => 1,
+        _ => 2,
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(
+            navigation_tabs(parts[1])
+                .iter()
+                .enumerate()
+                .map(|(i, (text, _))| {
+                    Span::styled(
+                        *text,
+                        Style::default()
+                            .fg(if i == active { ACCENT } else { MUTED })
+                            .add_modifier(if i == active {
+                                Modifier::BOLD
+                            } else {
+                                Modifier::empty()
+                            }),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )),
+        parts[1],
+    );
+
+    match app.page {
+        Page::Devices | Page::Configs => picker(frame, app, parts[2]),
+        Page::Console => {
+            if let Some(session) = &app.session {
+                console(
+                    frame,
+                    session.parser.screen(),
+                    session.scrollback_len,
+                    None,
+                    parts[2],
+                    &format!(
+                        " {} · {}{} ",
+                        app.active_config,
+                        app.selected_device
+                            .as_ref()
+                            .map(|d| d.name.as_str())
+                            .unwrap_or(""),
+                        if session.stop_requested.is_some() {
+                            " · stopping (Esc again forces)"
+                        } else {
+                            ""
+                        }
+                    ),
+                );
+            }
+        }
+        Page::LastLog => {
+            if let Some(parser) = &app.last_log {
+                console(
+                    frame,
+                    parser.screen(),
+                    app.last_log_scrollback,
+                    Some(app.last_log_offset),
+                    parts[2],
+                    &format!(" Last console · {} ", app.active_config),
+                );
+            }
+        }
+    }
+
+    let status = if let Some(search) = &app.search {
+        format!(
+            "  / {search}{}  {}",
+            if app.searching { "▏" } else { "" },
+            if app.searching {
+                "Enter applies · Esc clears"
+            } else {
+                "Esc clears filter"
+            }
+        )
+    } else {
+        format!("  {}", app.status)
+    };
+    frame.render_widget(
+        Paragraph::new(status)
+            .style(Style::default().fg(if app.search.is_some() { ACCENT } else { MUTED }))
+            .wrap(Wrap { trim: false }),
+        parts[3],
+    );
+    let help = match app.page {
+        Page::Devices => {
+            "  Click/↑↓ select · click ☆/f favorite · Enter next\n  r refresh · c configs · / filter · q quit · F1 help"
+        }
+        Page::Configs => {
+            "  Click/↑↓ select · Enter run · Esc back · / filter\n  r refresh · c configs · Ctrl+q quit · F1 help"
+        }
+        Page::Console => {
+            "  r reload · R restart · h help · v DevTools · F2 slow\n  Wheel/PgUp/PgDn scroll · End follow · q/Esc stop"
+        }
+        Page::LastLog => {
+            "  Wheel/PgUp/PgDn scroll · drag scrollbar · End latest\n  Esc back · Ctrl+q quit launcher · F1 help"
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(help).style(Style::default().fg(MUTED)),
+        parts[4],
+    );
+    if app.help {
+        help_overlay(frame);
+    }
+    if app.quit_confirmation {
+        quit_overlay(frame, app);
+    }
+}
+
+fn panel(title: String) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(Color::Rgb(60, 76, 96)))
+        .style(Style::default().bg(PANEL))
+}
+
+fn picker(frame: &mut Frame, app: &App, area: Rect) {
+    let split = picker_layout(area);
+    let (items, selected, title) = if app.page == Page::Devices {
+        let devices = app.visible_devices();
+        let items: Vec<_> = devices
+            .iter()
+            .map(|device| {
+                ListItem::new(vec![
+                    Line::from(vec![
+                        Span::styled(
+                            if device.favorite { " ★ " } else { " ☆ " },
+                            Style::default().fg(if device.favorite {
+                                Color::Yellow
+                            } else {
+                                MUTED
+                            }),
+                        ),
+                        Span::styled(device.name.clone(), Style::default().bold()),
+                    ]),
+                    Line::from(vec![
+                        Span::raw("   "),
+                        Span::styled(
+                            format!(
+                                "{} · {}",
+                                device.platform,
+                                if device.available {
+                                    "available"
+                                } else if device.favorite {
+                                    "saved · try now"
+                                } else {
+                                    "configured · try now"
+                                }
+                            ),
+                            Style::default().fg(if device.available { GREEN } else { MUTED }),
+                        ),
+                    ]),
+                ])
+            })
+            .collect();
+        (
+            items,
+            app.device_index,
+            format!(" Devices ({}) ", devices.len()),
+        )
+    } else {
+        let configs = app.visible_configs();
+        let items: Vec<_> = configs
+            .iter()
+            .map(|config| {
+                ListItem::new(vec![
+                    Line::from(Span::styled(
+                        format!(" {}", config.name),
+                        Style::default().bold(),
+                    )),
+                    Line::from(Span::styled(
+                        format!(
+                            " {}{}",
+                            if config.is_test() { "test" } else { "run" },
+                            config
+                                .flutter_mode
+                                .as_ref()
+                                .map(|mode| format!(" · {mode}"))
+                                .unwrap_or_default()
+                        ),
+                        Style::default().fg(MUTED),
+                    )),
+                ])
+            })
+            .collect();
+        (
+            items,
+            app.config_index,
+            format!(" Configurations ({}) ", configs.len()),
+        )
+    };
+    let count = items.len();
+    let list = List::new(items)
+        .block(panel(title))
+        .highlight_style(Style::default().bg(Color::Rgb(34, 64, 78)).fg(Color::White))
+        .highlight_symbol("› ");
+    let inner = panel(String::new()).inner(split[0]);
+    let previous = if app.page == Page::Devices {
+        app.device_list_offset
+    } else {
+        app.config_list_offset
+    };
+    let mut state = ListState::default()
+        .with_offset(list_offset(selected, count, inner.height, previous))
+        .with_selected(if count == 0 {
+            None
+        } else {
+            Some(selected.min(count - 1))
+        });
+    frame.render_stateful_widget(list, split[0], &mut state);
+    if count == 0 {
+        let empty = if app.page == Page::Devices {
+            "No devices yet.\n\nConnect a device or start an emulator.\nSaved favorites appear immediately.\nPress r to refresh."
+        } else {
+            "No matching configurations.\n\nA configuration with deviceId is offered\non that configured device.\nPress Esc to select another device."
+        };
+        frame.render_widget(
+            Paragraph::new(empty)
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(MUTED)),
+            split[0].inner(ratatui::layout::Margin {
+                horizontal: 3,
+                vertical: 2,
+            }),
+        );
+    }
+    if split[1].width == 0 {
+        return;
+    }
+    let detail = if app.page == Page::Devices {
+        if let Some(device) = app.visible_devices().get(app.device_index) {
+            vec![
+                Line::styled(device.name.clone(), Style::default().fg(ACCENT).bold()),
+                Line::raw(""),
+                Line::raw(format!("ID  {}", device.id)),
+                Line::raw(format!("Platform  {}", device.platform)),
+                Line::raw(""),
+                Line::raw(if device.available {
+                    "Seen in the last successful discovery."
+                } else {
+                    "This target is cached. You can launch it while discovery is still running."
+                }),
+                Line::raw(""),
+                Line::raw(if device.favorite {
+                    "★ Favorite — click the star or press f to remove."
+                } else {
+                    "Click ☆ or press f to save as a favorite."
+                }),
+                Line::raw(""),
+                Line::raw("Enter → choose configuration"),
+            ]
+        } else {
+            vec![
+                Line::raw("Discovery runs in the background."),
+                Line::raw("You can select saved favorites immediately."),
+            ]
+        }
+    } else if let Some(config) = app.visible_configs().get(app.config_index) {
+        let mut lines = vec![
+            Line::styled(config.name.clone(), Style::default().fg(ACCENT).bold()),
+            Line::raw(""),
+            Line::raw(format!(
+                "Device  {}",
+                app.selected_device
+                    .as_ref()
+                    .map(|d| d.name.as_str())
+                    .unwrap_or("")
+            )),
+            Line::raw(format!("Directory  {}", config.cwd.display())),
+            Line::raw(format!(
+                "Target  {}",
+                config.program.as_deref().unwrap_or("lib/main.dart")
+            )),
+            Line::raw(""),
+            Line::raw("Flutter options"),
+        ];
+        let mut redact_next = false;
+        for flag in config.tool_args.iter().chain(&config.args) {
+            let text = if redact_next {
+                redact_next = false;
+                "  <redacted>".into()
+            } else if flag.starts_with("--dart-define=") {
+                "  --dart-define=<redacted>".into()
+            } else {
+                if flag == "--dart-define" {
+                    redact_next = true;
+                }
+                format!("  {flag}")
+            };
+            lines.push(Line::raw(text));
+        }
+        if let Some(task) = &config.pre_launch_task {
+            lines.push(Line::styled(
+                format!("Blocked: preLaunchTask '{task}' is not supported."),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        lines
+    } else {
+        vec![Line::raw(
+            "Choose another device to see its configurations.",
+        )]
+    };
+    let mut detail = detail;
+    if !app.launch.warnings.is_empty() {
+        detail.push(Line::raw(""));
+        detail.push(Line::styled(
+            format!("{} configuration warning(s)", app.launch.warnings.len()),
+            Style::default().fg(Color::Yellow),
+        ));
+        detail.extend(app.launch.warnings.iter().map(|w| Line::raw(w.clone())));
+    }
+    frame.render_widget(
+        Paragraph::new(detail)
+            .block(panel(" Details ".into()))
+            .wrap(Wrap { trim: false }),
+        split[1],
+    );
+}
+
+fn terminal_color(color: vt100::Color) -> Color {
+    match color {
+        vt100::Color::Default => Color::Reset,
+        vt100::Color::Idx(index) => Color::Indexed(index),
+        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
+}
+
+fn console(
+    frame: &mut Frame,
+    screen: &vt100::Screen,
+    scrollback_len: usize,
+    snapshot_offset: Option<usize>,
+    area: Rect,
+    title: &str,
+) {
+    let offset = snapshot_offset.unwrap_or(screen.scrollback());
+    let block = panel(format!(
+        "{title}{}",
+        if offset > 0 { " · scrollback " } else { "" }
+    ));
+    let inner = block.inner(area);
+    let content = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width.saturating_sub(1),
+        inner.height,
+    );
+    let track = Rect::new(
+        inner.right().saturating_sub(1),
+        inner.y,
+        inner.width.min(1),
+        inner.height,
+    );
+    frame.render_widget(block, area);
+    let (rows, cols) = screen.size();
+    let hidden_rows = if snapshot_offset.is_some() {
+        rows.saturating_sub(content.height)
+    } else {
+        0
+    };
+    let start_row = hidden_rows.saturating_sub(offset.min(u16::MAX as usize) as u16);
+    let capacity = scrollback_len.saturating_add(usize::from(hidden_rows));
+    let lines: Vec<_> = (0..rows.saturating_sub(start_row).min(content.height))
+        .map(|row| {
+            let mut spans = Vec::new();
+            for col in 0..cols.min(content.width) {
+                if let Some(cell) = screen.cell(start_row + row, col) {
+                    if cell.is_wide_continuation() {
+                        continue;
+                    }
+                    let mut style = Style::default();
+                    if cell.fgcolor() != vt100::Color::Default {
+                        style = style.fg(terminal_color(cell.fgcolor()));
+                    }
+                    if cell.bgcolor() != vt100::Color::Default {
+                        style = style.bg(terminal_color(cell.bgcolor()));
+                    }
+                    if cell.bold() {
+                        style = style.bold();
+                    }
+                    if cell.italic() {
+                        style = style.italic();
+                    }
+                    if cell.underline() {
+                        style = style.underlined();
+                    }
+                    if cell.dim() {
+                        style = style.dim();
+                    }
+                    if cell.inverse() {
+                        style = style.reversed();
+                    }
+                    spans.push(Span::styled(
+                        if cell.has_contents() {
+                            cell.contents().to_string()
+                        } else {
+                            " ".into()
+                        },
+                        style,
+                    ));
+                }
+            }
+            Line::from(spans)
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Text::from(lines)), content);
+    let mut scrollbar = ScrollbarState::new(capacity.saturating_add(1))
+        .viewport_content_length(usize::from(rows.min(content.height)))
+        .position(capacity.saturating_sub(offset));
+    frame.render_stateful_widget(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("│"))
+            .thumb_symbol("█")
+            .style(Style::default().fg(if capacity > 0 { ACCENT } else { MUTED })),
+        track,
+        &mut scrollbar,
+    );
+    if snapshot_offset.is_none() && screen.scrollback() == 0 && !screen.hide_cursor() {
+        let (row, col) = screen.cursor_position();
+        if row < content.height && col < content.width {
+            frame.set_cursor_position((content.x + col, content.y + row));
+        }
+    }
+}
+
+fn help_overlay(frame: &mut Frame) {
+    let area = frame.area();
+    let width = area.width.saturating_sub(4).min(76);
+    let height = area.height.saturating_sub(2).min(22);
+    let modal = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, modal);
+    frame.render_widget(Paragraph::new("DEVICE / CONFIGURATION\nClick / ↑↓  Select device or configuration\nWheel / j/k Move selection\nEnter       Choose device / start configuration\nClick ☆ / f Save or remove a favorite device\n/           Filter; Enter applies, Esc clears\nr / c       Refresh devices / reload launch.json\nl           Inspect the last session console\nEsc         Back; quits from the device list\n\nLIVE CONSOLE\nFlutter receives typing directly, including r/R/h/v.\nF2          Toggle normal / 5× slower animations\nq or Esc    Stop; press again to force stop\nWheel / PgUp/PgDn   Scroll console history\nDrag scrollbar     Move through history\nEnd         Follow current output\nCtrl+q      Quit launcher and stop its processes\n\nF1 / any key or click closes this help.").block(panel(" Keyboard and mouse shortcuts ".into())).wrap(Wrap { trim: false }), modal);
+}
+
+fn quit_overlay(frame: &mut Frame, app: &App) {
+    let (modal, quit, cancel) = quit_modal(frame.area());
+    frame.render_widget(Clear, modal);
+    frame.render_widget(panel(" Quit Flutter Run? ".into()), modal);
+    let inner = modal.inner(ratatui::layout::Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    let message = if app.session.is_some() {
+        "The active Flutter session will be stopped."
+    } else {
+        "Close the launcher?"
+    };
+    frame.render_widget(
+        Paragraph::new(message)
+            .style(Style::default().fg(MUTED))
+            .wrap(Wrap { trim: false }),
+        Rect::new(inner.x, inner.y, inner.width, 2),
+    );
+    frame.render_widget(
+        Paragraph::new("[ Quit ]").style(Style::default().fg(Color::Yellow)),
+        quit,
+    );
+    frame.render_widget(
+        Paragraph::new("[ Cancel ]").style(Style::default().fg(ACCENT).bold()),
+        cancel,
+    );
+    frame.render_widget(
+        Paragraph::new("y quit · Enter/Esc cancel").style(Style::default().fg(MUTED)),
+        Rect::new(inner.x, modal.bottom().saturating_sub(2), inner.width, 1),
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+    use flutter_run_tui::device::Device;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn click(x: u16, y: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn row_text(buffer: &ratatui::buffer::Buffer, area: Rect, y: u16) -> String {
+        (area.x..area.right())
+            .map(|x| buffer[(x, y)].symbol())
+            .collect()
+    }
+
+    #[test]
+    fn spare_row_and_borders_do_not_select_an_item() {
+        let inner = Rect::new(3, 4, 20, 5);
+        assert_eq!(list_hit(inner, 20, 25, 0, 4, 4), Some(19));
+        assert_eq!(list_hit(inner, 20, 25, 0, 4, 6), Some(20));
+        assert_eq!(list_hit(inner, 20, 25, 0, 4, 8), None);
+        assert_eq!(list_hit(inner, 20, 25, 0, 2, 4), None);
+        assert_eq!(list_hit(inner, 20, 25, 0, 23, 4), None);
+        assert_eq!(list_hit(inner, 20, 0, 0, 4, 4), None);
+    }
+
+    #[test]
+    fn device_clicks_match_rendered_scrolled_rows_at_every_layout_size() {
+        let mut app = crate::tests::app();
+        app.devices = (0..25)
+            .map(|index| Device {
+                id: format!("device-{index}"),
+                name: format!("Device #{index}"),
+                platform: "android".into(),
+                available: true,
+                favorite: false,
+            })
+            .collect();
+        app.device_index = 20;
+        for (width, height) in [(34, 12), (80, 24), (120, 40)] {
+            let area = Rect::new(0, 0, width, height);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            let inner = panel(String::new()).inner(picker_layout(body_layout(area)[2])[0]);
+            let offset = list_offset(20, 25, inner.height, 0);
+            for row in 0..usize::from(inner.height / 2) {
+                let index = offset + row;
+                let y = inner.y + row as u16 * 2;
+                assert!(
+                    row_text(terminal.backend().buffer(), inner, y)
+                        .contains(&format!("Device #{index}"))
+                );
+                assert_eq!(
+                    mouse_action(&app, area, click(inner.x + 6, y)),
+                    Some(MouseAction::SelectDevice(index))
+                );
+                assert_eq!(terminal.backend().buffer()[(inner.x + 3, y)].symbol(), "☆");
+                assert_eq!(
+                    mouse_action(&app, area, click(inner.x + 3, y)),
+                    Some(MouseAction::ToggleFavorite(index))
+                );
+                assert_eq!(
+                    mouse_action(&app, area, click(inner.x + 3, y + 1)),
+                    Some(MouseAction::SelectDevice(index))
+                );
+            }
+            if inner.height % 2 == 1 {
+                assert_eq!(
+                    mouse_action(&app, area, click(inner.x + 6, inner.bottom() - 1)),
+                    None
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clicking_upper_visible_item_keeps_the_viewport_and_row_label() {
+        let mut app = crate::tests::app();
+        app.devices = (0..25)
+            .map(|index| Device {
+                id: format!("device-{index}"),
+                name: format!("Device #{index}"),
+                platform: "android".into(),
+                available: true,
+                favorite: false,
+            })
+            .collect();
+        for (width, height) in [(34, 12), (80, 24), (120, 40)] {
+            let area = Rect::new(0, 0, width, height);
+            app.device_index = 20;
+            app.device_list_offset = 0;
+            update_picker_viewport(&mut app, area);
+            let offset = app.device_list_offset;
+            let inner = panel(String::new()).inner(picker_layout(body_layout(area)[2])[0]);
+            assert_eq!(
+                mouse_action(&app, area, click(inner.x + 6, inner.y)),
+                Some(MouseAction::SelectDevice(offset))
+            );
+            app.device_index = offset;
+            update_picker_viewport(&mut app, area);
+            assert_eq!(app.device_list_offset, offset);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            assert!(
+                row_text(terminal.backend().buffer(), inner, inner.y)
+                    .contains(&format!("Device #{offset}"))
+            );
+            assert_eq!(
+                mouse_action(&app, area, click(inner.x + 3, inner.y)),
+                Some(MouseAction::ToggleFavorite(offset))
+            );
+        }
+    }
+
+    #[test]
+    fn viewport_clamps_after_list_changes_and_reveals_offscreen_selection() {
+        assert_eq!(list_offset(20, 25, 10, 16), 16);
+        assert_eq!(list_offset(16, 25, 10, 16), 16);
+        assert_eq!(list_offset(15, 25, 10, 16), 15);
+        assert_eq!(list_offset(21, 25, 10, 16), 17);
+        assert_eq!(list_offset(3, 4, 10, 16), 0);
+        assert_eq!(list_offset(20, 25, 20, 16), 15);
+        assert_eq!(list_offset(0, 0, 10, 16), 0);
+    }
+
+    #[test]
+    fn configuration_rows_and_toolbar_buttons_use_rendered_hit_regions() {
+        let mut app = crate::tests::app();
+        app.page = Page::Configs;
+        app.selected_device = app
+            .devices
+            .iter()
+            .find(|d| d.id == "android-device")
+            .cloned();
+        for (width, height) in [(34, 12), (80, 24), (120, 40)] {
+            let area = Rect::new(0, 0, width, height);
+            let inner = panel(String::new()).inner(picker_layout(body_layout(area)[2])[0]);
+            assert_eq!(
+                mouse_action(&app, area, click(inner.x + 3, inner.y)),
+                Some(MouseAction::SelectConfig(0))
+            );
+            for control in controls(&app, body_layout(area)[0]) {
+                assert_eq!(
+                    mouse_action(&app, area, click(control.rect.x, control.rect.y)),
+                    Some(control.action)
+                );
+            }
+            assert!(
+                controls(&app, body_layout(area)[0])
+                    .iter()
+                    .any(|control| control.action == MouseAction::Quit)
+            );
+        }
+    }
+
+    #[test]
+    fn quit_confirmation_intercepts_background_clicks() {
+        let mut app = crate::tests::app();
+        app.quit_confirmation = true;
+        for (width, height) in [(34, 12), (80, 24), (120, 40)] {
+            let area = Rect::new(0, 0, width, height);
+            let (_, quit, cancel) = quit_modal(area);
+            assert_eq!(
+                mouse_action(&app, area, click(quit.x, quit.y)),
+                Some(MouseAction::ConfirmQuit)
+            );
+            assert_eq!(
+                mouse_action(&app, area, click(cancel.x, cancel.y)),
+                Some(MouseAction::CancelQuit)
+            );
+            assert_eq!(mouse_action(&app, area, click(0, 0)), None);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            assert_eq!(
+                row_text(terminal.backend().buffer(), quit, quit.y),
+                "[ Quit ]"
+            );
+            assert_eq!(
+                row_text(terminal.backend().buffer(), cancel, cancel.y),
+                "[ Cancel ]"
+            );
+        }
+    }
+
+    #[test]
+    fn scrollbar_reaches_both_ends_and_preserves_content_column() {
+        for (width, height) in [(34, 12), (80, 24), (120, 40)] {
+            let area = Rect::new(0, 0, width, height);
+            let body = body_layout(area)[2];
+            let track = console_scrollbar_area(area);
+            let mut parser = vt100::Parser::new(track.height, width - 3, 1000);
+            for _ in 0..100 {
+                parser.process(b"history\r\n");
+            }
+            parser.screen_mut().set_scrollback(usize::MAX);
+            let scrollback_len = parser.screen().scrollback();
+            parser.screen_mut().set_scrollback(0);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| console(frame, parser.screen(), scrollback_len, None, body, " Test "))
+                .unwrap();
+            assert_eq!(
+                terminal.backend().buffer()[(track.x, track.bottom() - 1)].symbol(),
+                "█"
+            );
+            parser.screen_mut().set_scrollback(scrollback_len);
+            terminal
+                .draw(|frame| console(frame, parser.screen(), scrollback_len, None, body, " Test "))
+                .unwrap();
+            assert_eq!(
+                terminal.backend().buffer()[(track.x, track.y)].symbol(),
+                "█"
+            );
+            assert_eq!(track.width, 1);
+            assert_eq!(track.x, width - 2);
+        }
+    }
+
+    #[test]
+    fn saved_console_shrinks_to_latest_rows_and_keeps_history_for_expansion() {
+        let mut parser = vt100::Parser::new(20, 77, 1000);
+        for index in 0..100 {
+            parser.process(format!("tail{index}\r\n").as_bytes());
+        }
+        parser.screen_mut().set_scrollback(usize::MAX);
+        let scrollback_len = parser.screen().scrollback();
+        parser.screen_mut().set_scrollback(0);
+        let original = parser.screen().clone();
+        let mut snapshot = original.clone();
+        let area = Rect::new(0, 0, 80, 17);
+        let body = body_layout(area)[2];
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        let inner = panel(String::new()).inner(body);
+        assert_eq!(inner.height, 8);
+        terminal
+            .draw(|frame| console(frame, &snapshot, scrollback_len, Some(0), body, " Saved "))
+            .unwrap();
+        let visible = (inner.y..inner.bottom())
+            .map(|y| row_text(terminal.backend().buffer(), inner, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(visible.contains("tail99"));
+        assert!(!visible.contains("tail81"));
+        assert_eq!(
+            terminal.backend().buffer()[(inner.right() - 1, inner.bottom() - 1)].symbol(),
+            "█"
+        );
+
+        let virtual_offset = 30;
+        let hidden_rows = 20 - usize::from(inner.height);
+        snapshot.set_scrollback(virtual_offset - hidden_rows);
+        terminal
+            .draw(|frame| {
+                console(
+                    frame,
+                    &snapshot,
+                    scrollback_len,
+                    Some(virtual_offset),
+                    body,
+                    " Saved ",
+                )
+            })
+            .unwrap();
+        let visible = (inner.y..inner.bottom())
+            .map(|y| row_text(terminal.backend().buffer(), inner, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(visible.contains("tail69"));
+        assert!(!visible.contains("tail99"));
+
+        // Restore follow mode and grow: the original screen's rows are retained.
+        snapshot.set_scrollback(0);
+        let expanded = Rect::new(0, 0, 80, 29);
+        let expanded_body = body_layout(expanded)[2];
+        let expanded_inner = panel(String::new()).inner(expanded_body);
+        let mut terminal =
+            Terminal::new(TestBackend::new(expanded.width, expanded.height)).unwrap();
+        terminal
+            .draw(|frame| {
+                console(
+                    frame,
+                    &snapshot,
+                    scrollback_len,
+                    Some(0),
+                    expanded_body,
+                    " Saved ",
+                )
+            })
+            .unwrap();
+        let visible = (expanded_inner.y..expanded_inner.bottom())
+            .map(|y| row_text(terminal.backend().buffer(), expanded_inner, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(visible.contains("tail81"));
+        assert!(visible.contains("tail99"));
+        assert_eq!(snapshot.size(), original.size());
+        assert_eq!(snapshot.contents(), original.contents());
+    }
+}
