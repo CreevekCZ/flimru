@@ -277,6 +277,15 @@ fn polling_observes_devtools_changes_and_new_isolate_after_hot_restart() {
         state.isolate = "isolates/restarted?app=2".into();
         state.factor = 1.0;
     }
+    until(|| {
+        service.requests().iter().any(|request| {
+            request.path.ends_with(EXTENSION)
+                && request.parameter("isolateId") == Some("isolates/restarted?app=2")
+                && request.parameter("timeDilation") == Some("3.0")
+        })
+    });
+    confirmed(&control, 3.0);
+    control.toggle().unwrap();
     confirmed(&control, 1.0);
     control.toggle().unwrap();
     confirmed(&control, 5.0);
@@ -285,6 +294,101 @@ fn polling_observes_devtools_changes_and_new_isolate_after_hot_restart() {
             && request.parameter("isolateId") == Some("isolates/restarted?app=2")
             && request.parameter("timeDilation") == Some("5.0")
     }));
+}
+
+#[test]
+fn selected_speed_survives_extension_registration_delay_and_transient_restart_failures() {
+    let service = Service::new(true);
+    let mut control = AnimationControl::new(true);
+    service.connect(&mut control);
+    confirmed(&control, 1.0);
+    control.toggle().unwrap();
+    confirmed(&control, 5.0);
+    control.restarting();
+    {
+        let mut state = service.state.lock().unwrap();
+        state.isolate = "isolates/restarting".into();
+        state.factor = 1.0;
+        state.extension_available = false;
+    }
+    until(|| control.state() == AnimationState::Restoring(5.0));
+    assert_eq!(control.label(), "Animations: restoring 5×…");
+    assert_eq!(control.short_label(), "5×…");
+    assert!(control.toggle().is_err());
+    {
+        let mut state = service.state.lock().unwrap();
+        state.extension_available = true;
+        state.reject_writes = true;
+    }
+    until(|| control.state() == AnimationState::Disconnected);
+    assert_eq!(service.state.lock().unwrap().factor, 1.0);
+    service.state.lock().unwrap().reject_writes = false;
+    let ready = Instant::now();
+    confirmed(&control, 5.0);
+    assert!(
+        ready.elapsed() < Duration::from_millis(700),
+        "Restart restoration used the idle polling interval"
+    );
+
+    control.toggle().unwrap();
+    confirmed(&control, 1.0);
+    {
+        let mut state = service.state.lock().unwrap();
+        state.isolate = "isolates/normal-after-restart".into();
+        state.factor = 1.0;
+    }
+    control.feed(b"Performing hot restart...\nRestarted application in 30ms.\n");
+    until(|| {
+        service.requests().iter().any(|request| {
+            request.parameter("isolateId") == Some("isolates/normal-after-restart")
+                && request.path.ends_with(EXTENSION)
+        })
+    });
+    confirmed(&control, 1.0);
+    assert!(
+        !service
+            .requests()
+            .iter()
+            .any(
+                |request| request.parameter("isolateId") == Some("isolates/normal-after-restart")
+                    && request.parameter("timeDilation").is_some()
+            )
+    );
+}
+
+#[test]
+fn reconnection_and_reused_isolate_ids_restore_the_preference_without_crossing_consoles() {
+    let first = Service::new(true);
+    let second = Service::new(true);
+    let mut slow = AnimationControl::new(true);
+    let mut normal = AnimationControl::new(true);
+    first.connect(&mut slow);
+    second.connect(&mut normal);
+    confirmed(&slow, 1.0);
+    confirmed(&normal, 1.0);
+    slow.toggle().unwrap();
+    confirmed(&slow, 5.0);
+    // A tool completion marker also covers services which reuse isolate IDs.
+    first.state.lock().unwrap().factor = 1.0;
+    slow.feed(b"Restarted application in 50ms.\n");
+    until(|| {
+        first
+            .requests()
+            .iter()
+            .filter(|request| request.parameter("timeDilation") == Some("5.0"))
+            .count()
+            == 2
+    });
+    confirmed(&slow, 5.0);
+    confirmed(&normal, 1.0);
+    assert_eq!(second.state.lock().unwrap().factor, 1.0);
+
+    // The VM URL/auth token may change as well as the isolate identity.
+    let replacement = Service::new(true);
+    replacement.connect(&mut slow);
+    until(|| replacement.state.lock().unwrap().factor == 5.0);
+    confirmed(&slow, 5.0);
+    confirmed(&normal, 1.0);
 }
 
 #[test]
@@ -315,7 +419,8 @@ fn failed_toggle_never_claims_success_and_service_errors_disconnect() {
     assert_eq!(control.label(), "Animations: disconnected");
     assert_eq!(service.state.lock().unwrap().factor, 1.0);
     assert!(control.toggle().is_err());
-    confirmed(&control, 1.0);
+    service.state.lock().unwrap().reject_writes = false;
+    confirmed(&control, 5.0);
     service.state.lock().unwrap().fail_all = true;
     until(|| control.state() == AnimationState::Disconnected);
     assert_ne!(control.state(), AnimationState::Confirmed(5.0));

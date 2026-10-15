@@ -176,6 +176,9 @@ impl Session {
         }
         self.parser.screen_mut().set_scrollback(0);
         self.pending.extend_from_slice(bytes);
+        if bytes == b"R" {
+            self.animations.restarting();
+        }
         self.flush_input()
     }
 

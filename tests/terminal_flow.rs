@@ -962,19 +962,50 @@ fn real_dart_vm_service_animation_shortcut_and_indicator() {
     let project = project();
     std::fs::write(
         project.path().join("probe.dart"),
-        r#"import 'dart:developer';
+        r#"import 'dart:async';
+import 'dart:developer';
 import 'dart:convert';
 import 'dart:io';
-void main() {
+import 'dart:isolate';
+Future<void> app(List<Object> arguments) async {
+  final ready = arguments[0] as SendPort;
+  final generation = arguments[1] as int;
+  await Future<void>.delayed(const Duration(milliseconds: 350));
   var factor = 1.0;
   registerExtension('ext.flutter.timeDilation', (method, parameters) async {
-    if (parameters.containsKey('timeDilation')) factor = double.parse(parameters['timeDilation']!);
+    if (parameters.containsKey('timeDilation')) {
+      factor = double.parse(parameters['timeDilation']!);
+      print('PROBE SPEED:$generation:$factor');
+    }
     return ServiceExtensionResponse.result(jsonEncode({'timeDilation': factor.toString()}));
   });
+  ReceivePort().listen((_) {});
+  ready.send(true);
+}
+Future<void> main() async {
+  Isolate? worker;
+  var generation = 0;
+  Future<void> start() async {
+    final ready = ReceivePort();
+    worker = await Isolate.spawn(app, <Object>[ready.sendPort, ++generation]);
+    await ready.first;
+    ready.close();
+    print('PROBE READY $generation');
+  }
+  await start();
   stdin.lineMode = false;
   stdin.echoMode = false;
-  print('PROBE READY');
-  stdin.listen((data) { for (final key in data) { if (key == 113) exit(0); } });
+  stdin.listen((data) async {
+    for (final key in data) {
+      if (key == 113) exit(0);
+      if (key == 82) {
+        print('Performing hot restart...');
+        worker!.kill(priority: Isolate.immediate);
+        await start();
+        print('Restarted application in 350ms.');
+      }
+    }
+  });
 }
 "#,
     )
@@ -1001,8 +1032,17 @@ exec "$FAKE_DART" --disable-dart-dev --enable-vm-service=0 "$FAKE_SCRIPT"
     tui.until("PROBE READY");
     tui.until("Animations: normal");
     tui.send(b"\x1b[12~");
+    tui.until("PROBE SPEED:1:5.0");
+    tui.until("Animations: 5× slower");
+    tui.send(b"R");
+    tui.until("PROBE READY 2");
+    tui.until("PROBE SPEED:2:5.0");
     tui.until("Animations: 5× slower");
     tui.send(b"\x1b[12~");
+    tui.until("PROBE SPEED:2:1.0");
+    tui.until("Animations: normal");
+    tui.send(b"R");
+    tui.until("PROBE READY 3");
     tui.until("Animations: normal");
     tui.send(b"q");
     tui.until("ended (");

@@ -1,5 +1,6 @@
 //! Poll Flutter's reported VM Service, so the badge reflects confirmed state,
-//! including changes made in DevTools and resets after a hot restart.
+//! including changes made in DevTools. Restore the selected speed when a hot
+//! restart replaces the app isolate, without claiming success before confirmation.
 use anyhow::{Result, bail};
 use serde_json::Value;
 use std::{
@@ -9,7 +10,7 @@ use std::{
         mpsc::{self, SyncSender},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use url::Url;
 
@@ -20,6 +21,7 @@ pub enum AnimationState {
     Waiting,
     Checking,
     Confirmed(f64),
+    Restoring(f64),
     Unavailable,
     Disconnected,
 }
@@ -42,7 +44,17 @@ fn lock_state(state: &Mutex<AnimationState>) -> MutexGuard<'_, AnimationState> {
 enum Command {
     Connect(Url),
     Toggle,
+    Restarting,
+    Restarted,
     Shutdown,
+}
+
+#[derive(Default)]
+struct Preference {
+    factor: Option<f64>,
+    isolate: Option<String>,
+    restore: bool,
+    restarting: bool,
 }
 #[derive(Clone, Copy)]
 enum Escape {
@@ -88,8 +100,16 @@ impl AnimationControl {
                         .build(),
                 );
                 let mut endpoint = None;
+                let mut preference = Preference::default();
+                let mut fast_until = None;
                 while !cancelled.load(Ordering::Relaxed) {
-                    let command = rx.recv_timeout(if endpoint.is_some() {
+                    let fast = fast_until.is_some_and(|until| Instant::now() < until);
+                    if !fast {
+                        preference.restarting = false;
+                    }
+                    let command = rx.recv_timeout(if fast {
+                        Duration::from_millis(100)
+                    } else if endpoint.is_some() {
                         Duration::from_secs(1)
                     } else {
                         Duration::from_secs(3600)
@@ -98,6 +118,8 @@ impl AnimationControl {
                         Ok(Command::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         Ok(Command::Connect(url)) => {
                             endpoint = Some(url);
+                            preference.isolate = None;
+                            preference.restore = preference.factor.is_some();
                             *lock_state(&state) = AnimationState::Checking;
                             false
                         }
@@ -105,14 +127,35 @@ impl AnimationControl {
                             *lock_state(&state) = AnimationState::Checking;
                             true
                         }
+                        Ok(Command::Restarting) => {
+                            preference.restarting = true;
+                            fast_until = Some(Instant::now() + Duration::from_secs(20));
+                            false
+                        }
+                        Ok(Command::Restarted) => {
+                            preference.restarting = false;
+                            preference.restore = preference.factor.is_some();
+                            fast_until = Some(Instant::now() + Duration::from_secs(2));
+                            false
+                        }
                         Err(mpsc::RecvTimeoutError::Timeout) => false,
                     };
                     if cancelled.load(Ordering::Relaxed) {
                         break;
                     }
                     if let Some(endpoint) = &endpoint {
-                        let status = match read_factor(&agent, endpoint, toggle, &cancelled) {
+                        let status = match read_factor(
+                            &agent,
+                            endpoint,
+                            toggle,
+                            &mut preference,
+                            &cancelled,
+                        ) {
                             Ok(Some(factor)) => AnimationState::Confirmed(factor),
+                            Ok(None) if preference.restore || preference.restarting => preference
+                                .factor
+                                .map(AnimationState::Restoring)
+                                .unwrap_or(AnimationState::Unavailable),
                             Ok(None) => AnimationState::Unavailable,
                             Err(_) => AnimationState::Disconnected,
                         };
@@ -158,6 +201,7 @@ impl AnimationControl {
                 format!("Animations: {}× faster", 1.0 / factor)
             }
             AnimationState::Confirmed(factor) => format!("Animations: {factor}× slower"),
+            AnimationState::Restoring(factor) => format!("Animations: restoring {factor}×…"),
             AnimationState::Waiting => "Animations: waiting".into(),
             AnimationState::Checking => "Animations: checking…".into(),
             AnimationState::Unavailable => "Animations: unavailable".into(),
@@ -168,6 +212,7 @@ impl AnimationControl {
     pub fn short_label(&self) -> String {
         match self.state() {
             AnimationState::Confirmed(factor) => format!("{factor}×"),
+            AnimationState::Restoring(factor) => format!("{factor}×…"),
             AnimationState::Waiting | AnimationState::Checking => "…".into(),
             _ => "—".into(),
         }
@@ -180,7 +225,7 @@ impl AnimationControl {
         }
         match &*state {
             AnimationState::Confirmed(_) => {}
-            AnimationState::Waiting | AnimationState::Checking => {
+            AnimationState::Waiting | AnimationState::Checking | AnimationState::Restoring(_) => {
                 bail!("Animation control is waiting for Flutter's VM Service.")
             }
             AnimationState::Unavailable => bail!(
@@ -196,6 +241,14 @@ impl AnimationControl {
             bail!("Animation control is busy; try again shortly.");
         }
         Ok(())
+    }
+
+    /// Wake the worker before forwarding `R`; output markers also cover
+    /// restarts initiated through other Flutter terminal input paths.
+    pub fn restarting(&self) {
+        if self.enabled {
+            let _ = self.commands.try_send(Command::Restarting);
+        }
     }
 
     /// Capture complete tool lines, stripping ANSI codes even across chunks.
@@ -249,6 +302,11 @@ impl AnimationControl {
 
     fn finish_line(&mut self) {
         let line = String::from_utf8_lossy(&self.line);
+        if line.contains("Performing hot restart") {
+            self.restarting();
+        } else if line.contains("Restarted application in ") {
+            let _ = self.commands.try_send(Command::Restarted);
+        }
         let candidate = if line.contains("A Dart VM Service on ") {
             line.split_once("is available at:").map(|(_, url)| url)
         } else {
@@ -357,6 +415,7 @@ fn read_factor(
     agent: &ureq::Agent,
     endpoint: &Url,
     toggle: bool,
+    preference: &mut Preference,
     cancelled: &AtomicBool,
 ) -> Result<Option<f64>> {
     let vm = rpc(agent, endpoint, "getVM", &[], cancelled)?;
@@ -364,6 +423,13 @@ fn read_factor(
         .get("isolates")
         .and_then(Value::as_array)
         .ok_or_else(|| anyhow::anyhow!("Invalid isolate list"))?;
+    if preference.isolate.as_deref().is_some_and(|previous| {
+        !isolates
+            .iter()
+            .any(|isolate| isolate.get("id").and_then(Value::as_str) == Some(previous))
+    }) {
+        preference.restore = preference.factor.is_some();
+    }
     for isolate in isolates.iter().take(32) {
         let Some(id) = isolate.get("id").and_then(Value::as_str) else {
             continue;
@@ -393,21 +459,52 @@ fn read_factor(
             &[("isolateId", id)],
             cancelled,
         )?)?;
-        if !toggle {
-            return Ok(Some(current));
+        let replaced = preference
+            .isolate
+            .as_deref()
+            .is_some_and(|previous| previous != id);
+        preference.restore |= replaced || preference.restarting;
+        preference.isolate = Some(id.into());
+        if toggle {
+            preference.factor = Some(if (current - 1.0).abs() < 0.001 {
+                5.0
+            } else {
+                1.0
+            });
+            preference.restore = true;
+        } else if preference.factor.is_none() || !preference.restore {
+            // A DevTools change on the same running isolate becomes the new
+            // preference. A fresh isolate's default must not erase that choice.
+            preference.factor = Some(current);
         }
-        let target = if (current - 1.0).abs() < 0.001 {
-            "5.0"
+        let target = preference.factor.unwrap_or(current);
+        let confirmed = if preference.restore && (current - target).abs() >= 0.001 {
+            // Keep the target after transient failures, and retry on a later
+            // poll instead of replacing it with Flutter's reset value.
+            let target_value = if target.fract() == 0.0 {
+                format!("{target:.1}")
+            } else {
+                target.to_string()
+            };
+            let actual = factor(&rpc(
+                agent,
+                endpoint,
+                EXTENSION,
+                &[("isolateId", id), ("timeDilation", &target_value)],
+                cancelled,
+            )?)?;
+            if (actual - target).abs() >= 0.001 {
+                bail!("Flutter did not confirm the selected animation speed");
+            }
+            actual
         } else {
-            "1.0"
+            current
         };
-        return Ok(Some(factor(&rpc(
-            agent,
-            endpoint,
-            EXTENSION,
-            &[("isolateId", id), ("timeDilation", target)],
-            cancelled,
-        )?)?));
+        preference.restore = false;
+        if replaced {
+            preference.restarting = false;
+        }
+        return Ok(Some(confirmed));
     }
     Ok(None)
 }

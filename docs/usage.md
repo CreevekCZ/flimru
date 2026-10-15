@@ -132,11 +132,22 @@ output in both the live and saved console.
 
 Press **F2** or click the animation speed button to toggle normal / **5× slower**,
 using the same Flutter `timeDilation` control as DevTools. The button displays
-the app's confirmed value, including changes made in DevTools and hot-restart
-resets. It becomes available once a debug/profile app reports its local VM
+the app's confirmed value, including changes made in DevTools. Each console
+remembers its selected factor and restores it when hot restart replaces the
+isolate or reconnects the VM Service. Restart polling is temporarily faster;
+delayed extension registration shows **restoring 5×…** and transient errors do
+not erase the preference. Choosing normal speed cancels slowdown restoration.
+It becomes available once a debug/profile app reports its local VM
 Service and registers the extension. Release apps and standard Flutter tests
 show it as unavailable; connection failures show disconnected rather than
 claiming a speed change succeeded.
+
+Restoration uses Flutter's VM Service extension and happens when that extension
+becomes callable. It cannot guarantee slowdown before the first frame or before
+`main()` runs. Testing those earliest animations at a guaranteed slow speed
+requires a debug-only startup hook in the Flutter app which sets `timeDilation`
+before `runApp`. A new session starts by observing that app's current value;
+animation choices are not shared across consoles or saved globally.
 
 ## `launch.json`
 

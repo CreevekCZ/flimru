@@ -14,7 +14,7 @@ configuration, and run. When the session ends, the picker is ready for the next 
 - Provides every command through the clickable **Actions** menu or **F4**.
 - Runs up to eight devices together in **multi-device mode**, with separate consoles.
 - Adds sessions while others keep running, with a device and configuration per addition.
-- Toggles normal / **5× slower animations** with **F2**, showing the confirmed state.
+- Toggles normal / **5× slower animations** with **F2**, retaining the speed across hot restarts.
 - Confirms launcher exit and cleans up owned processes when the terminal closes.
 
 ## Get started
