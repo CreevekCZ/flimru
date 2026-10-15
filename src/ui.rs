@@ -1,4 +1,4 @@
-use crate::{App, Page};
+use crate::{App, Page, shortcuts::Shortcut};
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
@@ -77,7 +77,11 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
             action,
         });
     };
-    add("Add session", "F9", MouseAction::AddSession);
+    add(
+        "Add session",
+        Shortcut::AddSession.label(),
+        MouseAction::AddSession,
+    );
     match app.page {
         Page::Devices | Page::Configs => {
             if app.page == Page::Configs {
@@ -133,13 +137,21 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
             }
         }
         Page::Console => {
-            add("Device picker", "F7", MouseAction::Devices);
+            add(
+                "Device picker",
+                Shortcut::Devices.label(),
+                MouseAction::Devices,
+            );
             if app.active_session().is_some() {
                 add("Hot reload", "r", MouseAction::FlutterKey('r'));
                 add("Hot restart", "R", MouseAction::FlutterKey('R'));
                 add("Flutter help", "h", MouseAction::FlutterKey('h'));
                 add("Open DevTools", "v", MouseAction::FlutterKey('v'));
-                add("Animation speed", "F2", MouseAction::ToggleAnimations);
+                add(
+                    "Animation speed",
+                    Shortcut::Animations.label(),
+                    MouseAction::ToggleAnimations,
+                );
             }
             add("Oldest output", "Home", MouseAction::OldestOutput);
             add("Follow output", "End", MouseAction::FollowOutput);
@@ -160,8 +172,16 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
         }
     }
     if !app.runs.is_empty() {
-        add("Previous console", "F5", MouseAction::PreviousConsole);
-        add("Next console", "F6", MouseAction::NextConsole);
+        add(
+            "Previous console",
+            Shortcut::PreviousConsole.label(),
+            MouseAction::PreviousConsole,
+        );
+        add(
+            "Next console",
+            Shortcut::NextConsole.label(),
+            MouseAction::NextConsole,
+        );
         for (index, run) in app.runs.iter().enumerate() {
             add(
                 &format!(
@@ -180,7 +200,11 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
             );
         }
         if app.running_count() > 0 {
-            add("Stop all sessions", "F8", MouseAction::StopAll);
+            add(
+                "Stop all sessions",
+                Shortcut::StopAll.label(),
+                MouseAction::StopAll,
+            );
         }
     }
     add(
@@ -189,10 +213,18 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
         } else {
             "Colors: off"
         },
-        "F3",
+        Shortcut::Colors.label(),
         MouseAction::ToggleColors,
     );
-    add("Launcher help", "F1", MouseAction::Help);
+    add(
+        "Launcher help",
+        if matches!(app.page, Page::Devices | Page::Configs) {
+            "?"
+        } else {
+            ""
+        },
+        MouseAction::Help,
+    );
     add("Quit launcher", "Ctrl+q", MouseAction::Quit);
     items
 }
@@ -532,18 +564,18 @@ fn console_navigation(app: &App, area: Rect) -> Vec<Control> {
     );
     vec![
         Control {
-            label: " F5 ‹ ".into(),
-            rect: Rect::new(area.x, area.y, 6, 1),
+            label: " ‹ ".into(),
+            rect: Rect::new(area.x, area.y, 3, 1),
             action: MouseAction::PreviousConsole,
         },
         Control {
-            label: " F6 › ".into(),
-            rect: Rect::new(area.x + 7, area.y, 6, 1),
+            label: " › ".into(),
+            rect: Rect::new(area.x + 4, area.y, 3, 1),
             action: MouseAction::NextConsole,
         },
         Control {
             label: summary,
-            rect: Rect::new(area.x + 14, area.y, area.width.saturating_sub(14), 1),
+            rect: Rect::new(area.x + 8, area.y, area.width.saturating_sub(8), 1),
             action: MouseAction::Actions,
         },
     ]
@@ -1114,13 +1146,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 }
             }
             Page::Configs => " ↑↓ select · Enter run · Esc back\n Tab actions · / filter",
-            Page::Console => {
-                if area.width < 60 {
-                    " r reload · R restart · Esc stop\n F10 actions · F9 add"
-                } else {
-                    " r reload · R restart · Esc stop\n F10 actions · F5/F6 consoles · F9 add"
-                }
-            }
+            Page::Console => " r reload · R restart · Esc stop\n Ctrl+g actions · Ctrl+n add",
             Page::LastLog => " PgUp/PgDn scroll · Esc back\n Tab actions · Home/End",
         }
     };
@@ -1502,7 +1528,7 @@ fn actions_overlay(frame: &mut Frame, app: &App) {
     let actions = available_actions(app);
     let (modal, list, footer) = action_menu_layout(frame.area(), actions.len());
     frame.render_widget(Clear, modal);
-    frame.render_widget(panel(" Actions · F4 / Esc close ".into()), modal);
+    frame.render_widget(panel(" Actions · Ctrl+p / Esc close ".into()), modal);
     let width = list.width.saturating_sub(1);
     let rows = actions
         .iter()
@@ -1559,7 +1585,7 @@ fn help_overlay(frame: &mut Frame) {
         height,
     );
     frame.render_widget(Clear, modal);
-    frame.render_widget(Paragraph::new("F10: focus top actions\n←→ choose · Enter activate\nTab: actions in pickers\nF4: menu · F9: add session\nF5/F6: switch · F8: stop all\nF2: slow · F3: colors\nCtrl+q: quit · Esc: return\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
+    frame.render_widget(Paragraph::new("Ctrl+g top · ←→ Enter select\nTab: actions in pickers\nCtrl+p menu · Ctrl+n add\nCtrl+b/f switch consoles\nCtrl+d devices · Ctrl+x stop\nCtrl+a slow · Ctrl+l colors\nCtrl+q quit · Esc return\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
 }
 
 fn quit_overlay(frame: &mut Frame, app: &App) {
@@ -1768,7 +1794,7 @@ mod tests {
                 Some(MouseAction::PreviousConsole)
             );
             assert_eq!(
-                mouse_action(&app, area, click(nav.x + 9, nav.y)),
+                mouse_action(&app, area, click(nav.x + 5, nav.y)),
                 Some(MouseAction::NextConsole)
             );
             app.actions_open = true;
@@ -1964,7 +1990,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("Any key / click: close"));
-        assert!(text.contains("F4: menu"));
+        assert!(text.contains("Ctrl+p menu"));
     }
 
     #[test]

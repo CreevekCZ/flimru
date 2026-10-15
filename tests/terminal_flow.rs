@@ -530,7 +530,7 @@ fn sessions_can_be_added_and_replaced_without_interrupting_existing_consoles() {
         tui.until("READY:beta");
         let old_beta = pid_for("beta");
         alive(alpha);
-        tui.send(b"\x1b[20~"); // F9, then Gamma with a different configuration.
+        tui.send(b"\x0e"); // Ctrl+n, then Gamma with a different configuration.
         tui.until("Add session");
         tui.send(b"\x1b[B\r");
         tui.until("Configurations (3)");
@@ -539,14 +539,14 @@ fn sessions_can_be_added_and_replaced_without_interrupting_existing_consoles() {
         let alternate = pid_for("alternate");
         alive(alpha);
         alive(old_beta);
-        tui.send(b"\x1b[15~q"); // Stop only Beta.
+        tui.send(b"\x02q"); // Stop only Beta.
         tui.until("2 session(s) running");
         assert_eq!(
             // SAFETY: signal zero checks the old Beta child, without signaling it.
             unsafe { libc::kill(old_beta, 0) },
             -1
         );
-        tui.send(b"\x1b[20~");
+        tui.send(b"\x0e");
         tui.until("Add session");
         tui.send(b"\x1b[H\x1b[B\r"); // Beta again, choose original config instead of the saved Alternate.
         tui.until("Configurations (3)");
@@ -556,11 +556,11 @@ fn sessions_can_be_added_and_replaced_without_interrupting_existing_consoles() {
         assert_ne!(old_beta, beta);
         alive(alpha);
         alive(alternate);
-        tui.send(b"\x1b[15~\x1b[15~\x1b[15~"); // Back to original Alpha, with its original history.
+        tui.send(b"\x02\x02\x02"); // Back to original Alpha, with its original history.
         tui.until("shortcut:alpha:h");
         tui.send(b"r");
         tui.until("shortcut:alpha:r");
-        tui.send(b"\x1b[20~");
+        tui.send(b"\x0e");
         tui.until("Add session");
         tui.send(b"\x1b[H\r"); // Alpha with Demo debug would be a duplicate.
         tui.until("Configurations (3)");
@@ -642,13 +642,13 @@ fn top_actions_support_keyboard_focus_without_leaking_navigation_to_flutter() {
             );
             thread::sleep(Duration::from_millis(15));
         }
-        tui.send(b"\x1b[21~"); // F10 focuses the bar in a live console.
+        tui.send(b"\x07"); // Ctrl+g focuses the bar in a live console.
         tui.until_control("›Stop");
         tui.send(b"R\x1b[200~r\x1b[201~\x1b[C\x1b[C\x1b[C");
         tui.until_control("›Color");
         tui.send(b" ");
         tui.until_control(if compact { "Color off" } else { "Color: off" });
-        tui.send(b"\x1bOS"); // F4 opens the menu without losing the trigger focus.
+        tui.send(b"\x10"); // Ctrl+p opens the menu without losing the trigger focus.
         tui.until("Actions ·");
         tui.send(b"\x1b");
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -666,13 +666,13 @@ fn top_actions_support_keyboard_focus_without_leaking_navigation_to_flutter() {
         } else {
             tui.mouse(0, 20, 8); // Clicking console content restores input focus too.
         }
-        tui.until("F10 actions");
+        tui.until("Ctrl+g actions");
         tui.send(b"h");
         tui.until("shortcut:h");
         let log = std::fs::read_to_string(&log_path).unwrap();
         assert!(!log.contains("key:R\n") && !log.contains("key:r\n"));
         assert!(!log.contains("key:[\n") && !log.contains("key:\u{1b}\n"));
-        tui.send(b"\x1b[21~\r"); // Stop via a keyboard-focused toolbar action.
+        tui.send(b"\x07\r"); // Stop via a keyboard-focused toolbar action.
         tui.until("ended");
         tui.until_control("Next");
         tui.quit();
@@ -709,40 +709,40 @@ fn multi_device_mouse_keyboard_consoles_are_isolated_and_completed_history_is_re
     tui.until("READY:alpha");
     tui.send(b"h");
     tui.until("shortcut:alpha:h");
-    tui.click_text("F6 ›");
+    tui.mouse(0, 5, 2); // Next console arrow.
     tui.until("READY:beta");
     assert!(!tui.screen.screen().contents().contains("shortcut:alpha:h"));
     tui.send(b"v");
     tui.until("shortcut:beta:v");
-    tui.send(b"\x1b[15~"); // F5 switches back.
+    tui.send(b"\x02"); // Ctrl+b switches back.
     tui.until("shortcut:alpha:h");
     assert!(!tui.screen.screen().contents().contains("shortcut:beta:v"));
     tui.send(b"o");
     tui.until("alpha-history:099");
     tui.send(b"\x1b[H");
     tui.until("READY:alpha");
-    tui.click_text("F6 ›");
+    tui.mouse(0, 5, 2); // Next console arrow.
     tui.until("shortcut:beta:v");
-    tui.click_text("F5 ‹");
+    tui.mouse(0, 1, 2); // Previous console arrow.
     tui.until("READY:alpha"); // Per-console scroll position survives switching.
     tui.send(b"q");
     tui.until("1 session(s) running");
-    tui.click_text("F6 ›");
+    tui.mouse(0, 5, 2); // Next console arrow.
     tui.send(b"r");
     tui.until("shortcut:beta:r");
     tui.send(b"x");
     tui.until("0 session(s) running");
-    tui.send(b"\x1b[15~");
+    tui.send(b"\x02");
     tui.until("ended");
     tui.send(b"\x1b[H");
     tui.until("READY:alpha");
-    tui.send(b"\x1b[18~"); // F7 returns to selection, without losing the batch.
+    tui.send(b"\x04"); // Ctrl+d returns to selection, without losing the batch.
     tui.until("Multi 2/8");
     tui.send(b"\r");
     tui.until_control("Run");
     tui.send(b"\r");
     tui.until("READY:alpha");
-    tui.send(b"\x1b[19~"); // F8 stops every session.
+    tui.send(b"\x18"); // Ctrl+x stops every session.
     tui.until("0 session(s) running");
     tui.quit();
     assert_multi_children_reaped(project.path());
@@ -766,9 +766,9 @@ fn multi_device_quit_and_terminal_loss_reap_every_instance() {
         tui.until("Configurations (1)");
         tui.send(b"\r");
         tui.until("READY:alpha");
-        tui.send(b"\x1b[17~");
+        tui.send(b"\x06");
         tui.until("READY:beta");
-        tui.send(b"\x1b[18~");
+        tui.send(b"\x04");
         tui.until("Multi 2/8"); // Hidden sessions still count in quit confirmation.
         if hang_up {
             tui.hang_up();
@@ -777,7 +777,7 @@ fn multi_device_quit_and_terminal_loss_reap_every_instance() {
             tui.send(&[0x11]);
             tui.until("All active Flutter sessions");
             tui.send(b"\r"); // Cancel preserves both children.
-            tui.send(b"\x1b[17~h");
+            tui.send(b"\x06h");
             tui.until("shortcut:beta:h");
             tui.quit();
         }
@@ -807,9 +807,9 @@ fn colors_survive_pty_scrollback_saved_logs_and_runtime_toggle() {
     tui.until_color("WARNING:", vt100::Color::Rgb(255, 205, 112));
     tui.until_color("SEVERE:", vt100::Color::Rgb(255, 128, 142));
     tui.until_color("INFO:", vt100::Color::Rgb(96, 210, 225));
-    tui.send(b"\x1bOR"); // F3
+    tui.send(b"\x0c"); // Ctrl+l
     tui.until_color("WARNING:", vt100::Color::Default);
-    tui.send(b"\x1bOR");
+    tui.send(b"\x0c");
     tui.until_color("WARNING:", vt100::Color::Rgb(255, 205, 112));
     tui.send(b"o");
     tui.until("history-line:099");
@@ -909,7 +909,7 @@ fn compact_actions_support_pointer_commands_and_keyboard_navigation() {
     }
     tui.menu_click("Stop session");
     tui.until("ended");
-    tui.send(b"\x1bOS"); // Keyboard F4, End, Enter selects Quit.
+    tui.send(b"\x10"); // Keyboard Ctrl+p, End, Enter selects Quit.
     tui.until("Actions ·");
     tui.send(b"\x1b[F");
     tui.until("Quit launcher");
@@ -1158,14 +1158,14 @@ exec "$FAKE_DART" --disable-dart-dev --enable-vm-service=0 "$FAKE_SCRIPT"
     tui.send(b"\r");
     tui.until("PROBE READY");
     tui.until("Animations: normal");
-    tui.send(b"\x1b[12~");
+    tui.send(b"\x01"); // Ctrl+a controls this console's animation speed.
     tui.until("PROBE SPEED:1:5.0");
     tui.until("Animations: 5× slower");
     tui.send(b"R");
     tui.until("PROBE READY 2");
     tui.until("PROBE SPEED:2:5.0");
     tui.until("Animations: 5× slower");
-    tui.send(b"\x1b[12~");
+    tui.send(b"\x01"); // Ctrl+a controls this console's animation speed.
     tui.until("PROBE SPEED:2:1.0");
     tui.until("Animations: normal");
     tui.send(b"R");

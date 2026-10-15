@@ -10,12 +10,12 @@ configuration, and run. When the session ends, the picker is ready for the next 
 - Refreshes devices in the background; cached favorites stay selectable.
 - Runs Flutter in an interactive console with its usual keyboard shortcuts.
 - Supports mouse selection, wheel scrolling, and a draggable console scrollbar.
-- Preserves ANSI colors and highlights plain log severity; toggle colors with **F3**.
-- Provides every command through the clickable **Actions** menu or **F4**.
-- Navigates the top actions with **Tab/F10**, arrow keys, and **Enter/Space**.
+- Preserves ANSI colors and highlights plain log severity; toggle colors with **Ctrl+l**.
+- Provides every command through the clickable **Actions** menu or **Ctrl+p**.
+- Navigates the top actions with **Tab/Ctrl+g**, arrow keys, and **Enter/Space**.
 - Runs up to eight devices together in **multi-device mode**, with separate consoles.
 - Adds sessions while others keep running, with a device and configuration per addition.
-- Toggles normal / **5× slower animations** with **F2**, retaining the speed across hot restarts.
+- Toggles normal / **5× slower animations** with **Ctrl+a**, retaining the speed across hot restarts.
 - Confirms launcher exit and cleans up owned processes when the terminal closes.
 
 ## Get started
@@ -40,26 +40,28 @@ configuration, or `--help` for all options.
 | Picker | `↑` / `↓`, `Enter` | Select device, then configuration |
 | Picker | `f`, `r`, `/`, `l` | Favorite, refresh, filter, last console |
 | Devices | `m`, `Space` | Toggle multi-device mode, check/uncheck a device |
-| Anywhere | `F5` / `F6`, `F7`, `F8` | Switch consoles, device picker, stop all sessions |
-| Anywhere | `F9` | Add a session without stopping existing runs |
+| Anywhere | `Ctrl+b` / `Ctrl+f`, `Ctrl+d`, `Ctrl+x` | Switch consoles, device picker, stop all sessions |
+| Anywhere | `Ctrl+n` | Add a session without stopping existing runs |
 | Console | `r`, `R`, `h`, `v` | Flutter reload, restart, help, DevTools |
-| Console | `F2` | Toggle animation speed in supported debug/profile apps |
-| Anywhere | `F3`, `F4` | Toggle colors, open the Actions menu |
+| Console | `Ctrl+a` | Toggle animation speed in supported debug/profile apps |
+| Anywhere | `Ctrl+l`, `Ctrl+p` | Toggle colors, open the Actions menu |
 | Picker / saved console | `Tab`, `Shift+Tab` | Focus the top actions |
-| Anywhere | `F10` | Focus the top actions, including live consoles |
+| Anywhere | `Ctrl+g` | Focus the top actions, including live consoles |
 | Top actions | `←` / `→`, `Enter` / `Space` | Choose and activate an action |
 | Top actions | `↓`, `Esc`, `Tab` | Return to the list or console |
 | Console | `PgUp` / `PgDn`, `End` | Scroll history, follow output |
 | Console | `q` / `Esc` | Stop session and return to the picker |
-| Anywhere | `F1`, `Ctrl+q` | Help, confirm launcher exit |
+| Picker | `?` | Open help (also available from Help or Actions everywhere) |
+| Anywhere | `Ctrl+q` | Confirm launcher exit |
 
+Function keys are not used. `Ctrl` means Control, not Command (⌘).
 Mouse controls are enabled by default. Use `--no-mouse` for terminal text
 selection. Animation control requires Flutter's VM Service extension.
 Use `--color always` to override `NO_COLOR`, or `--color never` for monochrome.
 Use `--multi` to start in multi-device mode. Check devices, then choose one
 compatible configuration to run on all of them. Click the console arrows or use
-F5/F6 to switch; Flutter shortcuts affect only the displayed session.
-Press **F9** or choose **Add session** from the Actions menu to add another run.
+Ctrl+b/Ctrl+f to switch; Flutter shortcuts affect only the displayed session.
+Press **Ctrl+n** or choose **Add session** from the Actions menu to add another run.
 
 See the [usage guide](docs/usage.md) for configuration support and limitations,
 or start with the [example launch file](examples/launch.json).

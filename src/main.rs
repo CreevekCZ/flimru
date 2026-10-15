@@ -1,5 +1,6 @@
 mod console_style;
 mod runs;
+mod shortcuts;
 mod terminal_input;
 mod ui;
 
@@ -21,6 +22,7 @@ use flutter_run_tui::{
     state::{self, State},
     tool::{FlutterTool, has_ownit_helpers},
 };
+use shortcuts::Shortcut;
 use std::{
     io::IsTerminal,
     path::PathBuf,
@@ -796,6 +798,11 @@ impl App {
     }
 
     fn key(&mut self, key: KeyEvent, cols: u16, rows: u16) -> Result<bool> {
+        // Leave function keys to the terminal/macOS; they are never launcher
+        // commands or an implicit dismissal of a saved console or modal.
+        if matches!(key.code, KeyCode::F(_)) {
+            return Ok(false);
+        }
         if self.quit_confirmation {
             match key.code {
                 KeyCode::Char('y' | 'Y') => return Ok(true),
@@ -811,7 +818,8 @@ impl App {
             self.quit_confirmation = true;
             return Ok(false);
         }
-        if key.code == KeyCode::F(4) {
+        let shortcut = Shortcut::from_key(key);
+        if shortcut == Some(Shortcut::Actions) {
             self.actions_open = !self.actions_open;
             self.searching = false;
             self.help = false;
@@ -866,15 +874,11 @@ impl App {
             }
             return Ok(false);
         }
-        if key.code == KeyCode::F(1) {
-            self.help = !self.help;
-            return Ok(false);
-        }
         if self.help {
             self.help = false;
             return Ok(false);
         }
-        if key.code == KeyCode::F(10) {
+        if shortcut == Some(Shortcut::FocusActions) {
             if self.top_focus.is_some() {
                 self.top_focus = None;
             } else {
@@ -893,10 +897,10 @@ impl App {
                     self.top_focus = None
                 }
                 KeyCode::Up => {}
-                KeyCode::F(_) => {}
+                _ if shortcut.is_some() => {}
                 _ => return Ok(false),
             }
-            if !matches!(key.code, KeyCode::F(_)) {
+            if shortcut.is_none() {
                 return Ok(false);
             }
         } else if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) && self.page != Page::Console
@@ -904,38 +908,43 @@ impl App {
             ui::focus_top(self, key.code == KeyCode::BackTab);
             return Ok(false);
         }
-        if key.code == KeyCode::F(3) {
+        if shortcut == Some(Shortcut::Colors) {
             self.colors = !self.colors;
             self.status = if self.colors {
-                "Console colors enabled (F3 toggles)."
+                "Console colors enabled (Ctrl+l toggles)."
             } else {
-                "Console colors disabled (F3 toggles)."
+                "Console colors disabled (Ctrl+l toggles)."
             }
             .into();
             return Ok(false);
         }
-        if matches!(key.code, KeyCode::F(5) | KeyCode::F(6)) && !self.runs.is_empty() {
-            let count = self.runs.len();
-            let index = if key.code == KeyCode::F(5) {
-                (self.active_run + count - 1) % count
-            } else if self.page == Page::Console {
-                (self.active_run + 1) % count
-            } else {
-                self.active_run
-            };
-            self.switch_run(index);
+        if matches!(
+            shortcut,
+            Some(Shortcut::PreviousConsole | Shortcut::NextConsole)
+        ) {
+            if !self.runs.is_empty() {
+                let count = self.runs.len();
+                let index = if shortcut == Some(Shortcut::PreviousConsole) {
+                    (self.active_run + count - 1) % count
+                } else if self.page == Page::Console {
+                    (self.active_run + 1) % count
+                } else {
+                    self.active_run
+                };
+                self.switch_run(index);
+            }
             return Ok(false);
         }
-        if key.code == KeyCode::F(7) {
+        if shortcut == Some(Shortcut::Devices) {
             self.retain_consoles |= !self.runs.is_empty();
             self.back();
             return Ok(false);
         }
-        if key.code == KeyCode::F(9) {
+        if shortcut == Some(Shortcut::AddSession) {
             self.begin_add();
             return Ok(false);
         }
-        if key.code == KeyCode::F(8) {
+        if shortcut == Some(Shortcut::StopAll) {
             let mut errors = vec![];
             for run in &mut self.runs {
                 if let Some(session) = &mut run.session
@@ -945,10 +954,19 @@ impl App {
                 }
             }
             self.status = if errors.is_empty() {
-                "Stopping all sessions. F8 again forces any remaining sessions.".into()
+                "Stopping all sessions. Ctrl+x again forces any remaining sessions.".into()
             } else {
                 errors.join("; ")
             };
+            return Ok(false);
+        }
+        if shortcut == Some(Shortcut::Animations) {
+            if self.page == Page::Console
+                && let Some(session) = self.active_session_mut()
+                && let Err(error) = session.animations.toggle()
+            {
+                self.status = format!("Console input: {error:#}");
+            }
             return Ok(false);
         }
         if self.page != Page::Console
@@ -981,7 +999,6 @@ impl App {
             }
             if let Some(session) = self.active_session_mut() {
                 let result = match key.code {
-                    KeyCode::F(2) => session.animations.toggle(),
                     KeyCode::Esc | KeyCode::Char('q')
                         if !key.modifiers.contains(KeyModifiers::ALT) =>
                     {
@@ -1268,7 +1285,7 @@ impl App {
             return Ok(false);
         };
         // Pointer commands return to content. Keyboard focus is explicitly
-        // entered with Tab/F10 and restored when a keyboard-opened modal closes.
+        // entered with Tab/Ctrl+g and restored when a keyboard-opened modal closes.
         self.top_focus = None;
         self.activate(action, area)
     }
@@ -1303,11 +1320,21 @@ impl App {
                 self.toggle_mark();
                 return Ok(false);
             }
-            MouseAction::PreviousConsole => KeyCode::F(5),
-            MouseAction::NextConsole => KeyCode::F(6),
-            MouseAction::Devices => KeyCode::F(7),
-            MouseAction::AddSession => KeyCode::F(9),
-            MouseAction::StopAll => KeyCode::F(8),
+            MouseAction::PreviousConsole => {
+                return self.key(Shortcut::PreviousConsole.key(), area.width, area.height);
+            }
+            MouseAction::NextConsole => {
+                return self.key(Shortcut::NextConsole.key(), area.width, area.height);
+            }
+            MouseAction::Devices => {
+                return self.key(Shortcut::Devices.key(), area.width, area.height);
+            }
+            MouseAction::AddSession => {
+                return self.key(Shortcut::AddSession.key(), area.width, area.height);
+            }
+            MouseAction::StopAll => {
+                return self.key(Shortcut::StopAll.key(), area.width, area.height);
+            }
             MouseAction::SwitchConsole(index) => {
                 self.switch_run(index);
                 return Ok(false);
@@ -1317,7 +1344,9 @@ impl App {
                 self.action_scroll_drag = true;
                 return Ok(false);
             }
-            MouseAction::Actions => KeyCode::F(4),
+            MouseAction::Actions => {
+                return self.key(Shortcut::Actions.key(), area.width, area.height);
+            }
             MouseAction::DismissActions => {
                 self.actions_open = false;
                 return Ok(false);
@@ -1348,7 +1377,9 @@ impl App {
                 self.config_index = 0;
                 return Ok(false);
             }
-            MouseAction::ToggleColors => KeyCode::F(3),
+            MouseAction::ToggleColors => {
+                return self.key(Shortcut::Colors.key(), area.width, area.height);
+            }
             MouseAction::FlutterKey(key) => KeyCode::Char(key),
             MouseAction::OldestOutput => KeyCode::Home,
             MouseAction::FollowOutput => KeyCode::End,
@@ -1398,8 +1429,13 @@ impl App {
                 self.quit_confirmation = false;
                 return Ok(false);
             }
-            MouseAction::Help | MouseAction::DismissHelp => KeyCode::F(1),
-            MouseAction::ToggleAnimations => KeyCode::F(2),
+            MouseAction::Help | MouseAction::DismissHelp => {
+                self.help = !self.help;
+                return Ok(false);
+            }
+            MouseAction::ToggleAnimations => {
+                return self.key(Shortcut::Animations.key(), area.width, area.height);
+            }
             MouseAction::ConsoleScroll(row) => {
                 let track = ui::console_scrollbar_area(area);
                 self.begin_scrollbar_drag(track.y.saturating_add(row), track);
@@ -1927,8 +1963,7 @@ mod tests {
         app.activate(ui::MouseAction::NextConsole, area).unwrap();
         assert_eq!(app.active_run, 1);
         assert!(app.runs[1].screen().unwrap().contents().contains("two"));
-        app.key(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE), 34, 12)
-            .unwrap();
+        app.key(Shortcut::PreviousConsole.key(), 34, 12).unwrap();
         assert_eq!(app.active_run, 0);
         app.activate(ui::MouseAction::Devices, area).unwrap();
         assert_eq!(app.page, Page::Devices);
@@ -2057,6 +2092,37 @@ mod tests {
     }
 
     #[test]
+    fn function_keys_are_inert_and_console_shortcuts_do_not_edit_picker_state() {
+        let mut app = app();
+        let favorites = app.saved.favorites.clone();
+        for page in [Page::Devices, Page::Configs, Page::Console, Page::LastLog] {
+            app.page = page;
+            for number in 1..=12 {
+                app.key(
+                    KeyEvent::new(KeyCode::F(number), KeyModifiers::NONE),
+                    80,
+                    24,
+                )
+                .unwrap();
+                assert_eq!(app.page, page);
+                assert!(app.colors && !app.help && !app.actions_open);
+                assert!(app.top_focus.is_none());
+            }
+        }
+        app.page = Page::Devices;
+        for shortcut in [
+            Shortcut::PreviousConsole,
+            Shortcut::NextConsole,
+            Shortcut::Animations,
+        ] {
+            app.key(shortcut.key(), 80, 24).unwrap();
+        }
+        assert_eq!(app.page, Page::Devices);
+        assert_eq!(app.saved.favorites, favorites);
+        assert!(!app.searching && !app.multi);
+    }
+
+    #[test]
     fn filter_and_color_commands_agree_between_keyboard_and_pointer_actions() {
         let mut keyboard = app();
         let mut pointer = app();
@@ -2088,9 +2154,7 @@ mod tests {
             .activate(ui::MouseAction::ClearFilter, area)
             .unwrap();
         assert_eq!(keyboard.search, pointer.search);
-        keyboard
-            .key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE), 34, 12)
-            .unwrap();
+        keyboard.key(Shortcut::Colors.key(), 34, 12).unwrap();
         pointer
             .activate(ui::MouseAction::ToggleColors, area)
             .unwrap();
@@ -2103,8 +2167,7 @@ mod tests {
         app.searching = true;
         app.paste(&"é".repeat(600));
         assert_eq!(app.search.as_ref().unwrap().chars().count(), 512);
-        app.key(KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE), 34, 12)
-            .unwrap();
+        app.key(Shortcut::Actions.key(), 34, 12).unwrap();
         app.paste("ignored");
         assert_eq!(app.search.as_ref().unwrap().chars().count(), 512);
         assert!(app.actions_open);

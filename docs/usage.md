@@ -37,26 +37,30 @@ the last console. Click a row to select it, click its star to toggle favorites,
 and use the buttons to proceed. The wheel moves through picker items.
 `Esc` goes back or requests exit from the device screen. `Ctrl+q` and the Quit
 button open a confirmation: `y` or clicking Quit confirms; `Enter`, `n`, or
-`Esc` cancels. Confirming also stops an active session. `F1` or `?` opens help.
+`Esc` cancels. Confirming also stops an active session. `?` opens help in pickers;
+the Help button and Actions menu work everywhere.
 Use `--no-mouse` to leave mouse input to your terminal for selection/copying;
 many terminals also allow selecting text while holding Shift.
 If the terminal disappears, the launcher automatically stops its owned run
 and discovery processes. Mouse hovering does not trigger continuous redraws;
 updates are limited to 30 frames per second and idle redraws to once per second.
 
+Function keys are not used. Shortcuts use the **Control** key, not Command (⌘),
+and do not require changing macOS keyboard settings.
+
 Every page has an **Actions** button (**Menu** in narrow terminals), also opened
-with **F4**. It includes all page commands: filtering, favorites, refreshing,
+with **Ctrl+p**. It includes all page commands: filtering, favorites, refreshing,
 configuration reload, saved logs, Flutter reload/restart/help/DevTools, animation
 speed, colors, and exit. Commands remain reachable at the minimum 34 × 12 size.
 Use arrows, Tab/Shift+Tab, Home/End or PageUp/PageDown to navigate the menu;
-Enter/Space activates, and Esc/F4 closes. The mouse supports clicks, wheel
+Enter/Space activates, and Esc/Ctrl+p closes. The mouse supports clicks, wheel
 scrolling, and scrollbar dragging.
 
 The top action bar supports direct keyboard focus. **Tab/Shift+Tab** enters it
-from a picker or saved console; **F10** works on every page. **Left/Right** moves
+from a picker or saved console; **Ctrl+g** works on every page. **Left/Right** moves
 through every top command and clickable navigation step, **Home/End** jumps to
 the first/last target, and **Enter/Space** activates. **Down**, **Esc**, **Tab**,
-or **F10** returns to content without running a command. Up from the first list
+or **Ctrl+g** returns to content without running a command. Up from the first list
 item also focuses the top bar. A `›` marker and contrasting background show
 focus, including a visible text cue in monochrome. Keyboard-opened menus and
 confirmation dialogs restore their trigger focus when dismissed.
@@ -66,7 +70,7 @@ Actions/Menu, Help, and Quit stay visible. Click the overflow chevron or scroll
 the wheel over the header to reach hidden actions with a mouse. Pointer commands
 return to content so mouse and keyboard input can be mixed naturally. Navigation
 and paste are not sent to Flutter while the bar has focus; **Tab inside the
-unfocused live console still goes directly to Flutter**. Use F10 to leave or
+unfocused live console still goes directly to Flutter**. Use Ctrl+g to leave or
 re-enter its command bar.
 
 Click **Filter /** or press `/` to edit the list filter. Type or paste the
@@ -96,25 +100,25 @@ device IDs and survives filtering and discovery, including cached devices.
 A batch supports up to **eight** instances. Each has its own PTY, bounded output
 queue, 10,000-row history, scroll position, and animation control. All instances
 receive output processing and terminal resize updates while hidden. Use
-**F5/F6** or the clickable console arrows to switch; the Actions menu also lists
-each console directly. The switcher shows the device and running/ended state.
+**Ctrl+b/Ctrl+f** or the clickable console arrows to switch; the Actions menu
+also lists each console directly. The switcher shows the device and running/ended state.
 Reload, restart, DevTools, animation changes, typing and paste affect only the
 displayed instance.
 
 **q/Esc** stops the displayed instance; pressing it again forces that instance.
-Completed consoles remain available for review. **F7** returns
-to the device picker without stopping the batch. **F8** or **Actions → Stop all
-sessions** stops every instance; F8 again forces any remaining ones. Quit
+Completed consoles remain available for review. **Ctrl+d** returns
+to the device picker without stopping the batch. **Ctrl+x** or **Actions → Stop all
+sessions** stops every instance; Ctrl+x again forces any remaining ones. Quit
 confirmation and terminal-loss cleanup include every running instance, even
 from the picker. The default single-device flow still returns to the picker
 automatically after the session ends.
 
-**F9**, the **Add** button in wide consoles, or **Actions → Add session** opens
+**Ctrl+n**, the **Add** button in wide consoles, or **Actions → Add session** opens
 a fresh device selection while existing sessions keep running. Choose a device
 and configuration, or check several devices in multi-device mode, then Run. New
 consoles join the existing ones and the first new console becomes active. Each
 addition may use a different launch configuration; selection mode can be changed
-without affecting running sessions. F7 also lets you choose additional runs.
+without affecting running sessions. Ctrl+d also lets you choose additional runs.
 Launching the same configuration on a device where it is already running is
 blocked to avoid accidental duplicates; a stopped session can be launched again.
 
@@ -137,16 +141,16 @@ This includes Android logcat priorities and `[logger] LEVEL:` / `[LEVEL]` forms.
 Lines with supplied ANSI colors keep their original styling; ordinary messages
 are not classified from words buried in their text.
 
-**F3**, the color button, or **Actions → Colors** toggles output colors without
+**Ctrl+l**, the color button, or **Actions → Colors** toggles output colors without
 restarting. `--color auto` is the default and respects nonempty `NO_COLOR`;
 `--color always` explicitly enables colors, while `--color never` starts in
 monochrome. New sessions request matching child color output and advertise a
 truecolor-capable PTY. Explicit `launch.json` environment values are applied last.
-Changing F3 affects rendering immediately; child environment changes apply to
+Toggling colors affects rendering immediately; child environment changes apply to
 the next session. Home/End and the matching menu commands jump to oldest/latest
 output in both the live and saved console.
 
-Press **F2** or click the animation speed button to toggle normal / **5× slower**,
+Press **Ctrl+a** or click the animation speed button to toggle normal / **5× slower**,
 using the same Flutter `timeDilation` control as DevTools. The button displays
 the app's confirmed value, including changes made in DevTools. Each console
 remembers its selected factor and restores it when hot restart replaces the
