@@ -222,6 +222,14 @@ impl Session {
 
     /// Drains a bounded amount of output per frame and polls for completion.
     pub fn tick(&mut self) -> Result<Option<portable_pty::ExitStatus>> {
+        self.tick_with_budget(Duration::from_millis(8))
+    }
+
+    /// Smaller per-session budgets keep a batch responsive under output floods.
+    pub fn tick_with_budget(
+        &mut self,
+        budget: Duration,
+    ) -> Result<Option<portable_pty::ExitStatus>> {
         let started = Instant::now();
         let mut had_output = false;
         // Input errors must not hide a process exit that happened concurrently.
@@ -245,7 +253,7 @@ impl Session {
                 Err(_) => break,
             }
             // Keep flooding child output from monopolizing the UI thread.
-            if started.elapsed() >= Duration::from_millis(8) {
+            if started.elapsed() >= budget {
                 break;
             }
         }

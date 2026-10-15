@@ -44,6 +44,13 @@ pub enum MouseAction {
     OldestOutput,
     FollowOutput,
     ScrollActions(usize),
+    ToggleMulti,
+    ToggleDevice(usize),
+    PreviousConsole,
+    NextConsole,
+    SwitchConsole(usize),
+    Devices,
+    StopAll,
 }
 
 pub struct ActionItem {
@@ -69,7 +76,11 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
             }
             add(
                 if app.page == Page::Devices {
-                    "Choose device"
+                    if app.multi {
+                        "Choose configuration"
+                    } else {
+                        "Choose device"
+                    }
                 } else {
                     "Run configuration"
                 },
@@ -88,6 +99,24 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
                     MouseAction::ToggleFavorite(app.device_index),
                 );
             }
+            if app.page == Page::Devices {
+                add(
+                    if app.multi {
+                        "Multi-device: on"
+                    } else {
+                        "Multi-device: off"
+                    },
+                    "m",
+                    MouseAction::ToggleMulti,
+                );
+                if app.multi && !app.visible_devices().is_empty() {
+                    add(
+                        "Check / uncheck device",
+                        "Space",
+                        MouseAction::ToggleDevice(app.device_index),
+                    );
+                }
+            }
             add("Refresh devices", "r", MouseAction::Refresh);
             add("Reload configs", "c", MouseAction::ReloadConfigs);
             if app.last_log.is_some() {
@@ -95,19 +124,53 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
             }
         }
         Page::Console => {
-            add("Hot reload", "r", MouseAction::FlutterKey('r'));
-            add("Hot restart", "R", MouseAction::FlutterKey('R'));
-            add("Flutter help", "h", MouseAction::FlutterKey('h'));
-            add("Open DevTools", "v", MouseAction::FlutterKey('v'));
-            add("Animation speed", "F2", MouseAction::ToggleAnimations);
+            add("Device picker", "F7", MouseAction::Devices);
+            if app.active_session().is_some() {
+                add("Hot reload", "r", MouseAction::FlutterKey('r'));
+                add("Hot restart", "R", MouseAction::FlutterKey('R'));
+                add("Flutter help", "h", MouseAction::FlutterKey('h'));
+                add("Open DevTools", "v", MouseAction::FlutterKey('v'));
+                add("Animation speed", "F2", MouseAction::ToggleAnimations);
+            }
             add("Oldest output", "Home", MouseAction::OldestOutput);
             add("Follow output", "End", MouseAction::FollowOutput);
-            add("Stop session", "q / Esc", MouseAction::Back);
+            add(
+                if app.active_session().is_some() {
+                    "Stop session"
+                } else {
+                    "Back to devices"
+                },
+                "q / Esc",
+                MouseAction::Back,
+            );
         }
         Page::LastLog => {
             add("Back to devices", "Esc", MouseAction::Back);
             add("Oldest output", "Home", MouseAction::OldestOutput);
             add("Latest output", "End", MouseAction::FollowOutput);
+        }
+    }
+    if !app.runs.is_empty() {
+        add("Previous console", "F5", MouseAction::PreviousConsole);
+        add("Next console", "F6", MouseAction::NextConsole);
+        for (index, run) in app.runs.iter().enumerate() {
+            add(
+                &format!(
+                    "Console {}: {} ({})",
+                    index + 1,
+                    run.device.name,
+                    if run.session.is_some() {
+                        "running"
+                    } else {
+                        "ended"
+                    }
+                ),
+                "",
+                MouseAction::SwitchConsole(index),
+            );
+        }
+        if app.running_count() > 0 {
+            add("Stop all sessions", "F8", MouseAction::StopAll);
         }
     }
     add(
@@ -291,6 +354,40 @@ struct Control {
     action: MouseAction,
 }
 
+fn console_navigation(app: &App, area: Rect) -> Vec<Control> {
+    let Some(run) = app.runs.get(app.active_run) else {
+        return vec![];
+    };
+    let state = if run.session.is_some() {
+        "running"
+    } else {
+        "ended"
+    };
+    let summary = format!(
+        " {}/{} {state} · {}",
+        app.active_run + 1,
+        app.runs.len(),
+        run.device.name
+    );
+    vec![
+        Control {
+            label: "[F5 <]".into(),
+            rect: Rect::new(area.x, area.y, 6, 1),
+            action: MouseAction::PreviousConsole,
+        },
+        Control {
+            label: "[F6 >]".into(),
+            rect: Rect::new(area.x + 7, area.y, 6, 1),
+            action: MouseAction::NextConsole,
+        },
+        Control {
+            label: summary,
+            rect: Rect::new(area.x + 14, area.y, area.width.saturating_sub(14), 1),
+            action: MouseAction::Actions,
+        },
+    ]
+}
+
 fn controls(app: &App, area: Rect) -> Vec<Control> {
     let compact = area.width < 76;
     let mut buttons = vec![];
@@ -298,6 +395,10 @@ fn controls(app: &App, area: Rect) -> Vec<Control> {
         Page::Devices => {
             buttons.push(("Next".into(), MouseAction::NextOrRun));
             if !compact {
+                buttons.push((
+                    format!("m Multi {}", if app.multi { "on" } else { "off" }),
+                    MouseAction::ToggleMulti,
+                ));
                 buttons.push(("Refresh".into(), MouseAction::Refresh));
                 buttons.push(("Configs".into(), MouseAction::ReloadConfigs));
                 buttons.push(("Last console".into(), MouseAction::LastLog));
@@ -314,8 +415,16 @@ fn controls(app: &App, area: Rect) -> Vec<Control> {
             }
         }
         Page::Console => {
-            buttons.push(("Stop".into(), MouseAction::Back));
-            if let Some(session) = &app.session {
+            buttons.push((
+                if app.active_session().is_some() {
+                    "Stop"
+                } else {
+                    "Back"
+                }
+                .into(),
+                MouseAction::Back,
+            ));
+            if let Some(session) = app.active_session() {
                 buttons.push((
                     if compact {
                         format!("F2 {}", session.animations.short_label())
@@ -491,13 +600,26 @@ pub fn mouse_action(app: &App, area: Rect, event: MouseEvent) -> Option<MouseAct
             return Some(control.action);
         }
     }
+    if app.page == Page::Console && app.runs.len() > 1 {
+        for control in console_navigation(app, parts[1]) {
+            if control.rect.contains((event.column, event.row).into()) {
+                return Some(control.action);
+            }
+        }
+    }
     for (index, (_, rect)) in navigation_tabs(parts[1]).iter().enumerate() {
+        if app.page == Page::Console && app.runs.len() > 1 {
+            break;
+        }
         if rect.contains((event.column, event.row).into()) {
             return match (index, app.page) {
                 (0, Page::Configs | Page::LastLog) => Some(MouseAction::Back),
                 (1, Page::Devices) => Some(MouseAction::NextOrRun),
                 (2, Page::Devices | Page::Configs) if app.last_log.is_some() => {
                     Some(MouseAction::LastLog)
+                }
+                (2, Page::Devices | Page::Configs) if !app.runs.is_empty() => {
+                    Some(MouseAction::SwitchConsole(app.active_run))
                 }
                 _ => None,
             };
@@ -525,6 +647,11 @@ pub fn mouse_action(app: &App, area: Rect, event: MouseEvent) -> Option<MouseAct
                     MouseAction::SelectConfig(index)
                 } else if event.column == inner.x + 3 && (event.row - inner.y).is_multiple_of(2) {
                     MouseAction::ToggleFavorite(index)
+                } else if app.multi
+                    && (inner.x + 5..inner.x + 9).contains(&event.column)
+                    && (event.row - inner.y).is_multiple_of(2)
+                {
+                    MouseAction::ToggleDevice(index)
                 } else {
                     MouseAction::SelectDevice(index)
                 }
@@ -610,51 +737,68 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Page::Configs => 1,
         _ => 2,
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(
-            navigation_tabs(parts[1])
-                .iter()
-                .enumerate()
-                .map(|(i, (text, _))| {
-                    Span::styled(
-                        *text,
-                        Style::default()
-                            .fg(if i == active { ACCENT } else { MUTED })
-                            .add_modifier(if i == active {
-                                Modifier::BOLD
-                            } else {
-                                Modifier::empty()
-                            }),
-                    )
-                })
-                .collect::<Vec<_>>(),
-        )),
-        parts[1],
-    );
+    if app.page == Page::Console && app.runs.len() > 1 {
+        for control in console_navigation(app, parts[1]) {
+            frame.render_widget(
+                Paragraph::new(control.label).style(Style::default().fg(ACCENT).bold()),
+                control.rect,
+            );
+        }
+    } else {
+        frame.render_widget(
+            Paragraph::new(Line::from(
+                navigation_tabs(parts[1])
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (text, _))| {
+                        Span::styled(
+                            *text,
+                            Style::default()
+                                .fg(if i == active { ACCENT } else { MUTED })
+                                .add_modifier(if i == active {
+                                    Modifier::BOLD
+                                } else {
+                                    Modifier::empty()
+                                }),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )),
+            parts[1],
+        );
+    }
 
     match app.page {
         Page::Devices | Page::Configs => picker(frame, app, parts[2]),
         Page::Console => {
-            if let Some(session) = &app.session {
+            if let Some(run) = app.runs.get(app.active_run)
+                && let Some(screen) = run.screen()
+            {
                 console(
                     frame,
-                    session.parser.screen(),
-                    session.scrollback_len,
-                    None,
+                    screen,
+                    run.scrollback(),
+                    run.outcome.as_ref().map(|_| run.offset),
                     app.colors,
                     parts[2],
                     &format!(
                         " {} · {}{} ",
-                        app.active_config,
-                        app.selected_device
+                        run.config,
+                        run.device.name,
+                        run.outcome
                             .as_ref()
-                            .map(|d| d.name.as_str())
-                            .unwrap_or(""),
-                        if session.stop_requested.is_some() {
-                            " · stopping (Esc again forces)"
-                        } else {
-                            ""
-                        }
+                            .map(|s| format!(" · ended ({s})"))
+                            .unwrap_or_else(|| {
+                                if run
+                                    .session
+                                    .as_ref()
+                                    .is_some_and(|s| s.stop_requested.is_some())
+                                {
+                                    " · stopping (Esc again forces)".into()
+                                } else {
+                                    String::new()
+                                }
+                            })
                     ),
                 );
             }
@@ -718,13 +862,17 @@ pub fn draw(frame: &mut Frame, app: &App) {
     );
     let help = match app.page {
         Page::Devices => {
-            "  Click/↑↓ select · click ☆/f favorite · Enter next\n  F4/Menu all actions · / filter · Ctrl+q quit · F1 help"
+            if app.multi {
+                "  Space/[ ] check · Enter next · m single mode\n  F4/Menu actions · F6 consoles · Ctrl+q quit"
+            } else {
+                "  Click/↑↓ select · ☆/f favorite · Enter next\n  m multi-device · F4/Menu actions · Ctrl+q quit"
+            }
         }
         Page::Configs => {
             "  Click/↑↓ select · Enter run · Esc back · / filter\n  F4/Menu all actions · Ctrl+q quit · F1 help"
         }
         Page::Console => {
-            "  r reload · R restart · F2 slow · F3 colors · F4 menu\n  Wheel/PgUp/PgDn scroll · Home/End · q/Esc stop"
+            "  r reload · R restart · F2 slow · F4 menu\n  F5/F6 switch · F7 devices · q/Esc stop this"
         }
         Page::LastLog => {
             "  Wheel/PgUp/PgDn scroll · Home/End · F3 colors\n  F4/Menu all actions · Esc back · Ctrl+q quit"
@@ -770,6 +918,18 @@ fn picker(frame: &mut Frame, app: &App, area: Rect) {
                                 MUTED
                             }),
                         ),
+                        Span::styled(
+                            if app.multi {
+                                if app.marked_devices.iter().any(|d| d.id == device.id) {
+                                    "[x] "
+                                } else {
+                                    "[ ] "
+                                }
+                            } else {
+                                ""
+                            },
+                            Style::default().fg(ACCENT),
+                        ),
                         Span::styled(device.name.clone(), Style::default().bold()),
                     ]),
                     Line::from(vec![
@@ -795,7 +955,15 @@ fn picker(frame: &mut Frame, app: &App, area: Rect) {
         (
             items,
             app.device_index,
-            format!(" Devices ({}) ", devices.len()),
+            if app.multi {
+                format!(
+                    " Devices · Multi {}/{} ",
+                    app.marked_devices.len(),
+                    crate::runs::MAX_RUNS
+                )
+            } else {
+                format!(" Devices ({}) ", devices.len())
+            },
         )
     } else {
         let configs = app.visible_configs();
@@ -900,10 +1068,11 @@ fn picker(frame: &mut Frame, app: &App, area: Rect) {
             Line::raw(""),
             Line::raw(format!(
                 "Device  {}",
-                app.selected_device
-                    .as_ref()
+                app.targets()
+                    .iter()
                     .map(|d| d.name.as_str())
-                    .unwrap_or("")
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )),
             Line::raw(format!("Directory  {}", config.cwd.display())),
             Line::raw(format!(
@@ -1138,7 +1307,7 @@ fn help_overlay(frame: &mut Frame) {
         height,
     );
     frame.render_widget(Clear, modal);
-    frame.render_widget(Paragraph::new("↑↓ / click: select\nEnter: next / run\nF4 / Menu: all commands\nConsole: type Flutter keys\nWheel / PgUp/PgDn: scroll\nF2: slow · F3: colors\nCtrl+q: confirm quit\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
+    frame.render_widget(Paragraph::new("m: multi · Space: check\nEnter: next/run · F4: menu\nF5/F6: console · F7: devices\nq/Esc: stop · F8: stop all\nWheel / PgUp/PgDn: scroll\nF2: slow · F3: colors\nCtrl+q: confirm quit\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
 }
 
 fn quit_overlay(frame: &mut Frame, app: &App) {
@@ -1149,7 +1318,9 @@ fn quit_overlay(frame: &mut Frame, app: &App) {
         horizontal: 2,
         vertical: 1,
     });
-    let message = if app.session.is_some() {
+    let message = if app.running_count() > 1 {
+        "All active Flutter sessions will be stopped."
+    } else if app.running_count() == 1 {
         "The active Flutter session will be stopped."
     } else {
         "Close the launcher?"
@@ -1312,6 +1483,62 @@ mod tests {
     }
 
     #[test]
+    fn multi_checkboxes_and_console_switches_match_rendered_targets() {
+        let mut app = crate::tests::app();
+        app.multi = true;
+        let device = app.devices[0].clone();
+        app.marked_devices = vec![device.clone()];
+        for (width, height) in [(34, 12), (80, 24), (120, 40)] {
+            let area = Rect::new(0, 0, width, height);
+            app.page = Page::Devices;
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| draw(f, &app)).unwrap();
+            let inner = panel(String::new()).inner(picker_layout(body_layout(area)[2])[0]);
+            assert!(row_text(terminal.backend().buffer(), inner, inner.y).contains("[x]"));
+            assert_eq!(
+                mouse_action(&app, area, click(inner.x + 3, inner.y)),
+                Some(MouseAction::ToggleFavorite(0))
+            );
+            assert_eq!(
+                mouse_action(&app, area, click(inner.x + 6, inner.y)),
+                Some(MouseAction::ToggleDevice(0))
+            );
+            app.runs = vec![
+                crate::runs::Run::failed(device.clone(), "Demo".into(), "test".into(), 8, 40),
+                crate::runs::Run::failed(device.clone(), "Demo".into(), "test".into(), 8, 40),
+            ];
+            app.switch_run(0);
+            terminal.draw(|f| draw(f, &app)).unwrap();
+            let nav = body_layout(area)[1];
+            assert!(row_text(terminal.backend().buffer(), nav, nav.y).contains("1/2 ended"));
+            assert_eq!(
+                mouse_action(&app, area, click(nav.x + 2, nav.y)),
+                Some(MouseAction::PreviousConsole)
+            );
+            assert_eq!(
+                mouse_action(&app, area, click(nav.x + 9, nav.y)),
+                Some(MouseAction::NextConsole)
+            );
+            app.actions_open = true;
+            for index in 0..available_actions(&app).len() {
+                app.action_index = index;
+                update_action_viewport(&mut app, area);
+                terminal.draw(|f| draw(f, &app)).unwrap();
+                let (_, list, _) = action_menu_layout(area, available_actions(&app).len());
+                assert_eq!(
+                    mouse_action(
+                        &app,
+                        area,
+                        click(list.x + 1, list.y + (index - app.action_offset) as u16)
+                    ),
+                    Some(MouseAction::SelectAction(index))
+                );
+            }
+            app.actions_open = false;
+        }
+    }
+
+    #[test]
     fn filter_field_apply_and_clear_have_pointer_targets() {
         let mut app = crate::tests::app();
         let area = Rect::new(0, 0, 34, 12);
@@ -1335,7 +1562,6 @@ mod tests {
     #[test]
     fn action_scrollbar_positions_do_not_activate_commands_and_tiny_exit_is_clickable() {
         let mut app = crate::tests::app();
-        app.page = Page::Console;
         app.actions_open = true;
         let area = Rect::new(0, 0, 34, 12);
         let count = available_actions(&app).len();
@@ -1377,9 +1603,11 @@ mod tests {
             .iter()
             .position(|item| item.action == MouseAction::Help)
             .unwrap();
+        app.action_index = help;
+        update_action_viewport(&mut app, area);
         let (_, list, _) = action_menu_layout(area, actions.len());
-        assert!(help < usize::from(list.height));
-        let row = list.y + help as u16;
+        assert!(help - app.action_offset < usize::from(list.height));
+        let row = list.y + (help - app.action_offset) as u16;
         app.action_index = actions.len() - 1; // Keyboard selection awaits a draw.
         app.mouse(click(list.x + 1, row), area).unwrap();
         assert!(app.help);
@@ -1389,7 +1617,6 @@ mod tests {
     #[test]
     fn menu_scrollbar_drag_never_sends_a_command_and_help_fits_the_minimum_size() {
         let mut app = crate::tests::app();
-        app.page = Page::Console;
         app.actions_open = true;
         let area = Rect::new(0, 0, 34, 12);
         let count = available_actions(&app).len();
@@ -1411,7 +1638,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("Any key / click: close"));
-        assert!(text.contains("F4 / Menu: all commands"));
+        assert!(text.contains("F4: menu"));
     }
 
     #[test]

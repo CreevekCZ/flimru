@@ -73,6 +73,16 @@ fn repeated_sessions_release_descriptors_and_exited_wrapper_descendants() {
             "Session {cycle} retained file descriptors"
         );
     }
+    // A full multi-device batch must release every PTY/reader just as promptly.
+    let sessions: Vec<_> = (0..8).map(|_| start_ready(directory.path())).collect();
+    let started = Instant::now();
+    drop(sessions);
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(
+        open_descriptors(),
+        baseline,
+        "Batch retained file descriptors"
+    );
 
     // The wrapper exits, while one descendant floods its inherited PTY and
     // another records a heartbeat. EOF cannot arrive until the group is stopped.

@@ -26,6 +26,10 @@ impl Terminal {
     }
 
     fn start_with_color(project: &Path, state: &Path, color: &str) -> Self {
+        Self::start_with_options(project, state, color, false)
+    }
+
+    fn start_with_options(project: &Path, state: &Path, color: &str, multi: bool) -> Self {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 32,
@@ -56,6 +60,9 @@ impl Terminal {
             "--color",
             color,
         ]);
+        if multi {
+            command.arg("--multi");
+        }
         command.env("TERM", "xterm-256color");
         // Reproduce launchers/shells which suppress color. --color always must
         // override this for both the terminal backend and its Flutter child.
@@ -303,6 +310,23 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
+        if self.child.try_wait().is_ok_and(|status| status.is_some()) {
+            return;
+        }
+        // Even a failed assertion must give the launcher a chance to reap its
+        // independently grouped Flutter children before killing the fixture.
+        let _ = self.writer.write_all(&[0x11, b'y']);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while self.child.try_wait().is_ok_and(|status| status.is_none())
+            && Instant::now() < deadline
+        {
+            self.read();
+            thread::sleep(Duration::from_millis(10));
+        }
+        if self.child.try_wait().is_ok_and(|status| status.is_some()) {
+            return;
+        }
+        self.hang_up();
         if let Some(pid) = self.child.process_id() {
             // SAFETY: kill takes no pointers; this is the process group created
             // by portable-pty for the fixture's child, not the test runner.
@@ -359,6 +383,159 @@ done
     )
     .unwrap();
     directory
+}
+
+fn multi_project() -> TempDir {
+    let project = project();
+    std::fs::write(project.path().join("fake-flutter"), r#"#!/bin/bash
+if [ "$1" = devices ]; then
+  printf '[{"id":"alpha","name":"Alpha","targetPlatform":"ios","isSupported":true},{"id":"beta","name":"Beta","targetPlatform":"android","isSupported":true}]\n'
+  exit 0
+fi
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --device-id ]; then device="$2"; break; fi
+  shift
+done
+printf '%s' "$$" > "$FAKE_PID.$device"
+stty raw -echo
+printf 'READY:%s\r\n' "$device"
+while :; do
+  IFS= read -rsn1 key || continue
+  printf 'shortcut:%s:%s\r\n' "$device" "$key"
+  printf 'key:%s:%s\n' "$device" "$key" >> "$FAKE_LOG"
+  if [ "$key" = o ]; then
+    for ((i=0;i<100;i++)); do printf '%s-history:%03d\r\n' "$device" "$i"; done
+  fi
+  [ "$key" = q ] && exit 0
+  [ "$key" = x ] && exit 11
+done
+"#).unwrap();
+    project
+}
+
+fn assert_multi_children_reaped(project: &Path) {
+    for device in ["alpha", "beta"] {
+        let pid = std::fs::read_to_string(project.join(format!("child.pid.{device}")))
+            .unwrap()
+            .parse::<i32>()
+            .unwrap();
+        assert_eq!(
+            // SAFETY: signal zero checks only the fixture's recorded child id.
+            unsafe { libc::kill(pid, 0) },
+            -1,
+            "{device} child still exists"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
+}
+
+#[test]
+fn multi_device_mouse_keyboard_consoles_are_isolated_and_completed_history_is_retained() {
+    let project = multi_project();
+    let state = project.path().join("state.json");
+    let mut tui = Terminal::start(project.path(), &state);
+    tui.until("Alpha");
+    tui.master
+        .resize(PtySize {
+            rows: 12,
+            cols: 34,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    tui.screen.screen_mut().set_size(12, 34);
+    tui.until("[Menu]");
+    tui.menu_click("Multi-device: off");
+    tui.until("Multi 0/8");
+    tui.send(b" ");
+    tui.until("[x]");
+    tui.send(b"\x1b[B");
+    tui.until("[ ] Beta");
+    tui.click_text("[ ]");
+    tui.until("Multi 2/8");
+    tui.send(b"\r");
+    tui.until("[Run]");
+    tui.click_text("[Run]");
+    tui.until("READY:alpha");
+    tui.send(b"h");
+    tui.until("shortcut:alpha:h");
+    tui.click_text("[F6 >]");
+    tui.until("READY:beta");
+    assert!(!tui.screen.screen().contents().contains("shortcut:alpha:h"));
+    tui.send(b"v");
+    tui.until("shortcut:beta:v");
+    tui.send(b"\x1b[15~"); // F5 switches back.
+    tui.until("shortcut:alpha:h");
+    assert!(!tui.screen.screen().contents().contains("shortcut:beta:v"));
+    tui.send(b"o");
+    tui.until("alpha-history:099");
+    tui.send(b"\x1b[H");
+    tui.until("READY:alpha");
+    tui.click_text("[F6 >]");
+    tui.until("shortcut:beta:v");
+    tui.click_text("[F5 <]");
+    tui.until("READY:alpha"); // Per-console scroll position survives switching.
+    tui.send(b"q");
+    tui.until("1 session(s) running");
+    tui.click_text("[F6 >]");
+    tui.send(b"r");
+    tui.until("shortcut:beta:r");
+    tui.send(b"x");
+    tui.until("0 session(s) running");
+    tui.send(b"\x1b[15~");
+    tui.until("ended");
+    tui.send(b"\x1b[H");
+    tui.until("READY:alpha");
+    tui.send(b"\x1b[18~"); // F7 returns to selection, without losing the batch.
+    tui.until("Multi 2/8");
+    tui.send(b"\r");
+    tui.until("[Run]");
+    tui.send(b"\r");
+    tui.until("READY:alpha");
+    tui.send(b"\x1b[19~"); // F8 stops every session.
+    tui.until("0 session(s) running");
+    tui.quit();
+    assert_multi_children_reaped(project.path());
+    let log = std::fs::read_to_string(project.path().join("session.log")).unwrap();
+    assert!(
+        log.contains("key:alpha:h") && log.contains("key:beta:v") && log.contains("key:beta:r")
+    );
+    assert!(!log.contains("key:beta:h") && !log.contains("key:alpha:v"));
+}
+
+#[test]
+fn multi_device_quit_and_terminal_loss_reap_every_instance() {
+    for hang_up in [false, true] {
+        let project = multi_project();
+        let state = project.path().join("state.json");
+        let mut tui = Terminal::start_with_options(project.path(), &state, "always", true);
+        tui.until("Alpha");
+        tui.send(b" \x1b[B ");
+        tui.until("Multi 2/8");
+        tui.send(b"\r");
+        tui.until("Configurations (1)");
+        tui.send(b"\r");
+        tui.until("READY:alpha");
+        tui.send(b"\x1b[17~");
+        tui.until("READY:beta");
+        tui.send(b"\x1b[18~");
+        tui.until("Multi 2/8"); // Hidden sessions still count in quit confirmation.
+        if hang_up {
+            tui.hang_up();
+            tui.wait_for_exit(Instant::now() + Duration::from_secs(2));
+        } else {
+            tui.send(&[0x11]);
+            tui.until("All active Flutter sessions");
+            tui.send(b"\r"); // Cancel preserves both children.
+            tui.send(b"\x1b[17~h");
+            tui.until("shortcut:beta:h");
+            tui.quit();
+        }
+        assert_multi_children_reaped(project.path());
+    }
 }
 
 #[test]

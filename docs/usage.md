@@ -65,8 +65,39 @@ one second if they do not exit. A second press force-stops it, and a stop is
 forcefully completed automatically after eight seconds. `PgUp`/`PgDn` scroll a
 10,000-line console history and `End` follows current output. The mouse wheel
 scrolls the console, and its scrollbar supports clicks and dragging.
-Only the latest console is retained, and a new successful run releases the
-previous history. Background discovery and console output queues are bounded.
+In single-device mode only the latest console is retained. Starting the next
+batch releases previous histories. Background discovery and console output
+queues are bounded.
+
+For multiple devices, press **m** in the device picker or use **Actions →
+Multi-device**. `--multi` enables this mode at startup. Check devices with
+**Space**, their `[ ]` checkbox, or the menu, then press Enter and choose one
+launch configuration. Only configurations compatible with **every** checked
+device are offered; an explicit `deviceId` remains a constraint. Tests that do
+not need a device cannot be duplicated across several devices. Selection uses
+device IDs and survives filtering and discovery, including cached devices.
+
+A batch supports up to **eight** instances. Each has its own PTY, bounded output
+queue, 10,000-row history, scroll position, and animation control. All instances
+receive output processing and terminal resize updates while hidden. Use
+**F5/F6** or the clickable console arrows to switch; the Actions menu also lists
+each console directly. The switcher shows the device and running/ended state.
+Reload, restart, DevTools, animation changes, typing and paste affect only the
+displayed instance.
+
+**q/Esc** stops the displayed instance; pressing it again forces that instance.
+Completed consoles remain available until the next batch starts. **F7** returns
+to the device picker without stopping the batch. **F8** or **Actions → Stop all
+sessions** stops every instance; F8 again forces any remaining ones. Stop the
+current batch before starting another or changing selection mode. Quit
+confirmation and terminal-loss cleanup include every running instance, even
+from the picker. The default single-device flow still returns to the picker
+automatically after the session ends.
+
+Commands are validated before any instance starts. A startup failure is shown
+in that device's console, and other instances can continue. Each process uses
+the same configuration arguments and environment; fixed application/server
+ports in your configuration must support simultaneous runs.
 
 Console ANSI colors (including 256-color and RGB), backgrounds, and emphasis are
 preserved in live output and saved history. Plain recognized severity prefixes

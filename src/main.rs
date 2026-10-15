@@ -1,4 +1,5 @@
 mod console_style;
+mod runs;
 mod terminal_input;
 mod ui;
 
@@ -66,6 +67,9 @@ struct Options {
     /// Color output policy. Auto follows NO_COLOR.
     #[arg(long, value_enum, default_value_t = console_style::ColorMode::Auto)]
     color: console_style::ColorMode,
+    /// Start in multi-device selection mode (up to eight devices per batch).
+    #[arg(long)]
+    multi: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +123,8 @@ pub(crate) struct App {
     device_list_offset: usize,
     config_list_offset: usize,
     selected_device: Option<Device>,
+    multi: bool,
+    marked_devices: Vec<Device>,
     page: Page,
     search: Option<String>,
     searching: bool,
@@ -126,7 +132,8 @@ pub(crate) struct App {
     refreshed: Option<Instant>,
     status: String,
     ownit: bool,
-    session: Option<Session>,
+    runs: Vec<runs::Run>,
+    active_run: usize,
     last_log: Option<vt100::Parser>,
     last_log_scrollback: usize,
     last_log_offset: usize,
@@ -247,6 +254,8 @@ fn main() -> Result<()> {
         device_list_offset: 0,
         config_list_offset: 0,
         selected_device: None,
+        multi: options.multi,
+        marked_devices: vec![],
         page: Page::Devices,
         search: None,
         searching: false,
@@ -254,7 +263,8 @@ fn main() -> Result<()> {
         refreshed: None,
         status,
         ownit,
-        session: None,
+        runs: vec![],
+        active_run: 0,
         last_log: None,
         last_log_scrollback: 0,
         last_log_offset: 0,
@@ -306,17 +316,17 @@ fn main() -> Result<()> {
             }
             redraw |= area != previous_size;
             previous_size = area;
-            if app.page == Page::Console
-                && let Some(session) = &mut app.session
-            {
-                session.resize(
-                    area.height.saturating_sub(9).max(1),
-                    area.width.saturating_sub(3).max(1),
-                )?;
+            for run in &mut app.runs {
+                run.prepare(area.height.saturating_sub(9).max(1));
+                if let Some(session) = &mut run.session {
+                    session.resize(
+                        area.height.saturating_sub(9).max(1),
+                        area.width.saturating_sub(3).max(1),
+                    )?;
+                }
             }
             let animations = app
-                .session
-                .as_ref()
+                .active_session()
                 .map(|session| session.animations.state());
             redraw |= animations != previous_animations;
             previous_animations = animations;
@@ -389,7 +399,7 @@ fn main() -> Result<()> {
         Ok(())
     })();
     // Stop owned children before restoring the user's terminal, even on errors.
-    app.session.take();
+    app.runs.clear();
     let disconnected = !terminal_input::connected().unwrap_or(false);
     if disconnected {
         let _ = terminal_input::detach_output();
@@ -401,6 +411,138 @@ fn main() -> Result<()> {
 }
 
 impl App {
+    fn active_session(&self) -> Option<&Session> {
+        self.runs.get(self.active_run)?.session.as_ref()
+    }
+
+    fn active_session_mut(&mut self) -> Option<&mut Session> {
+        self.runs.get_mut(self.active_run)?.session.as_mut()
+    }
+
+    fn running_count(&self) -> usize {
+        self.runs.iter().filter(|r| r.session.is_some()).count()
+    }
+
+    fn targets(&self) -> Vec<&Device> {
+        if self.multi {
+            self.marked_devices.iter().collect()
+        } else {
+            self.selected_device.iter().collect()
+        }
+    }
+
+    fn toggle_mark(&mut self) {
+        if let Some(device) = self
+            .visible_devices()
+            .get(self.device_index)
+            .cloned()
+            .cloned()
+        {
+            if let Some(index) = self.marked_devices.iter().position(|d| d.id == device.id) {
+                self.marked_devices.remove(index);
+            } else if self.marked_devices.len() < runs::MAX_RUNS {
+                self.marked_devices.push(device);
+            } else {
+                self.status = format!("Select at most {} devices per batch.", runs::MAX_RUNS);
+                return;
+            }
+            self.status = format!(
+                "{} devices selected · Space checks · Enter chooses configuration.",
+                self.marked_devices.len()
+            );
+        }
+    }
+
+    fn switch_run(&mut self, index: usize) {
+        if index < self.runs.len() {
+            self.active_run = index;
+            self.page = Page::Console;
+            self.actions_open = false;
+            self.help = false;
+            self.search = None;
+            self.searching = false;
+            self.dragging_scrollbar = None;
+            self.action_scroll_drag = false;
+        }
+    }
+
+    fn start_batch(&mut self, cols: u16, rows: u16) {
+        if self.running_count() > 0 {
+            self.status =
+                "Stop the current batch before starting another. F6 returns to its consoles."
+                    .into();
+            return;
+        }
+        let Some(config) = self
+            .visible_configs()
+            .get(self.config_index)
+            .cloned()
+            .cloned()
+        else {
+            return;
+        };
+        let devices: Vec<_> = self.targets().into_iter().cloned().collect();
+        if devices.is_empty() {
+            return;
+        }
+        // Validate every command before starting any child. Device IDs from
+        // launch.json remain constraints, and are never silently overridden.
+        let plans: Result<Vec<_>> = devices
+            .iter()
+            .map(|d| self.tool.plan(&config, &d.id, self.ownit))
+            .collect();
+        let plans = match plans {
+            Ok(plans) => plans,
+            Err(error) => {
+                self.status = format!("Cannot start batch: {error:#}");
+                return;
+            }
+        };
+        let mut next_runs = Vec::with_capacity(devices.len());
+        for (device, plan) in devices.into_iter().zip(plans) {
+            let run = match Session::start_with_color(
+                &plan,
+                rows.saturating_sub(9),
+                cols.saturating_sub(3),
+                Some(self.colors),
+            ) {
+                Ok(mut session) => {
+                    if config.is_test() {
+                        session.animations =
+                            flutter_run_tui::animation::AnimationControl::new(false);
+                    }
+                    runs::Run::running(device, config.name.clone(), session)
+                }
+                Err(error) => runs::Run::failed(
+                    device,
+                    config.name.clone(),
+                    format!("{error:#}"),
+                    rows.saturating_sub(9),
+                    cols.saturating_sub(3),
+                ),
+            };
+            next_runs.push(run);
+        }
+        if !self.multi
+            && let Some(error) = next_runs.first().and_then(|r| r.outcome.as_ref())
+        {
+            self.status = format!("Cannot start: {error}");
+            return;
+        }
+        self.runs = next_runs;
+        self.last_log.take();
+        self.last_log_scrollback = 0;
+        self.last_log_offset = 0;
+        self.saved.last_device = self.runs.first().map(|r| r.device.id.clone());
+        self.saved.last_config = Some(config.name.clone());
+        self.active_config = config.name;
+        self.save();
+        self.status =
+            "F5/F6 switch consoles · F7 devices · q/Esc stops this session · Ctrl+q quits all."
+                .into();
+        self.switch_run(0);
+    }
+
     fn pinned(&self) -> Vec<String> {
         let mut ids: Vec<_> = self
             .launch
@@ -408,6 +550,7 @@ impl App {
             .iter()
             .filter_map(|c| c.device_id.clone())
             .collect();
+        ids.extend(self.marked_devices.iter().map(|d| d.id.clone()));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.ownit {
             ids.push("mac-designed-for-ipad".into());
@@ -435,6 +578,13 @@ impl App {
             .or(self.saved.last_device.clone());
         self.devices = merge_devices(&self.discovered, &self.saved.favorites, &self.pinned());
         for device in &mut self.devices {
+            if !device.available
+                && !device.favorite
+                && let Some(marked) = self.marked_devices.iter().find(|d| d.id == device.id)
+            {
+                device.name = marked.name.clone();
+                device.platform = marked.platform.clone();
+            }
             if device.id == "mac-designed-for-ipad" {
                 device.name = "My Mac (Designed for iPad)".into();
                 device.platform = "ios".into();
@@ -448,6 +598,11 @@ impl App {
             && let Some(updated) = self.devices.iter().find(|device| device.id == selected.id)
         {
             self.selected_device = Some(updated.clone());
+        }
+        for marked in &mut self.marked_devices {
+            if let Some(updated) = self.devices.iter().find(|d| d.id == marked.id) {
+                *marked = updated.clone();
+            }
         }
         let visible = self.visible_devices();
         self.device_index = selected
@@ -497,13 +652,14 @@ impl App {
 
     fn visible_configs(&self) -> Vec<&LaunchConfig> {
         let query = self.search.as_deref().unwrap_or("").to_lowercase();
+        let targets = self.targets();
         self.launch
             .configurations
             .iter()
             .filter(|c| {
-                self.selected_device
-                    .as_ref()
-                    .is_some_and(|d| self.compatible(c, d))
+                !targets.is_empty()
+                    && targets.iter().all(|d| self.compatible(c, d))
+                    && (targets.len() == 1 || c.needs_device())
                     && c.name.to_lowercase().contains(&query)
             })
             .collect()
@@ -547,24 +703,28 @@ impl App {
                 }
             }
         }
-        if let Some(session) = &mut self.session {
-            let revision = session.visual_revision;
-            let status = session.tick()?;
-            changed |= revision != session.visual_revision;
-            if let Some(status) = status {
-                changed = true;
-                self.last_log = Some(session.take_console());
-                self.last_log_scrollback = session.scrollback_len;
+        let mut ended = false;
+        for run in &mut self.runs {
+            let was_running = run.session.is_some();
+            changed |= run.tick();
+            ended |= was_running && run.session.is_none();
+        }
+        if ended {
+            let running = self.running_count();
+            self.status =
+                format!("{running} session(s) running. F5/F6 switch consoles; F7 devices.");
+            if !self.multi && running == 0 && self.runs.len() == 1 {
+                let mut run = self.runs.remove(0);
+                self.last_log = run.console.take();
+                self.last_log_scrollback = run.scrollback_len;
                 self.last_log_offset = 0;
+                self.active_config = run.config;
                 self.status = format!(
-                    "{} ended ({status}). Press l to view its console, or choose another device.",
-                    self.active_config
+                    "{} ended ({}). Press l to view its console, or choose another device.",
+                    self.active_config,
+                    run.outcome.as_deref().unwrap_or("finished")
                 );
-                self.session.take();
-                self.page = Page::Devices;
-                self.actions_open = false;
-                self.selected_device = None;
-                self.search = None;
+                self.back();
                 self.merge();
             }
         }
@@ -578,6 +738,8 @@ impl App {
         self.searching = false;
         self.selected_device = None;
         self.help = false;
+        self.dragging_scrollbar = None;
+        self.action_scroll_drag = false;
     }
 
     fn key(&mut self, key: KeyEvent, cols: u16, rows: u16) -> Result<bool> {
@@ -674,6 +836,38 @@ impl App {
             .into();
             return Ok(false);
         }
+        if matches!(key.code, KeyCode::F(5) | KeyCode::F(6)) && !self.runs.is_empty() {
+            let count = self.runs.len();
+            let index = if key.code == KeyCode::F(5) {
+                (self.active_run + count - 1) % count
+            } else if self.page == Page::Console {
+                (self.active_run + 1) % count
+            } else {
+                self.active_run
+            };
+            self.switch_run(index);
+            return Ok(false);
+        }
+        if key.code == KeyCode::F(7) {
+            self.back();
+            return Ok(false);
+        }
+        if key.code == KeyCode::F(8) {
+            let mut errors = vec![];
+            for run in &mut self.runs {
+                if let Some(session) = &mut run.session
+                    && let Err(error) = session.request_stop()
+                {
+                    errors.push(format!("{}: {error:#}", run.device.name));
+                }
+            }
+            self.status = if errors.is_empty() {
+                "Stopping all sessions. F8 again forces any remaining sessions.".into()
+            } else {
+                errors.join("; ")
+            };
+            return Ok(false);
+        }
         if self.page != Page::Console
             && key.modifiers.contains(KeyModifiers::CONTROL)
             && key.code == KeyCode::Char('c')
@@ -682,29 +876,33 @@ impl App {
             return Ok(false);
         }
         if self.page == Page::Console {
-            if let Some(session) = &mut self.session {
+            if matches!(
+                key.code,
+                KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
+            ) {
+                if let Some(run) = self.runs.get_mut(self.active_run) {
+                    match key.code {
+                        KeyCode::PageUp => run.scroll(rows.saturating_sub(9).max(1) as isize),
+                        KeyCode::PageDown => run.scroll(-(rows.saturating_sub(9).max(1) as isize)),
+                        KeyCode::Home => run.set_offset(usize::MAX),
+                        _ => run.set_offset(0),
+                    }
+                }
+                return Ok(false);
+            }
+            if self.active_session().is_none() {
+                if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                    self.back();
+                }
+                return Ok(false);
+            }
+            if let Some(session) = self.active_session_mut() {
                 let result = match key.code {
                     KeyCode::F(2) => session.animations.toggle(),
                     KeyCode::Esc | KeyCode::Char('q')
                         if !key.modifiers.contains(KeyModifiers::ALT) =>
                     {
                         session.request_stop()
-                    }
-                    KeyCode::PageUp => {
-                        session.scroll(rows.saturating_sub(9).max(1) as isize);
-                        Ok(())
-                    }
-                    KeyCode::PageDown => {
-                        session.scroll(-(rows.saturating_sub(9).max(1) as isize));
-                        Ok(())
-                    }
-                    KeyCode::Home => {
-                        session.parser.screen_mut().set_scrollback(usize::MAX);
-                        Ok(())
-                    }
-                    KeyCode::End => {
-                        session.parser.screen_mut().set_scrollback(0);
-                        Ok(())
                     }
                     _ => key_bytes(key)
                         .map(|bytes| session.send(&bytes))
@@ -772,6 +970,21 @@ impl App {
             &mut self.config_index
         };
         match key.code {
+            KeyCode::Char('m') if self.page == Page::Devices => {
+                if self.running_count() == 0 {
+                    self.multi = !self.multi;
+                    self.marked_devices.clear();
+                    self.status = if self.multi {
+                        "Multi-device mode · Space checks devices · Enter chooses configuration."
+                    } else {
+                        "Single-device mode · Enter chooses configuration."
+                    }
+                    .into();
+                } else {
+                    self.status = "Stop the current batch before changing selection mode.".into();
+                }
+            }
+            KeyCode::Char(' ') if self.page == Page::Devices && self.multi => self.toggle_mark(),
             KeyCode::Up | KeyCode::Char('k') => *index = index.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => {
                 *index = (*index + 1).min(count.saturating_sub(1))
@@ -824,6 +1037,11 @@ impl App {
                 }
             }
             KeyCode::Enter if self.page == Page::Devices => {
+                if self.multi && self.marked_devices.is_empty() {
+                    self.status =
+                        "Check at least one device with Space or the checkbox first.".into();
+                    return Ok(false);
+                }
                 if let Some(device) = self
                     .visible_devices()
                     .get(self.device_index)
@@ -842,45 +1060,7 @@ impl App {
                 }
             }
             KeyCode::Enter if self.page == Page::Configs => {
-                if let (Some(config), Some(device)) = (
-                    self.visible_configs()
-                        .get(self.config_index)
-                        .map(|c| (*c).clone()),
-                    self.selected_device.clone(),
-                ) {
-                    match self
-                        .tool
-                        .plan(&config, &device.id, self.ownit)
-                        .and_then(|plan| {
-                            Session::start_with_color(
-                                &plan,
-                                rows.saturating_sub(9),
-                                cols.saturating_sub(3),
-                                Some(self.colors),
-                            )
-                        }) {
-                        Ok(mut session) => {
-                            if config.is_test() {
-                                session.animations =
-                                    flutter_run_tui::animation::AnimationControl::new(false);
-                            }
-                            self.saved.last_device = Some(device.id);
-                            self.saved.last_config = Some(config.name.clone());
-                            self.save();
-                            self.active_config = config.name;
-                            // Only the latest run is retained. Release the old
-                            // history when a new console successfully starts.
-                            self.last_log.take();
-                            self.last_log_scrollback = 0;
-                            self.last_log_offset = 0;
-                            self.session = Some(session);
-                            self.status = "Flutter shortcuts go directly to the session. F2 slows animations; Esc stops; Ctrl+q asks to quit.".into();
-                            self.page = Page::Console;
-                            self.search = None;
-                        }
-                        Err(error) => self.status = format!("Cannot start: {error:#}"),
-                    }
-                }
+                self.start_batch(cols, rows);
             }
             _ => {}
         }
@@ -894,7 +1074,7 @@ impl App {
             return;
         }
         if self.page == Page::Console {
-            if let Some(session) = &mut self.session
+            if let Some(session) = self.active_session_mut()
                 && let Err(error) = session.send(text.as_bytes())
             {
                 self.status = error.to_string();
@@ -945,8 +1125,8 @@ impl App {
                 }
                 match self.page {
                     Page::Console => {
-                        if let Some(session) = &mut self.session {
-                            session.scroll(-direction * 3);
+                        if let Some(run) = self.runs.get_mut(self.active_run) {
+                            run.scroll(-direction * 3);
                         }
                     }
                     Page::LastLog => {
@@ -993,6 +1173,20 @@ impl App {
     fn activate(&mut self, action: ui::MouseAction, area: ratatui::layout::Rect) -> Result<bool> {
         use ui::MouseAction;
         let key = match action {
+            MouseAction::ToggleMulti => KeyCode::Char('m'),
+            MouseAction::ToggleDevice(index) => {
+                self.device_index = index;
+                self.toggle_mark();
+                return Ok(false);
+            }
+            MouseAction::PreviousConsole => KeyCode::F(5),
+            MouseAction::NextConsole => KeyCode::F(6),
+            MouseAction::Devices => KeyCode::F(7),
+            MouseAction::StopAll => KeyCode::F(8),
+            MouseAction::SwitchConsole(index) => {
+                self.switch_run(index);
+                return Ok(false);
+            }
             MouseAction::ScrollActions(index) => {
                 self.action_index = index;
                 self.action_scroll_drag = true;
@@ -1099,13 +1293,15 @@ impl App {
             return;
         }
         let (max, position, rows) = match self.page {
-            Page::Console => match &self.session {
-                Some(session) => (
-                    session.scrollback_len,
-                    session
-                        .scrollback_len
-                        .saturating_sub(session.parser.screen().scrollback()),
-                    session.parser.screen().size().0 as usize,
+            Page::Console => match self
+                .runs
+                .get(self.active_run)
+                .and_then(|r| r.screen().map(|s| (r, s)))
+            {
+                Some((run, screen)) => (
+                    run.max_offset(),
+                    run.max_offset().saturating_sub(run.offset()),
+                    (screen.size().0 as usize).min(track.height as usize),
                 ),
                 None => return,
             },
@@ -1146,11 +1342,8 @@ impl App {
     fn set_console_position(&mut self, position: usize) {
         match self.page {
             Page::Console => {
-                if let Some(session) = &mut self.session {
-                    session
-                        .parser
-                        .screen_mut()
-                        .set_scrollback(session.scrollback_len.saturating_sub(position));
+                if let Some(run) = self.runs.get_mut(self.active_run) {
+                    run.set_offset(run.max_offset().saturating_sub(position));
                 }
             }
             Page::LastLog => {
@@ -1246,6 +1439,8 @@ mod tests {
             device_list_offset: 0,
             config_list_offset: 0,
             selected_device: None,
+            multi: false,
+            marked_devices: vec![],
             page: Page::Devices,
             search: None,
             searching: false,
@@ -1253,7 +1448,8 @@ mod tests {
             refreshed: None,
             status: String::new(),
             ownit: true,
-            session: None,
+            runs: vec![],
+            active_run: 0,
             last_log: None,
             last_log_scrollback: 0,
             last_log_offset: 0,
@@ -1265,6 +1461,153 @@ mod tests {
         };
         app.merge();
         app
+    }
+
+    #[test]
+    fn multi_selection_is_bounded_and_survives_filtering_and_discovery() {
+        let mut app = app();
+        app.multi = true;
+        app.discovered = (0..10)
+            .map(|i| Device {
+                id: format!("device-{i}"),
+                name: format!("Phone {i}"),
+                platform: "ios".into(),
+                available: true,
+                favorite: false,
+            })
+            .collect();
+        app.merge();
+        for i in 0..10 {
+            app.device_index = app
+                .visible_devices()
+                .iter()
+                .position(|d| d.id == format!("device-{i}"))
+                .unwrap();
+            app.toggle_mark();
+        }
+        assert_eq!(app.marked_devices.len(), runs::MAX_RUNS);
+        assert!(app.status.contains("at most"));
+        app.search = Some("Phone 1".into());
+        app.discovered.clear();
+        app.merge();
+        assert_eq!(app.marked_devices.len(), runs::MAX_RUNS);
+        assert!(app.devices.iter().any(|d| d.id == "device-0"));
+        app.search = None;
+        app.device_index = app
+            .visible_devices()
+            .iter()
+            .position(|d| d.id == "device-1")
+            .unwrap();
+        app.toggle_mark();
+        assert_eq!(app.marked_devices.len(), runs::MAX_RUNS - 1);
+        assert!(!app.marked_devices.iter().any(|d| d.id == "device-1"));
+    }
+
+    #[test]
+    fn batch_validation_precedes_start_and_spawn_errors_have_separate_consoles() {
+        let mut app = app();
+        app.multi = true;
+        app.ownit = false;
+        let device = app
+            .devices
+            .iter()
+            .find(|d| d.id == "android-device")
+            .unwrap()
+            .clone();
+        let mut other = device.clone();
+        other.id = "second".into();
+        app.marked_devices = vec![device.clone(), other];
+        app.page = Page::Configs;
+        let workspace = app.launch.workspace.clone();
+        app.launch = LaunchFile::parse(
+            r#"{"configurations":[{"name":"Invalid task","preLaunchTask":"unsupported"}]}"#,
+            &workspace.join("launch.json"),
+            &workspace,
+        )
+        .unwrap();
+        app.runs.push(runs::Run::failed(
+            device,
+            "Previous".into(),
+            "retained".into(),
+            5,
+            70,
+        ));
+        app.start_batch(80, 24);
+        assert!(app.status.contains("Cannot start batch"));
+        assert_eq!(app.runs.len(), 1);
+        assert_eq!(app.runs[0].config, "Previous");
+        app.launch.configurations[0].pre_launch_task = None;
+        app.start_batch(80, 24); // The fixture SDK executable deliberately does not exist.
+        assert_eq!(app.runs.len(), 2);
+        assert_eq!(app.running_count(), 0);
+        assert_eq!(app.page, Page::Console);
+        assert!(
+            app.runs
+                .iter()
+                .all(|r| r.outcome.as_ref().unwrap().starts_with("failed:"))
+        );
+        assert!(
+            app.runs
+                .iter()
+                .all(|r| r.screen().unwrap().contents().contains("Cannot start:"))
+        );
+    }
+
+    #[test]
+    fn multi_configs_must_support_every_device_and_device_less_tests_run_once() {
+        let mut app = app();
+        app.multi = true;
+        let device = app
+            .devices
+            .iter()
+            .find(|d| d.id == "android-device")
+            .unwrap()
+            .clone();
+        let mut other = device.clone();
+        other.id = "another-device".into();
+        app.marked_devices = vec![device, other];
+        let names: Vec<_> = app
+            .visible_configs()
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Integration tests"]);
+        app.marked_devices.pop();
+        assert!(app.visible_configs().iter().any(|c| c.name == "Ordinary"));
+        app.marked_devices.clear();
+        assert!(app.visible_configs().is_empty());
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 80, 24)
+            .unwrap();
+        assert_eq!(app.page, Page::Devices);
+        assert!(app.status.contains("at least one"));
+    }
+
+    #[test]
+    fn completed_console_switching_and_pointer_actions_preserve_history() {
+        let mut app = app();
+        let device = app.devices[0].clone();
+        app.runs = vec![
+            runs::Run::failed(device.clone(), "First".into(), "one".into(), 20, 70),
+            runs::Run::failed(device, "Second".into(), "two".into(), 20, 70),
+        ];
+        let area = ratatui::layout::Rect::new(0, 0, 34, 12);
+        app.switch_run(0);
+        app.activate(ui::MouseAction::NextConsole, area).unwrap();
+        assert_eq!(app.active_run, 1);
+        assert!(app.runs[1].screen().unwrap().contents().contains("two"));
+        app.key(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE), 34, 12)
+            .unwrap();
+        assert_eq!(app.active_run, 0);
+        app.activate(ui::MouseAction::Devices, area).unwrap();
+        assert_eq!(app.page, Page::Devices);
+        app.activate(ui::MouseAction::SwitchConsole(1), area)
+            .unwrap();
+        assert_eq!(app.page, Page::Console);
+        assert_eq!(app.active_run, 1);
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 34, 12)
+            .unwrap();
+        assert_eq!(app.page, Page::Devices);
+        assert_eq!(app.runs.len(), 2);
     }
 
     #[test]
