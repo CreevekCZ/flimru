@@ -71,8 +71,9 @@ make setup-tools
 make check
 ```
 
-Checks cover formatting, strict Clippy lints, regression tests, and dependency
-advisories. See [contributing](CONTRIBUTING.md) for coding standards.
+Checks run locally and cover formatting, strict Clippy lints, regression tests,
+and dependency advisories. GitHub Actions is disabled for this repository.
+See [contributing](CONTRIBUTING.md) for coding standards.
 
 ## License
 

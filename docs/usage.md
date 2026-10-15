@@ -205,9 +205,8 @@ tests, and dependency advisories (including warnings). Rust's `rustfmt` and
 `unwrap`/`expect`, explicit panics, undocumented unsafe blocks,
 `std::sync::mpsc::channel`, `std::mem::forget`, and direct process exit.
 See [development standards](../CONTRIBUTING.md) for the
-ownership, error-handling, and review rules. A GitHub Actions workflow applies
-the checks on macOS and Linux when the project is hosted there; hosted runs
-have not been verified locally.
+ownership, error-handling, and review rules. All checks run locally; GitHub
+Actions is disabled for this repository.
 
 The optional real Dart VM Service test can also be run with:
 

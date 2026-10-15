@@ -37,4 +37,4 @@ of runtime safety: review the change and fix findings before calling it done.
 
 The optional real Dart VM test requires `FLUTTER_TUI_TEST_DART`; it uses an
 isolated fixture and does not qualify a physical-device run of a Flutter app.
-The CI workflow checks macOS and Linux when this directory is hosted on GitHub.
+All checks run locally; GitHub Actions is disabled for this repository.
