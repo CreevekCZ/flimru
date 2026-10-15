@@ -12,6 +12,7 @@ configuration, and run. When the session ends, the picker is ready for the next 
 - Supports mouse selection, wheel scrolling, and a draggable console scrollbar.
 - Preserves ANSI colors and highlights plain log severity; toggle colors with **F3**.
 - Provides every command through the clickable **Actions** menu or **F4**.
+- Navigates the top actions with **Tab/F10**, arrow keys, and **Enter/Space**.
 - Runs up to eight devices together in **multi-device mode**, with separate consoles.
 - Adds sessions while others keep running, with a device and configuration per addition.
 - Toggles normal / **5× slower animations** with **F2**, retaining the speed across hot restarts.
@@ -44,6 +45,10 @@ configuration, or `--help` for all options.
 | Console | `r`, `R`, `h`, `v` | Flutter reload, restart, help, DevTools |
 | Console | `F2` | Toggle animation speed in supported debug/profile apps |
 | Anywhere | `F3`, `F4` | Toggle colors, open the Actions menu |
+| Picker / saved console | `Tab`, `Shift+Tab` | Focus the top actions |
+| Anywhere | `F10` | Focus the top actions, including live consoles |
+| Top actions | `←` / `→`, `Enter` / `Space` | Choose and activate an action |
+| Top actions | `↓`, `Esc`, `Tab` | Return to the list or console |
 | Console | `PgUp` / `PgDn`, `End` | Scroll history, follow output |
 | Console | `q` / `Esc` | Stop session and return to the picker |
 | Anywhere | `F1`, `Ctrl+q` | Help, confirm launcher exit |

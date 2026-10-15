@@ -110,6 +110,8 @@ pub(crate) struct App {
     action_index: usize,
     action_offset: usize,
     action_scroll_drag: bool,
+    top_focus: Option<ui::TopFocus>,
+    toolbar_offset: usize,
     launch: LaunchFile,
     tool: FlutterTool,
     discovery: Discovery,
@@ -129,7 +131,6 @@ pub(crate) struct App {
     search: Option<String>,
     searching: bool,
     busy: bool,
-    refreshed: Option<Instant>,
     status: String,
     ownit: bool,
     runs: Vec<runs::Run>,
@@ -223,11 +224,7 @@ fn main() -> Result<()> {
     }
     let state_path = options.state.unwrap_or(state::default_path()?);
     let (saved, persistence_enabled, status) = match state::load(&state_path) {
-        Ok(saved) => (
-            saved,
-            true,
-            "Select a device, then a launch configuration.".into(),
-        ),
+        Ok(saved) => (saved, true, "Choose a device to continue.".into()),
         Err(error) => (
             State::default(),
             false,
@@ -242,6 +239,8 @@ fn main() -> Result<()> {
         action_index: 0,
         action_offset: 0,
         action_scroll_drag: false,
+        top_focus: None,
+        toolbar_offset: 0,
         launch,
         tool,
         discovery,
@@ -261,7 +260,6 @@ fn main() -> Result<()> {
         search: None,
         searching: false,
         busy: false,
-        refreshed: None,
         status,
         ownit,
         runs: vec![],
@@ -335,6 +333,10 @@ fn main() -> Result<()> {
             if redraw || last_draw.elapsed() >= Duration::from_secs(1) {
                 app.prepare_last_log(area.height.saturating_sub(9).max(1));
                 ui::update_picker_viewport(
+                    &mut app,
+                    ratatui::layout::Rect::new(0, 0, area.width, area.height),
+                );
+                ui::update_top_viewport(
                     &mut app,
                     ratatui::layout::Rect::new(0, 0, area.width, area.height),
                 );
@@ -458,6 +460,8 @@ impl App {
     fn switch_run(&mut self, index: usize) {
         if index < self.runs.len() {
             self.active_run = index;
+            self.top_focus = None;
+            self.toolbar_offset = 0;
             self.page = Page::Console;
             self.actions_open = false;
             self.help = false;
@@ -588,9 +592,7 @@ impl App {
         self.saved.last_config = Some(config.name.clone());
         self.active_config = config.name;
         self.save();
-        self.status =
-            "F5/F6 switch consoles · F7 devices · q/Esc stops this session · Ctrl+q quits all."
-                .into();
+        self.status = format!("{} session(s) running.", self.running_count());
         self.switch_run(first_new);
     }
 
@@ -735,7 +737,6 @@ impl App {
                     match result {
                         Ok(devices) => {
                             self.discovered = devices;
-                            self.refreshed = Some(Instant::now());
                             // Update labels of saved favorites without dropping absent favorites.
                             for favorite in &mut self.saved.favorites {
                                 if let Some(device) =
@@ -762,8 +763,7 @@ impl App {
         }
         if ended {
             let running = self.running_count();
-            self.status =
-                format!("{running} session(s) running. F5/F6 switch consoles; F7 devices.");
+            self.status = format!("{running} session(s) running.");
             if !self.retain_consoles && running == 0 && self.runs.len() == 1 {
                 let mut run = self.runs.remove(0);
                 self.last_log = run.console.take();
@@ -771,7 +771,7 @@ impl App {
                 self.last_log_offset = 0;
                 self.active_config = run.config;
                 self.status = format!(
-                    "{} ended ({}). Press l to view its console, or choose another device.",
+                    "{} ended ({}).",
                     self.active_config,
                     run.outcome.as_deref().unwrap_or("finished")
                 );
@@ -783,6 +783,8 @@ impl App {
     }
 
     fn back(&mut self) {
+        self.top_focus = None;
+        self.toolbar_offset = 0;
         self.actions_open = false;
         self.page = Page::Devices;
         self.search = None;
@@ -809,12 +811,7 @@ impl App {
             self.quit_confirmation = true;
             return Ok(false);
         }
-        if key.code == KeyCode::F(4)
-            || (key.code == KeyCode::Tab
-                && self.page != Page::Console
-                && !self.searching
-                && !self.actions_open)
-        {
+        if key.code == KeyCode::F(4) {
             self.actions_open = !self.actions_open;
             self.searching = false;
             self.help = false;
@@ -875,6 +872,36 @@ impl App {
         }
         if self.help {
             self.help = false;
+            return Ok(false);
+        }
+        if key.code == KeyCode::F(10) {
+            if self.top_focus.is_some() {
+                self.top_focus = None;
+            } else {
+                ui::focus_top(self, false);
+            }
+            return Ok(false);
+        }
+        if self.top_focus.is_some() {
+            match key.code {
+                KeyCode::Left => ui::step_top(self, -1),
+                KeyCode::Right => ui::step_top(self, 1),
+                KeyCode::Home => ui::focus_top(self, false),
+                KeyCode::End => ui::focus_top(self, true),
+                KeyCode::Enter | KeyCode::Char(' ') => return self.activate_top(cols, rows),
+                KeyCode::Down | KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab => {
+                    self.top_focus = None
+                }
+                KeyCode::Up => {}
+                KeyCode::F(_) => {}
+                _ => return Ok(false),
+            }
+            if !matches!(key.code, KeyCode::F(_)) {
+                return Ok(false);
+            }
+        } else if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) && self.page != Page::Console
+        {
+            ui::focus_top(self, key.code == KeyCode::BackTab);
             return Ok(false);
         }
         if key.code == KeyCode::F(3) {
@@ -1038,6 +1065,7 @@ impl App {
                 .into();
             }
             KeyCode::Char(' ') if self.page == Page::Devices && self.multi => self.toggle_mark(),
+            KeyCode::Up if *index == 0 => ui::focus_top(self, false),
             KeyCode::Up | KeyCode::Char('k') => *index = index.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => {
                 *index = (*index + 1).min(count.saturating_sub(1))
@@ -1101,6 +1129,8 @@ impl App {
                     .map(|d| (*d).clone())
                 {
                     self.selected_device = Some(device);
+                    self.top_focus = None;
+                    self.toolbar_offset = 0;
                     self.search = None;
                     self.page = Page::Configs;
                     let configs = self.visible_configs();
@@ -1123,7 +1153,7 @@ impl App {
 
 impl App {
     fn paste(&mut self, text: &str) {
-        if self.quit_confirmation || self.help || self.actions_open {
+        if self.quit_confirmation || self.help || self.actions_open || self.top_focus.is_some() {
             return;
         }
         if self.page == Page::Console {
@@ -1148,6 +1178,14 @@ impl App {
     fn mouse(&mut self, event: MouseEvent, area: ratatui::layout::Rect) -> Result<bool> {
         self.prepare_last_log(area.height.saturating_sub(9).max(1));
         ui::update_picker_viewport(self, area);
+        if matches!(event.kind, MouseEventKind::Down(MouseButton::Left))
+            && !self.actions_open
+            && !self.help
+            && !self.quit_confirmation
+            && ui::top_hit(self, area, event).is_none()
+        {
+            self.top_focus = None;
+        }
         // Menu clicks use the viewport actually drawn, not a pending keyboard
         // or wheel selection which has not reached the next frame yet.
         if matches!(event.kind, MouseEventKind::Up(MouseButton::Left)) {
@@ -1176,6 +1214,15 @@ impl App {
                         .min(ui::available_actions(self).len().saturating_sub(1));
                     return Ok(false);
                 }
+                if event.row <= area.y + 2 {
+                    if self.top_focus.is_none() {
+                        ui::focus_top(self, false);
+                    } else {
+                        ui::step_top(self, direction);
+                    }
+                    return Ok(false);
+                }
+                self.top_focus = None;
                 match self.page {
                     Page::Console => {
                         if let Some(run) = self.runs.get_mut(self.active_run) {
@@ -1220,12 +1267,36 @@ impl App {
         let Some(action) = ui::mouse_action(self, area, event) else {
             return Ok(false);
         };
+        // Pointer commands return to content. Keyboard focus is explicitly
+        // entered with Tab/F10 and restored when a keyboard-opened modal closes.
+        self.top_focus = None;
         self.activate(action, area)
     }
 
+    fn activate_top(&mut self, cols: u16, rows: u16) -> Result<bool> {
+        if let Some(action) = ui::focused_top_action(self) {
+            return self.activate(action, ratatui::layout::Rect::new(0, 0, cols, rows));
+        }
+        Ok(false)
+    }
+
     fn activate(&mut self, action: ui::MouseAction, area: ratatui::layout::Rect) -> Result<bool> {
+        let focus = self.top_focus.take();
+        let page = self.page;
+        let result = self.dispatch(action, area);
+        if self.top_focus.is_none() && self.page == page && !self.searching {
+            self.top_focus = focus;
+        }
+        result
+    }
+
+    fn dispatch(&mut self, action: ui::MouseAction, area: ratatui::layout::Rect) -> Result<bool> {
         use ui::MouseAction;
         let key = match action {
+            MouseAction::FocusToolbar(index) => {
+                ui::focus_toolbar_item(self, index);
+                return Ok(false);
+            }
             MouseAction::ToggleMulti => KeyCode::Char('m'),
             MouseAction::ToggleDevice(index) => {
                 self.device_index = index;
@@ -1480,6 +1551,8 @@ mod tests {
             action_index: 0,
             action_offset: 0,
             action_scroll_drag: false,
+            top_focus: None,
+            toolbar_offset: 0,
             launch,
             tool,
             discovery,
@@ -1499,7 +1572,6 @@ mod tests {
             search: None,
             searching: false,
             busy: false,
-            refreshed: None,
             status: String::new(),
             ownit: true,
             runs: vec![],
@@ -1516,6 +1588,85 @@ mod tests {
         };
         app.merge();
         app
+    }
+
+    #[test]
+    fn top_actions_use_arrows_without_activating_or_losing_modal_focus() {
+        let mut app = app();
+        let press = |app: &mut App, code| {
+            app.key(KeyEvent::new(code, KeyModifiers::NONE), 34, 12)
+                .unwrap()
+        };
+        press(&mut app, KeyCode::Tab);
+        assert!(!app.actions_open);
+        assert_eq!(
+            ui::focused_top_action(&app),
+            Some(ui::MouseAction::NextOrRun)
+        );
+        press(&mut app, KeyCode::Right);
+        assert_eq!(
+            ui::focused_top_action(&app),
+            Some(ui::MouseAction::ToggleMulti)
+        );
+        assert!(!app.multi);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.multi);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!app.multi);
+        press(&mut app, KeyCode::Down);
+        assert!(app.top_focus.is_none());
+        app.device_index = 0;
+        press(&mut app, KeyCode::Up);
+        assert!(app.top_focus.is_some());
+        for _ in 0..12 {
+            if ui::focused_top_action(&app) == Some(ui::MouseAction::Actions) {
+                break;
+            }
+            press(&mut app, KeyCode::Right);
+        }
+        let origin = app.top_focus;
+        assert_eq!(ui::focused_top_action(&app), Some(ui::MouseAction::Actions));
+        press(&mut app, KeyCode::Enter);
+        assert!(app.actions_open);
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.actions_open);
+        assert_eq!(app.top_focus, origin);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::End);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.quit_confirmation);
+        assert!(!press(&mut app, KeyCode::Enter));
+        assert!(!app.quit_confirmation);
+        assert_eq!(app.top_focus, origin);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.top_focus.is_none());
+        assert_eq!(app.page, Page::Devices);
+        press(&mut app, KeyCode::Tab);
+        app.paste("ignored");
+        assert!(app.search.is_none());
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.page, Page::Configs);
+        assert!(app.top_focus.is_none());
+    }
+
+    #[test]
+    fn header_navigation_and_disappearing_actions_are_safe() {
+        let mut app = app();
+        app.top_focus = Some(ui::TopFocus::Navigation(1));
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 80, 24)
+            .unwrap();
+        assert_eq!(app.page, Page::Configs);
+        app.top_focus = Some(ui::TopFocus::Navigation(0));
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 80, 24)
+            .unwrap();
+        assert_eq!(app.page, Page::Devices);
+        app.top_focus = Some(ui::TopFocus::Toolbar(ui::MouseAction::LastLog));
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 80, 24)
+            .unwrap();
+        assert_eq!(app.page, Page::Devices);
+        assert!(!app.quit_confirmation && !app.actions_open);
+        ui::update_top_viewport(&mut app, ratatui::layout::Rect::new(0, 0, 34, 12));
+        assert!(app.top_focus.is_none());
     }
 
     #[test]

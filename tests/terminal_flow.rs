@@ -183,22 +183,63 @@ impl Terminal {
         self.mouse(0, column, row);
     }
 
+    fn until_control(&mut self, label: &str) {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        loop {
+            self.read();
+            let (_, cols) = self.screen.screen().size();
+            if self
+                .screen
+                .screen()
+                .rows(0, cols)
+                .nth(1)
+                .is_some_and(|row| row.contains(label))
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Missing toolbar {label}: {}",
+                self.screen.screen().contents()
+            );
+            thread::sleep(Duration::from_millis(15));
+        }
+    }
+
+    fn click_control(&mut self, label: &str) {
+        self.until_control(label);
+        let (_, cols) = self.screen.screen().size();
+        let row = self.screen.screen().rows(0, cols).nth(1).unwrap();
+        let byte = row.find(label).unwrap();
+        self.mouse(0, row[..byte].chars().count() as u16, 1);
+    }
+
     fn menu_click(&mut self, label: &str) {
         self.read();
-        if self.cell_at_text("[Menu]").is_some() {
-            self.click_text("[Menu]");
+        let (_, cols) = self.screen.screen().size();
+        let toolbar = self.screen.screen().rows(0, cols).nth(1).unwrap();
+        self.click_control(if toolbar.contains("Menu") {
+            "Menu"
         } else {
-            self.click_text("F4 Actions");
-        }
+            "Actions"
+        });
         self.until("Actions ·");
         for _ in 0..20 {
             self.read();
             let (_, cols) = self.screen.screen().size();
+            let menu_top = self
+                .screen
+                .screen()
+                .rows(0, cols)
+                .position(|row| row.contains("Actions ·"))
+                .unwrap();
             let hit = self
                 .screen
                 .screen()
                 .rows(0, cols)
                 .enumerate()
+                .skip(menu_top + 1)
+                .take_while(|(_, text)| !text.contains("↑↓ / wheel"))
                 .find_map(|(row, text)| {
                     text.find(label)
                         .map(|column| (text[..column].chars().count() as u16, row as u16))
@@ -462,7 +503,7 @@ fn sessions_can_be_added_and_replaced_without_interrupting_existing_consoles() {
                 })
                 .unwrap();
             tui.screen.screen_mut().set_size(12, 34);
-            tui.until("[Menu]");
+            tui.until_control("Menu");
         }
         let pid_for = |name| {
             std::fs::read_to_string(project.path().join(format!("child.pid.{name}")))
@@ -553,6 +594,92 @@ fn sessions_can_be_added_and_replaced_without_interrupting_existing_consoles() {
 }
 
 #[test]
+fn top_actions_support_keyboard_focus_without_leaking_navigation_to_flutter() {
+    for compact in [true, false] {
+        let project = project();
+        let state = project.path().join("state.json");
+        std::fs::write(
+            &state,
+            r#"{"favorites":[{"id":"demo-device","name":"Saved phone","platform":"ios"}]}"#,
+        )
+        .unwrap();
+        let mut tui = Terminal::start(project.path(), &state);
+        tui.until("Saved phone");
+        if compact {
+            tui.master
+                .resize(PtySize {
+                    rows: 12,
+                    cols: 34,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .unwrap();
+            tui.screen.screen_mut().set_size(12, 34);
+            tui.until_control("Menu");
+        }
+        tui.send(b"\t\x1b[C"); // Tab enters the bar; Right focuses Multi.
+        tui.until_control("›Multi");
+        tui.send(b"\r");
+        tui.until("Multi 0/8");
+        tui.send(b" "); // Space activates the same focused button.
+        tui.until("Devices (");
+        tui.send(b"\x1b[B\r"); // Down returns to the list; Enter advances.
+        tui.until_control("Run");
+        tui.send(b"\t\r"); // Primary Run is the first focused action.
+        tui.until("SESSION READY");
+        tui.send(b"\t"); // Live-console Tab still belongs to Flutter.
+        let log_path = project.path().join("session.log");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !std::fs::read_to_string(&log_path)
+            .unwrap()
+            .contains("key:\t\n")
+        {
+            tui.read();
+            assert!(
+                Instant::now() < deadline,
+                "Tab was not forwarded: {}",
+                tui.screen.screen().contents()
+            );
+            thread::sleep(Duration::from_millis(15));
+        }
+        tui.send(b"\x1b[21~"); // F10 focuses the bar in a live console.
+        tui.until_control("›Stop");
+        tui.send(b"R\x1b[200~r\x1b[201~\x1b[C\x1b[C\x1b[C");
+        tui.until_control("›Color");
+        tui.send(b" ");
+        tui.until_control(if compact { "Color off" } else { "Color: off" });
+        tui.send(b"\x1bOS"); // F4 opens the menu without losing the trigger focus.
+        tui.until("Actions ·");
+        tui.send(b"\x1b");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            tui.read();
+            if !tui.screen.screen().contents().contains("Actions ·") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "Menu did not close");
+            thread::sleep(Duration::from_millis(15));
+        }
+        tui.until_control("›Color");
+        if compact {
+            tui.send(b"\x1b");
+        } else {
+            tui.mouse(0, 20, 8); // Clicking console content restores input focus too.
+        }
+        tui.until("F10 actions");
+        tui.send(b"h");
+        tui.until("shortcut:h");
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert!(!log.contains("key:R\n") && !log.contains("key:r\n"));
+        assert!(!log.contains("key:[\n") && !log.contains("key:\u{1b}\n"));
+        tui.send(b"\x1b[21~\r"); // Stop via a keyboard-focused toolbar action.
+        tui.until("ended");
+        tui.until_control("Next");
+        tui.quit();
+    }
+}
+
+#[test]
 fn multi_device_mouse_keyboard_consoles_are_isolated_and_completed_history_is_retained() {
     let project = multi_project();
     let state = project.path().join("state.json");
@@ -567,7 +694,7 @@ fn multi_device_mouse_keyboard_consoles_are_isolated_and_completed_history_is_re
         })
         .unwrap();
     tui.screen.screen_mut().set_size(12, 34);
-    tui.until("[Menu]");
+    tui.until_control("Menu");
     tui.menu_click("Multi-device: off");
     tui.until("Multi 0/8");
     tui.send(b" ");
@@ -577,12 +704,12 @@ fn multi_device_mouse_keyboard_consoles_are_isolated_and_completed_history_is_re
     tui.click_text("[ ]");
     tui.until("Multi 2/8");
     tui.send(b"\r");
-    tui.until("[Run]");
-    tui.click_text("[Run]");
+    tui.until_control("Run");
+    tui.click_control("Run");
     tui.until("READY:alpha");
     tui.send(b"h");
     tui.until("shortcut:alpha:h");
-    tui.click_text("[F6 >]");
+    tui.click_text("F6 ›");
     tui.until("READY:beta");
     assert!(!tui.screen.screen().contents().contains("shortcut:alpha:h"));
     tui.send(b"v");
@@ -594,13 +721,13 @@ fn multi_device_mouse_keyboard_consoles_are_isolated_and_completed_history_is_re
     tui.until("alpha-history:099");
     tui.send(b"\x1b[H");
     tui.until("READY:alpha");
-    tui.click_text("[F6 >]");
+    tui.click_text("F6 ›");
     tui.until("shortcut:beta:v");
-    tui.click_text("[F5 <]");
+    tui.click_text("F5 ‹");
     tui.until("READY:alpha"); // Per-console scroll position survives switching.
     tui.send(b"q");
     tui.until("1 session(s) running");
-    tui.click_text("[F6 >]");
+    tui.click_text("F6 ›");
     tui.send(b"r");
     tui.until("shortcut:beta:r");
     tui.send(b"x");
@@ -612,7 +739,7 @@ fn multi_device_mouse_keyboard_consoles_are_isolated_and_completed_history_is_re
     tui.send(b"\x1b[18~"); // F7 returns to selection, without losing the batch.
     tui.until("Multi 2/8");
     tui.send(b"\r");
-    tui.until("[Run]");
+    tui.until_control("Run");
     tui.send(b"\r");
     tui.until("READY:alpha");
     tui.send(b"\x1b[19~"); // F8 stops every session.
@@ -747,7 +874,7 @@ fn compact_actions_support_pointer_commands_and_keyboard_navigation() {
         })
         .unwrap();
     tui.screen.screen_mut().set_size(12, 34);
-    tui.until("[Menu]");
+    tui.until_control("Menu");
     tui.menu_click("Filter list");
     tui.until("[Apply]");
     tui.send(b"\x1b[200~Saved\x1b[201~");
@@ -757,9 +884,9 @@ fn compact_actions_support_pointer_commands_and_keyboard_navigation() {
     tui.until("[Filter /]");
     tui.menu_click("Reload configs");
     tui.until("reloaded.");
-    tui.click_text("[Next]");
-    tui.until("[Run]");
-    tui.click_text("[Run]");
+    tui.click_control("Next");
+    tui.until_control("Run");
+    tui.click_control("Run");
     tui.until("SESSION READY");
     for (label, key) in [
         ("Hot reload", 'r'),
@@ -789,7 +916,7 @@ fn compact_actions_support_pointer_commands_and_keyboard_navigation() {
     tui.send(b"\r");
     tui.until("Quit Flutter Run?");
     tui.send(b"\r"); // Safe default remains Cancel.
-    tui.until("[Menu]");
+    tui.until_control("Menu");
     tui.quit();
 }
 
@@ -882,9 +1009,9 @@ fn mouse_controls_scrollbar_and_quit_confirmation_in_real_tui() {
     tui.mouse(0, 4, 4);
     tui.until("added to favorites.");
     // Next then Run toolbar buttons; no keyboard needed to start.
-    tui.mouse(0, 3, 1);
+    tui.click_control("Next");
     tui.until("Configurations (1)");
-    tui.mouse(0, 12, 1);
+    tui.click_control("Run");
     tui.until("SESSION READY");
     tui.send(b"o");
     tui.until("history-line:099");

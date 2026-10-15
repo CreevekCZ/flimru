@@ -50,8 +50,24 @@ configuration reload, saved logs, Flutter reload/restart/help/DevTools, animatio
 speed, colors, and exit. Commands remain reachable at the minimum 34 × 12 size.
 Use arrows, Tab/Shift+Tab, Home/End or PageUp/PageDown to navigate the menu;
 Enter/Space activates, and Esc/F4 closes. The mouse supports clicks, wheel
-scrolling, and scrollbar dragging. Tab also opens the menu from a picker or
-saved console; live-console Tab continues to go to Flutter.
+scrolling, and scrollbar dragging.
+
+The top action bar supports direct keyboard focus. **Tab/Shift+Tab** enters it
+from a picker or saved console; **F10** works on every page. **Left/Right** moves
+through every top command and clickable navigation step, **Home/End** jumps to
+the first/last target, and **Enter/Space** activates. **Down**, **Esc**, **Tab**,
+or **F10** returns to content without running a command. Up from the first list
+item also focuses the top bar. A `›` marker and contrasting background show
+focus, including a visible text cue in monochrome. Keyboard-opened menus and
+confirmation dialogs restore their trigger focus when dismissed.
+
+In narrow windows the contextual actions scroll into view as focus moves;
+Actions/Menu, Help, and Quit stay visible. Click the overflow chevron or scroll
+the wheel over the header to reach hidden actions with a mouse. Pointer commands
+return to content so mouse and keyboard input can be mixed naturally. Navigation
+and paste are not sent to Flutter while the bar has focus; **Tab inside the
+unfocused live console still goes directly to Flutter**. Use F10 to leave or
+re-enter its command bar.
 
 Click **Filter /** or press `/` to edit the list filter. Type or paste the
 query, then click **Apply** or press Enter. **Clear** or Esc clears it. Search

@@ -2,8 +2,8 @@ use crate::{App, Page};
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    layout::{Alignment, Constraint, Layout, Rect},
+    style::{Color, Style},
     text::{Line, Span, Text},
     widgets::{
         Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
@@ -15,6 +15,12 @@ const ACCENT: Color = Color::Rgb(96, 210, 225);
 const MUTED: Color = Color::Rgb(151, 163, 180);
 const GREEN: Color = Color::Rgb(128, 214, 159);
 const PANEL: Color = Color::Rgb(22, 28, 39);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TopFocus {
+    Toolbar(MouseAction),
+    Navigation(usize),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAction {
@@ -52,6 +58,7 @@ pub enum MouseAction {
     Devices,
     StopAll,
     AddSession,
+    FocusToolbar(usize),
 }
 
 pub struct ActionItem {
@@ -331,13 +338,9 @@ fn list_hit(
 
 fn navigation_tabs(area: Rect) -> Vec<(&'static str, Rect)> {
     let labels = if area.width < 52 {
-        ["  1 Device", " › 2 Config", " › 3 Console"]
+        [" Devices", "  › Config", "  › Console"]
     } else {
-        [
-            "  1  Device",
-            "   ›   2  Configuration",
-            "   ›   3  Console",
-        ]
+        [" Devices", "   › Configuration", "   › Console"]
     };
     let mut x = area.x;
     labels
@@ -357,6 +360,161 @@ struct Control {
     action: MouseAction,
 }
 
+struct Button {
+    label: String,
+    action: MouseAction,
+}
+
+fn toolbar_buttons(app: &App, compact: bool) -> Vec<Button> {
+    let mut buttons = vec![];
+    let mut add = |label: String, action| buttons.push(Button { label, action });
+    match app.page {
+        Page::Devices => {
+            add("Next".into(), MouseAction::NextOrRun);
+            add(
+                format!(
+                    "Multi{}{}",
+                    if compact { " " } else { ": " },
+                    if app.multi { "on" } else { "off" }
+                ),
+                MouseAction::ToggleMulti,
+            );
+            add("Refresh".into(), MouseAction::Refresh);
+            add("Configs".into(), MouseAction::ReloadConfigs);
+            if app.last_log.is_some() {
+                add(
+                    if compact { "Logs" } else { "Last console" }.into(),
+                    MouseAction::LastLog,
+                );
+            }
+        }
+        Page::Configs => {
+            add("Run".into(), MouseAction::NextOrRun);
+            add("Back".into(), MouseAction::Back);
+            add("Refresh".into(), MouseAction::Refresh);
+            add("Configs".into(), MouseAction::ReloadConfigs);
+        }
+        Page::Console => {
+            add(
+                if app.active_session().is_some() {
+                    "Stop"
+                } else {
+                    "Back"
+                }
+                .into(),
+                MouseAction::Back,
+            );
+            add(
+                if compact { "Add" } else { "Add session" }.into(),
+                MouseAction::AddSession,
+            );
+            if let Some(session) = app.active_session() {
+                add(
+                    format!("Speed {}", session.animations.short_label()),
+                    MouseAction::ToggleAnimations,
+                );
+            }
+            add(
+                format!(
+                    "Color{}{}",
+                    if compact { " " } else { ": " },
+                    if app.colors { "on" } else { "off" }
+                ),
+                MouseAction::ToggleColors,
+            );
+        }
+        Page::LastLog => add("Back".into(), MouseAction::Back),
+    }
+    add(
+        if compact { "Menu" } else { "Actions" }.into(),
+        MouseAction::Actions,
+    );
+    add("Help".into(), MouseAction::Help);
+    add("Quit".into(), MouseAction::Quit);
+    buttons
+}
+
+fn navigation_action(app: &App, index: usize) -> Option<MouseAction> {
+    if app.page == Page::Console && app.runs.len() > 1 {
+        return [
+            MouseAction::PreviousConsole,
+            MouseAction::NextConsole,
+            MouseAction::Actions,
+        ]
+        .get(index)
+        .copied();
+    }
+    match (index, app.page) {
+        (0, Page::Configs | Page::LastLog) => Some(MouseAction::Back),
+        (0, Page::Console) => Some(MouseAction::Devices),
+        (1, Page::Devices) if !app.visible_devices().is_empty() => Some(MouseAction::NextOrRun),
+        (2, Page::Devices | Page::Configs) if !app.runs.is_empty() => {
+            Some(MouseAction::SwitchConsole(app.active_run))
+        }
+        (2, Page::Devices | Page::Configs) if app.last_log.is_some() => Some(MouseAction::LastLog),
+        _ => None,
+    }
+}
+
+fn top_targets(app: &App) -> Vec<TopFocus> {
+    let mut targets: Vec<_> = toolbar_buttons(app, false)
+        .into_iter()
+        .map(|b| TopFocus::Toolbar(b.action))
+        .collect();
+    targets.extend(
+        (0..3)
+            .filter(|&i| navigation_action(app, i).is_some())
+            .map(TopFocus::Navigation),
+    );
+    targets
+}
+
+pub fn focus_top(app: &mut App, reverse: bool) {
+    let targets = top_targets(app);
+    app.top_focus = if reverse {
+        targets.last()
+    } else {
+        targets.first()
+    }
+    .copied();
+    app.searching = false;
+    app.dragging_scrollbar = None;
+}
+
+pub fn focus_toolbar_item(app: &mut App, index: usize) {
+    let buttons = toolbar_buttons(app, false);
+    if let Some(button) = buttons
+        .get(index)
+        .filter(|_| index < buttons.len().saturating_sub(3))
+    {
+        app.top_focus = Some(TopFocus::Toolbar(button.action));
+        app.searching = false;
+    }
+}
+
+pub fn step_top(app: &mut App, direction: isize) {
+    let targets = top_targets(app);
+    let current = targets.iter().position(|t| Some(*t) == app.top_focus);
+    let next = current
+        .map(|i| (i as isize + direction).rem_euclid(targets.len() as isize) as usize)
+        .unwrap_or(if direction < 0 {
+            targets.len().saturating_sub(1)
+        } else {
+            0
+        });
+    app.top_focus = targets.get(next).copied();
+}
+
+pub fn focused_top_action(app: &App) -> Option<MouseAction> {
+    match app.top_focus? {
+        TopFocus::Toolbar(action) => toolbar_buttons(app, false)
+            .iter()
+            .any(|b| b.action == action)
+            .then_some(action),
+        TopFocus::Navigation(index) => navigation_action(app, index),
+    }
+}
+
 fn console_navigation(app: &App, area: Rect) -> Vec<Control> {
     let Some(run) = app.runs.get(app.active_run) else {
         return vec![];
@@ -374,12 +532,12 @@ fn console_navigation(app: &App, area: Rect) -> Vec<Control> {
     );
     vec![
         Control {
-            label: "[F5 <]".into(),
+            label: " F5 ‹ ".into(),
             rect: Rect::new(area.x, area.y, 6, 1),
             action: MouseAction::PreviousConsole,
         },
         Control {
-            label: "[F6 >]".into(),
+            label: " F6 › ".into(),
             rect: Rect::new(area.x + 7, area.y, 6, 1),
             action: MouseAction::NextConsole,
         },
@@ -391,115 +549,172 @@ fn console_navigation(app: &App, area: Rect) -> Vec<Control> {
     ]
 }
 
-fn controls(app: &App, area: Rect) -> Vec<Control> {
+fn toolbar_layout(area: Rect) -> (Rect, Rect) {
     let compact = area.width < 76;
-    let mut buttons = vec![];
-    match app.page {
-        Page::Devices => {
-            buttons.push(("Next".into(), MouseAction::NextOrRun));
-            if !compact {
-                buttons.push((
-                    format!("m Multi {}", if app.multi { "on" } else { "off" }),
-                    MouseAction::ToggleMulti,
-                ));
-                buttons.push(("Refresh".into(), MouseAction::Refresh));
-                buttons.push(("Configs".into(), MouseAction::ReloadConfigs));
-                buttons.push(("Last console".into(), MouseAction::LastLog));
-            } else if area.width >= 34 {
-                buttons.push(("Refresh".into(), MouseAction::Refresh));
-            }
-        }
-        Page::Configs => {
-            buttons.push(("Back".into(), MouseAction::Back));
-            buttons.push(("Run".into(), MouseAction::NextOrRun));
-            if !compact {
-                buttons.push(("Refresh".into(), MouseAction::Refresh));
-                buttons.push(("Configs".into(), MouseAction::ReloadConfigs));
-            }
-        }
-        Page::Console => {
-            buttons.push((
-                if app.active_session().is_some() {
-                    "Stop"
-                } else {
-                    "Back"
-                }
-                .into(),
-                MouseAction::Back,
-            ));
-            if !compact {
-                buttons.push(("F9 Add".into(), MouseAction::AddSession));
-            }
-            if let Some(session) = app.active_session() {
-                buttons.push((
-                    if compact {
-                        format!("F2 {}", session.animations.short_label())
-                    } else {
-                        format!("F2 {}", session.animations.label())
-                    },
-                    MouseAction::ToggleAnimations,
-                ));
-            }
-            buttons.push((
-                format!("F3 Colors {}", if app.colors { "on" } else { "off" }),
-                MouseAction::ToggleColors,
-            ));
-        }
-        Page::LastLog => buttons.push(("Back".into(), MouseAction::Back)),
+    let global_width = if compact { 20 } else { 23 };
+    let global = Rect::new(
+        area.right().saturating_sub(global_width),
+        area.y + 1,
+        global_width.min(area.width),
+        1,
+    );
+    let context = Rect::new(
+        area.x + 1,
+        area.y + 1,
+        global.x.saturating_sub(area.x + 2),
+        1,
+    );
+    (context, global)
+}
+
+fn button_width(button: &Button, capacity: u16) -> u16 {
+    (button
+        .label
+        .chars()
+        .count()
+        .saturating_add(2)
+        .min(u16::MAX as usize) as u16)
+        .min(capacity)
+}
+
+pub fn update_top_viewport(app: &mut App, area: Rect) {
+    let buttons = toolbar_buttons(app, area.width < 76);
+    let count = buttons.len().saturating_sub(3);
+    app.toolbar_offset = app.toolbar_offset.min(count.saturating_sub(1));
+    if app.top_focus.is_some() && focused_top_action(app).is_none() {
+        app.top_focus = None;
     }
-    buttons.push((
-        if compact {
-            "Menu".into()
-        } else {
-            "F4 Actions".into()
-        },
-        MouseAction::Actions,
-    ));
-    buttons.push(("Help".into(), MouseAction::Help));
-    buttons.push(("Quit".into(), MouseAction::Quit));
-    let essential_start = buttons.len() - 3;
-    let mut x = area.x + 1;
-    buttons
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, (mut label, action))| {
-            // Keep Help and Quit visible even if an externally changed animation
-            // factor needs more space than the usual 1× / 5× label.
-            let reserved = if index < essential_start {
-                if compact { 21 } else { 33 }
-            } else {
-                0
-            };
-            let available = area.right().saturating_sub(x).saturating_sub(reserved);
-            let padding = if compact { 2 } else { 4 };
-            if action == MouseAction::ToggleAnimations
-                && label.chars().count() + padding > usize::from(available)
-            {
-                let limit = usize::from(available).saturating_sub(padding);
-                label = label
-                    .chars()
-                    .take(limit.saturating_sub(1))
-                    .collect::<String>();
-                label.push('…');
-            }
-            let label = if compact {
-                format!("[{label}]")
-            } else {
-                format!("[ {label} ]")
-            };
-            let width = label.chars().count() as u16;
-            if width > available {
-                return None;
-            }
-            let rect = Rect::new(x, area.y + 1, width, 1);
-            x += width + 1;
-            Some(Control {
-                label,
-                rect,
-                action,
-            })
-        })
-        .collect()
+    let Some(TopFocus::Toolbar(action)) = app.top_focus else {
+        return;
+    };
+    let Some(index) = buttons[..count].iter().position(|b| b.action == action) else {
+        return;
+    };
+    let (context, _) = toolbar_layout(body_layout(area)[0]);
+    let capacity = context.width.saturating_sub(1);
+    app.toolbar_offset = app.toolbar_offset.min(index);
+    while app.toolbar_offset < index {
+        let used: usize = buttons[app.toolbar_offset..=index]
+            .iter()
+            .map(|b| usize::from(button_width(b, capacity)) + 1)
+            .sum();
+        if used <= usize::from(capacity) + 1 {
+            break;
+        }
+        app.toolbar_offset += 1;
+    }
+}
+
+fn padded_label(label: &str, width: u16) -> String {
+    let limit = usize::from(width.saturating_sub(2));
+    let count = label.chars().count();
+    let text: String = if count > limit {
+        label
+            .chars()
+            .take(limit.saturating_sub(1))
+            .chain(std::iter::once('…'))
+            .collect()
+    } else {
+        label.into()
+    };
+    format!(" {text} ")
+}
+
+fn controls(app: &App, area: Rect) -> Vec<Control> {
+    let buttons = toolbar_buttons(app, area.width < 76);
+    let count = buttons.len().saturating_sub(3);
+    let (context, global) = toolbar_layout(area);
+    let capacity = context.width.saturating_sub(1);
+    let mut controls = vec![];
+    let mut x = context.x;
+    for button in buttons.iter().take(count).skip(app.toolbar_offset) {
+        let width = button_width(button, capacity);
+        if x.saturating_add(width) > context.x + capacity {
+            break;
+        }
+        controls.push(Control {
+            label: padded_label(&button.label, width),
+            rect: Rect::new(x, context.y, width, 1),
+            action: button.action,
+        });
+        x += width + 1;
+    }
+    let shown = controls.len();
+    if app.toolbar_offset + shown < count {
+        controls.push(Control {
+            label: "›".into(),
+            rect: Rect::new(context.right().saturating_sub(1), context.y, 1, 1),
+            action: MouseAction::FocusToolbar(app.toolbar_offset + shown),
+        });
+    } else if app.toolbar_offset > 0 {
+        controls.push(Control {
+            label: "‹".into(),
+            rect: Rect::new(context.right().saturating_sub(1), context.y, 1, 1),
+            action: MouseAction::FocusToolbar(app.toolbar_offset - 1),
+        });
+    }
+    x = global.x;
+    for button in &buttons[count..] {
+        let width = button_width(button, global.right().saturating_sub(x));
+        controls.push(Control {
+            label: padded_label(&button.label, width),
+            rect: Rect::new(x, global.y, width, 1),
+            action: button.action,
+        });
+        x += width + 1;
+    }
+    controls
+}
+
+pub fn top_hit(app: &App, area: Rect, event: MouseEvent) -> Option<TopFocus> {
+    if app.actions_open || app.help || app.quit_confirmation || area.width < 34 || area.height < 12
+    {
+        return None;
+    }
+    let parts = body_layout(area);
+    for control in controls(app, parts[0]) {
+        if control.rect.contains((event.column, event.row).into())
+            && !matches!(control.action, MouseAction::FocusToolbar(_))
+        {
+            return Some(TopFocus::Toolbar(control.action));
+        }
+    }
+    let rectangles: Vec<_> = if app.page == Page::Console && app.runs.len() > 1 {
+        console_navigation(app, parts[1])
+            .into_iter()
+            .map(|c| c.rect)
+            .collect()
+    } else {
+        navigation_tabs(parts[1])
+            .into_iter()
+            .map(|(_, r)| r)
+            .collect()
+    };
+    rectangles.iter().enumerate().find_map(|(index, rect)| {
+        (rect.contains((event.column, event.row).into()) && navigation_action(app, index).is_some())
+            .then_some(TopFocus::Navigation(index))
+    })
+}
+
+fn focused_label(label: &str, focused: bool) -> String {
+    if focused {
+        format!("›{}", label.chars().skip(1).collect::<String>())
+    } else {
+        label.into()
+    }
+}
+
+fn top_style(focused: bool, primary: bool) -> Style {
+    if focused {
+        Style::default()
+            .bg(ACCENT)
+            .fg(Color::Rgb(14, 19, 27))
+            .bold()
+    } else if primary {
+        Style::default().fg(ACCENT).bold()
+    } else {
+        Style::default().fg(MUTED)
+    }
 }
 
 fn quit_modal(area: Rect) -> (Rect, Rect, Rect) {
@@ -586,6 +801,12 @@ pub fn mouse_action(app: &App, area: Rect, event: MouseEvent) -> Option<MouseAct
             Some(MouseAction::DismissActions)
         };
     }
+    if let Some(target) = top_hit(app, area, event) {
+        return match target {
+            TopFocus::Toolbar(action) => Some(action),
+            TopFocus::Navigation(index) => navigation_action(app, index),
+        };
+    }
     let parts = body_layout(area);
     if matches!(app.page, Page::Devices | Page::Configs)
         && parts[3].contains((event.column, event.row).into())
@@ -604,31 +825,6 @@ pub fn mouse_action(app: &App, area: Rect, event: MouseEvent) -> Option<MouseAct
     for control in controls(app, parts[0]) {
         if control.rect.contains((event.column, event.row).into()) {
             return Some(control.action);
-        }
-    }
-    if app.page == Page::Console && app.runs.len() > 1 {
-        for control in console_navigation(app, parts[1]) {
-            if control.rect.contains((event.column, event.row).into()) {
-                return Some(control.action);
-            }
-        }
-    }
-    for (index, (_, rect)) in navigation_tabs(parts[1]).iter().enumerate() {
-        if app.page == Page::Console && app.runs.len() > 1 {
-            break;
-        }
-        if rect.contains((event.column, event.row).into()) {
-            return match (index, app.page) {
-                (0, Page::Configs | Page::LastLog) => Some(MouseAction::Back),
-                (1, Page::Devices) => Some(MouseAction::NextOrRun),
-                (2, Page::Devices | Page::Configs) if app.last_log.is_some() => {
-                    Some(MouseAction::LastLog)
-                }
-                (2, Page::Devices | Page::Configs) if !app.runs.is_empty() => {
-                    Some(MouseAction::SwitchConsole(app.active_run))
-                }
-                _ => None,
-            };
         }
     }
     match app.page {
@@ -716,25 +912,56 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .file_name()
         .unwrap_or_default()
         .to_string_lossy();
-    let mut title = vec![
-        Span::styled("  FLUTTER RUN ", Style::default().fg(ACCENT).bold()),
-        Span::styled(format!(" / {project}"), Style::default().fg(MUTED)),
-    ];
-    if app.busy {
-        title.push(Span::styled(
-            "    ◌ discovering",
-            Style::default().fg(ACCENT),
-        ));
-    } else if let Some(when) = app.refreshed {
-        title.push(Span::styled(
-            format!("    updated {}s ago", when.elapsed().as_secs()),
-            Style::default().fg(MUTED),
-        ));
-    }
-    frame.render_widget(Paragraph::new(Line::from(title)), parts[0]);
+    let badge = if app.busy {
+        if area.width < 60 {
+            "Scanning"
+        } else {
+            "Scanning devices"
+        }
+        .into()
+    } else if app.running_count() > 0 {
+        format!("{} running", app.running_count())
+    } else {
+        format!(
+            "{} device{}",
+            app.devices.len(),
+            if app.devices.len() == 1 { "" } else { "s" }
+        )
+    };
+    let badge = format!("  {badge}");
+    let header = Layout::horizontal([
+        Constraint::Min(1),
+        Constraint::Length((badge.len() as u16).min(area.width / 3)),
+    ])
+    .split(Rect::new(parts[0].x, parts[0].y, parts[0].width, 1));
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Flutter Run", Style::default().bold()),
+            Span::styled(format!(" / {project}"), Style::default().fg(ACCENT)),
+        ])),
+        header[0],
+    );
+    frame.render_widget(
+        Paragraph::new(badge)
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(MUTED)),
+        header[1],
+    );
+    let (_, global) = toolbar_layout(parts[0]);
+    frame.render_widget(
+        Paragraph::new("│").style(Style::default().fg(Color::Rgb(45, 54, 68))),
+        Rect::new(global.x.saturating_sub(1), global.y, 1, 1),
+    );
     for control in controls(app, parts[0]) {
+        let focused = app.top_focus == Some(TopFocus::Toolbar(control.action));
         frame.render_widget(
-            Paragraph::new(control.label).style(Style::default().fg(ACCENT)),
+            Paragraph::new(focused_label(&control.label, focused)).style(top_style(
+                focused,
+                matches!(
+                    control.action,
+                    MouseAction::NextOrRun | MouseAction::Actions
+                ),
+            )),
             control.rect,
         );
     }
@@ -744,34 +971,23 @@ pub fn draw(frame: &mut Frame, app: &App) {
         _ => 2,
     };
     if app.page == Page::Console && app.runs.len() > 1 {
-        for control in console_navigation(app, parts[1]) {
+        for (index, control) in console_navigation(app, parts[1]).into_iter().enumerate() {
+            let focused = app.top_focus == Some(TopFocus::Navigation(index));
             frame.render_widget(
-                Paragraph::new(control.label).style(Style::default().fg(ACCENT).bold()),
+                Paragraph::new(focused_label(&control.label, focused))
+                    .style(top_style(focused, false)),
                 control.rect,
             );
         }
     } else {
-        frame.render_widget(
-            Paragraph::new(Line::from(
-                navigation_tabs(parts[1])
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (text, _))| {
-                        Span::styled(
-                            *text,
-                            Style::default()
-                                .fg(if i == active { ACCENT } else { MUTED })
-                                .add_modifier(if i == active {
-                                    Modifier::BOLD
-                                } else {
-                                    Modifier::empty()
-                                }),
-                        )
-                    })
-                    .collect::<Vec<_>>(),
-            )),
-            parts[1],
-        );
+        for (index, (text, rect)) in navigation_tabs(parts[1]).into_iter().enumerate() {
+            let focused = app.top_focus == Some(TopFocus::Navigation(index));
+            frame.render_widget(
+                Paragraph::new(focused_label(text, focused))
+                    .style(top_style(focused, index == active)),
+                rect,
+            );
+        }
     }
 
     match app.page {
@@ -807,6 +1023,20 @@ pub fn draw(frame: &mut Frame, app: &App) {
                             })
                     ),
                 );
+                if app.top_focus.is_none()
+                    && !app.help
+                    && !app.actions_open
+                    && !app.quit_confirmation
+                    && run.session.is_some()
+                    && screen.scrollback() == 0
+                    && !screen.hide_cursor()
+                {
+                    let content = panel(String::new()).inner(parts[2]);
+                    let (row, col) = screen.cursor_position();
+                    if row < content.height && col < content.width.saturating_sub(1) {
+                        frame.set_cursor_position((content.x + col, content.y + row));
+                    }
+                }
             }
         }
         Page::LastLog => {
@@ -834,6 +1064,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 "Esc clears filter"
             }
         )
+    } else if app.page == Page::Console
+        && let Some(session) = app.active_session()
+    {
+        format!("  {} · {}", app.status, session.animations.label())
     } else {
         format!("  {}", app.status)
     };
@@ -866,22 +1100,28 @@ pub fn draw(frame: &mut Frame, app: &App) {
             .wrap(Wrap { trim: false }),
         status_area,
     );
-    let help = match app.page {
-        Page::Devices => {
-            if app.multi {
-                "  Space/[ ] check · Enter next · m single mode\n  F4/Menu actions · F6 consoles · Ctrl+q quit"
-            } else {
-                "  Click/↑↓ select · ☆/f favorite · Enter next\n  m multi-device · F4/Menu actions · Ctrl+q quit"
+    let help = if app.top_focus.is_some() {
+        " ←/→ choose · Enter/Space select\n ↓ / Esc / Tab return to content"
+    } else {
+        match app.page {
+            Page::Devices => {
+                if app.multi {
+                    " Space check · Enter next\n Tab actions · / filter · m single"
+                } else if area.width < 60 {
+                    " ↑↓ select · Enter next\n Tab actions · / filter"
+                } else {
+                    " ↑↓ select · Enter next · f favorite\n Tab actions · / filter · m multi"
+                }
             }
-        }
-        Page::Configs => {
-            "  Click/↑↓ select · Enter run · Esc back · / filter\n  F4/Menu all actions · Ctrl+q quit · F1 help"
-        }
-        Page::Console => {
-            "  r reload · R restart · F2 slow · F4 menu\n  F5/F6 switch · F9 add · q/Esc stop this"
-        }
-        Page::LastLog => {
-            "  Wheel/PgUp/PgDn scroll · Home/End · F3 colors\n  F4/Menu all actions · Esc back · Ctrl+q quit"
+            Page::Configs => " ↑↓ select · Enter run · Esc back\n Tab actions · / filter",
+            Page::Console => {
+                if area.width < 60 {
+                    " r reload · R restart · Esc stop\n F10 actions · F9 add"
+                } else {
+                    " r reload · R restart · Esc stop\n F10 actions · F5/F6 consoles · F9 add"
+                }
+            }
+            Page::LastLog => " PgUp/PgDn scroll · Esc back\n Tab actions · Home/End",
         }
     };
     frame.render_widget(
@@ -903,7 +1143,7 @@ fn panel(title: String) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .border_style(Style::default().fg(Color::Rgb(60, 76, 96)))
+        .border_style(Style::default().fg(Color::Rgb(45, 54, 68)))
         .style(Style::default().bg(PANEL))
 }
 
@@ -1005,8 +1245,20 @@ fn picker(frame: &mut Frame, app: &App, area: Rect) {
     let count = items.len();
     let list = List::new(items)
         .block(panel(title))
-        .highlight_style(Style::default().bg(Color::Rgb(34, 64, 78)).fg(Color::White))
-        .highlight_symbol("› ");
+        .highlight_style(
+            Style::default()
+                .bg(if app.top_focus.is_some() {
+                    Color::Rgb(26, 38, 49)
+                } else {
+                    Color::Rgb(34, 64, 78)
+                })
+                .fg(Color::White),
+        )
+        .highlight_symbol(if app.top_focus.is_some() {
+            "  "
+        } else {
+            "› "
+        });
     let inner = panel(String::new()).inner(split[0]);
     let previous = if app.page == Page::Devices {
         app.device_list_offset
@@ -1244,12 +1496,6 @@ fn console(
         track,
         &mut scrollbar,
     );
-    if snapshot_offset.is_none() && screen.scrollback() == 0 && !screen.hide_cursor() {
-        let (row, col) = screen.cursor_position();
-        if row < content.height && col < content.width {
-            frame.set_cursor_position((content.x + col, content.y + row));
-        }
-    }
 }
 
 fn actions_overlay(frame: &mut Frame, app: &App) {
@@ -1313,7 +1559,7 @@ fn help_overlay(frame: &mut Frame) {
         height,
     );
     frame.render_widget(Clear, modal);
-    frame.render_widget(Paragraph::new("m: multi · Space: check\nEnter: next/run · F4: menu\nF5/F6: console · F9: add\nq/Esc: stop · F8: stop all\nWheel / PgUp/PgDn: scroll\nF2: slow · F3: colors\nCtrl+q: confirm quit\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
+    frame.render_widget(Paragraph::new("F10: focus top actions\n←→ choose · Enter activate\nTab: actions in pickers\nF4: menu · F9: add session\nF5/F6: switch · F8: stop all\nF2: slow · F3: colors\nCtrl+q: quit · Esc: return\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
 }
 
 fn quit_overlay(frame: &mut Frame, app: &App) {
@@ -1356,7 +1602,7 @@ mod tests {
     use super::*;
     use crossterm::event::KeyModifiers;
     use flutter_run_tui::device::Device;
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{Terminal, backend::TestBackend, style::Modifier};
 
     fn click(x: u16, y: u16) -> MouseEvent {
         MouseEvent {
@@ -1542,6 +1788,80 @@ mod tests {
             }
             app.actions_open = false;
         }
+    }
+
+    #[test]
+    fn every_top_action_is_visible_when_focused_and_matches_its_pointer_target() {
+        let mut app = crate::tests::app();
+        app.last_log = Some(vt100::Parser::new(10, 40, 0));
+        app.selected_device = app.devices.first().cloned();
+        let device = app.devices[0].clone();
+        app.runs = vec![
+            crate::runs::Run::failed(device.clone(), "Demo".into(), "one".into(), 8, 40),
+            crate::runs::Run::failed(device, "Demo".into(), "two".into(), 8, 40),
+        ];
+        for page in [Page::Devices, Page::Configs, Page::Console, Page::LastLog] {
+            app.page = page;
+            for (width, height) in [(34, 12), (52, 18), (76, 24), (120, 40), (191, 45)] {
+                let area = Rect::new(0, 0, width, height);
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                for target in top_targets(&app) {
+                    app.top_focus = Some(target);
+                    update_top_viewport(&mut app, area);
+                    terminal.draw(|f| draw(f, &app)).unwrap();
+                    let parts = body_layout(area);
+                    let rect = match target {
+                        TopFocus::Toolbar(action) => {
+                            controls(&app, parts[0])
+                                .into_iter()
+                                .find(|c| c.action == action)
+                                .unwrap()
+                                .rect
+                        }
+                        TopFocus::Navigation(index) => {
+                            if page == Page::Console {
+                                console_navigation(&app, parts[1])[index].rect
+                            } else {
+                                navigation_tabs(parts[1])[index].1
+                            }
+                        }
+                    };
+                    assert!(rect.width > 0 && rect.right() <= width);
+                    assert_eq!(top_hit(&app, area, click(rect.x, rect.y)), Some(target));
+                    assert_eq!(
+                        mouse_action(&app, area, click(rect.x, rect.y)),
+                        focused_top_action(&app)
+                    );
+                    assert_eq!(terminal.backend().buffer()[(rect.x, rect.y)].symbol(), "›");
+                    let controls = controls(&app, parts[0]);
+                    for (i, left) in controls.iter().enumerate() {
+                        for right in &controls[i + 1..] {
+                            assert!(left.rect.intersection(right.rect).is_empty());
+                        }
+                    }
+                    for action in [MouseAction::Actions, MouseAction::Help, MouseAction::Quit] {
+                        assert!(controls.iter().any(|c| c.action == action));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn toolbar_pointer_hits_use_the_last_drawn_viewport() {
+        let mut app = crate::tests::app();
+        let area = Rect::new(0, 0, 34, 12);
+        focus_top(&mut app, false);
+        update_top_viewport(&mut app, area);
+        let next = controls(&app, body_layout(area)[0])
+            .into_iter()
+            .find(|c| c.action == MouseAction::NextOrRun)
+            .unwrap();
+        step_top(&mut app, 1);
+        step_top(&mut app, 1);
+        app.mouse(click(next.rect.x, next.rect.y), area).unwrap();
+        assert_eq!(app.page, Page::Configs);
+        assert!(app.top_focus.is_none());
     }
 
     #[test]
