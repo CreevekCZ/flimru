@@ -433,6 +433,126 @@ fn assert_multi_children_reaped(project: &Path) {
 }
 
 #[test]
+fn sessions_can_be_added_and_replaced_without_interrupting_existing_consoles() {
+    for hang_up in [false, true] {
+        let project = multi_project();
+        let script = std::fs::read_to_string(project.path().join("fake-flutter")).unwrap()
+            .replace(r#"{"id":"beta","name":"Beta","targetPlatform":"android","isSupported":true}"#, r#"{"id":"beta","name":"Beta","targetPlatform":"android","isSupported":true},{"id":"gamma","name":"Gamma","targetPlatform":"ios","isSupported":true}"#)
+            .replace("printf '%s' \"$$\" >", "device=\"${SESSION_NAME:-$device}\"\nprintf '%s' \"$$\" >");
+        std::fs::write(project.path().join("fake-flutter"), script).unwrap();
+        std::fs::write(
+            project.path().join(".vscode/launch.json"),
+            r#"{"configurations":[
+            {"name":"Demo debug"},
+            {"name":"Alternate debug","env":{"SESSION_NAME":"alternate"}},
+            {"name":"Blocked config","preLaunchTask":"unsupported"}
+        ]}"#,
+        )
+        .unwrap();
+        let state = project.path().join("state.json");
+        let mut tui = Terminal::start(project.path(), &state);
+        tui.until("Alpha");
+        if !hang_up {
+            tui.master
+                .resize(PtySize {
+                    rows: 12,
+                    cols: 34,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .unwrap();
+            tui.screen.screen_mut().set_size(12, 34);
+            tui.until("[Menu]");
+        }
+        let pid_for = |name| {
+            std::fs::read_to_string(project.path().join(format!("child.pid.{name}")))
+                .unwrap()
+                .parse::<i32>()
+                .unwrap()
+        };
+        let alive = |pid| {
+            // SAFETY: signal zero only checks a recorded fixture child id.
+            assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
+        };
+        tui.send(b"\r");
+        tui.until("Configurations (3)");
+        tui.send(b"\r");
+        tui.until("READY:alpha");
+        let alpha = pid_for("alpha");
+        tui.send(b"h");
+        tui.until("shortcut:alpha:h");
+        tui.menu_click("Add session");
+        tui.until("Add session");
+        tui.send(b"\x1b[B\r"); // Beta, original configuration.
+        tui.until("Configurations (3)");
+        tui.send(b"\r");
+        tui.until("READY:beta");
+        let old_beta = pid_for("beta");
+        alive(alpha);
+        tui.send(b"\x1b[20~"); // F9, then Gamma with a different configuration.
+        tui.until("Add session");
+        tui.send(b"\x1b[B\r");
+        tui.until("Configurations (3)");
+        tui.send(b"\x1b[B\r");
+        tui.until("READY:alternate");
+        let alternate = pid_for("alternate");
+        alive(alpha);
+        alive(old_beta);
+        tui.send(b"\x1b[15~q"); // Stop only Beta.
+        tui.until("2 session(s) running");
+        assert_eq!(
+            // SAFETY: signal zero checks the old Beta child, without signaling it.
+            unsafe { libc::kill(old_beta, 0) },
+            -1
+        );
+        tui.send(b"\x1b[20~");
+        tui.until("Add session");
+        tui.send(b"\x1b[H\x1b[B\r"); // Beta again, choose original config instead of the saved Alternate.
+        tui.until("Configurations (3)");
+        tui.send(b"\x1b[H\r");
+        tui.until("READY:beta");
+        let beta = pid_for("beta");
+        assert_ne!(old_beta, beta);
+        alive(alpha);
+        alive(alternate);
+        tui.send(b"\x1b[15~\x1b[15~\x1b[15~"); // Back to original Alpha, with its original history.
+        tui.until("shortcut:alpha:h");
+        tui.send(b"r");
+        tui.until("shortcut:alpha:r");
+        tui.send(b"\x1b[20~");
+        tui.until("Add session");
+        tui.send(b"\x1b[H\r"); // Alpha with Demo debug would be a duplicate.
+        tui.until("Configurations (3)");
+        tui.send(b"\x1b[H\r");
+        tui.until("Already running");
+        assert_eq!(pid_for("alpha"), alpha);
+        tui.send(b"\x1b[F\r"); // Invalid preLaunchTask must leave all three alone.
+        tui.until("Cannot start batch");
+        alive(alpha);
+        alive(beta);
+        alive(alternate);
+        if hang_up {
+            tui.hang_up();
+            tui.wait_for_exit(Instant::now() + Duration::from_secs(2));
+        } else {
+            tui.quit();
+        }
+        for pid in [alpha, beta, alternate] {
+            assert_eq!(
+                // SAFETY: signal zero only checks these owned fixture child ids.
+                unsafe { libc::kill(pid, 0) },
+                -1,
+                "Added session was not reaped"
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+        }
+    }
+}
+
+#[test]
 fn multi_device_mouse_keyboard_consoles_are_isolated_and_completed_history_is_retained() {
     let project = multi_project();
     let state = project.path().join("state.json");

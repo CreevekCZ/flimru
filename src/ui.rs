@@ -51,6 +51,7 @@ pub enum MouseAction {
     SwitchConsole(usize),
     Devices,
     StopAll,
+    AddSession,
 }
 
 pub struct ActionItem {
@@ -69,6 +70,7 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
             action,
         });
     };
+    add("Add session", "F9", MouseAction::AddSession);
     match app.page {
         Page::Devices | Page::Configs => {
             if app.page == Page::Configs {
@@ -156,9 +158,10 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
         for (index, run) in app.runs.iter().enumerate() {
             add(
                 &format!(
-                    "Console {}: {} ({})",
+                    "Console {}: {} · {} ({})",
                     index + 1,
                     run.device.name,
+                    run.config,
                     if run.session.is_some() {
                         "running"
                     } else {
@@ -424,6 +427,9 @@ fn controls(app: &App, area: Rect) -> Vec<Control> {
                 .into(),
                 MouseAction::Back,
             ));
+            if !compact {
+                buttons.push(("F9 Add".into(), MouseAction::AddSession));
+            }
             if let Some(session) = app.active_session() {
                 buttons.push((
                     if compact {
@@ -872,7 +878,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             "  Click/↑↓ select · Enter run · Esc back · / filter\n  F4/Menu all actions · Ctrl+q quit · F1 help"
         }
         Page::Console => {
-            "  r reload · R restart · F2 slow · F4 menu\n  F5/F6 switch · F7 devices · q/Esc stop this"
+            "  r reload · R restart · F2 slow · F4 menu\n  F5/F6 switch · F9 add · q/Esc stop this"
         }
         Page::LastLog => {
             "  Wheel/PgUp/PgDn scroll · Home/End · F3 colors\n  F4/Menu all actions · Esc back · Ctrl+q quit"
@@ -1307,7 +1313,7 @@ fn help_overlay(frame: &mut Frame) {
         height,
     );
     frame.render_widget(Clear, modal);
-    frame.render_widget(Paragraph::new("m: multi · Space: check\nEnter: next/run · F4: menu\nF5/F6: console · F7: devices\nq/Esc: stop · F8: stop all\nWheel / PgUp/PgDn: scroll\nF2: slow · F3: colors\nCtrl+q: confirm quit\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
+    frame.render_widget(Paragraph::new("m: multi · Space: check\nEnter: next/run · F4: menu\nF5/F6: console · F9: add\nq/Esc: stop · F8: stop all\nWheel / PgUp/PgDn: scroll\nF2: slow · F3: colors\nCtrl+q: confirm quit\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
 }
 
 fn quit_overlay(frame: &mut Frame, app: &App) {

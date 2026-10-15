@@ -134,6 +134,7 @@ pub(crate) struct App {
     ownit: bool,
     runs: Vec<runs::Run>,
     active_run: usize,
+    retain_consoles: bool,
     last_log: Option<vt100::Parser>,
     last_log_scrollback: usize,
     last_log_offset: usize,
@@ -265,6 +266,7 @@ fn main() -> Result<()> {
         ownit,
         runs: vec![],
         active_run: 0,
+        retain_consoles: false,
         last_log: None,
         last_log_scrollback: 0,
         last_log_offset: 0,
@@ -466,13 +468,24 @@ impl App {
         }
     }
 
-    fn start_batch(&mut self, cols: u16, rows: u16) {
-        if self.running_count() > 0 {
+    fn begin_add(&mut self) {
+        if self.running_count() == runs::MAX_RUNS {
             self.status =
-                "Stop the current batch before starting another. F6 returns to its consoles."
-                    .into();
+                "All eight session slots are in use. Stop one before adding another.".into();
             return;
         }
+        self.retain_consoles |= !self.runs.is_empty();
+        self.back();
+        self.marked_devices.clear();
+        self.config_index = 0;
+        self.merge();
+        self.status = format!(
+            "Add session · {} running · choose device(s), then configuration.",
+            self.running_count()
+        );
+    }
+
+    fn start_batch(&mut self, cols: u16, rows: u16) {
         let Some(config) = self
             .visible_configs()
             .get(self.config_index)
@@ -483,6 +496,25 @@ impl App {
         };
         let devices: Vec<_> = self.targets().into_iter().cloned().collect();
         if devices.is_empty() {
+            return;
+        }
+        let running = self.running_count();
+        if running + devices.len() > runs::MAX_RUNS {
+            self.status = format!(
+                "Only {} session slot(s) free. Select fewer devices or stop a session.",
+                runs::MAX_RUNS - running
+            );
+            return;
+        }
+        if let Some(device) = devices.iter().find(|device| {
+            self.runs.iter().any(|run| {
+                run.session.is_some() && run.device.id == device.id && run.config == config.name
+            })
+        }) {
+            self.status = format!(
+                "Already running: {} on {}. Choose another device or configuration.",
+                config.name, device.name
+            );
             return;
         }
         // Validate every command before starting any child. Device IDs from
@@ -529,18 +561,37 @@ impl App {
             self.status = format!("Cannot start: {error}");
             return;
         }
-        self.runs = next_runs;
+        let added_device = next_runs.first().map(|r| r.device.id.clone());
+        if running == 0 {
+            self.runs.clear();
+        } else {
+            // Completed histories are the only eviction candidates. Never
+            // replace a running child, and keep total retained consoles bounded.
+            while self.runs.len() + next_runs.len() > runs::MAX_RUNS {
+                if let Some(index) = self.runs.iter().position(|r| r.session.is_none()) {
+                    self.runs.remove(index);
+                } else {
+                    // Capacity was checked before spawning. New children are
+                    // still owned locally and are cleaned up on this return.
+                    self.status = "No console slots available.".into();
+                    return;
+                }
+            }
+        }
+        let first_new = self.runs.len();
+        self.runs.extend(next_runs);
+        self.retain_consoles = self.multi || running > 0;
         self.last_log.take();
         self.last_log_scrollback = 0;
         self.last_log_offset = 0;
-        self.saved.last_device = self.runs.first().map(|r| r.device.id.clone());
+        self.saved.last_device = added_device;
         self.saved.last_config = Some(config.name.clone());
         self.active_config = config.name;
         self.save();
         self.status =
             "F5/F6 switch consoles · F7 devices · q/Esc stops this session · Ctrl+q quits all."
                 .into();
-        self.switch_run(0);
+        self.switch_run(first_new);
     }
 
     fn pinned(&self) -> Vec<String> {
@@ -713,7 +764,7 @@ impl App {
             let running = self.running_count();
             self.status =
                 format!("{running} session(s) running. F5/F6 switch consoles; F7 devices.");
-            if !self.multi && running == 0 && self.runs.len() == 1 {
+            if !self.retain_consoles && running == 0 && self.runs.len() == 1 {
                 let mut run = self.runs.remove(0);
                 self.last_log = run.console.take();
                 self.last_log_scrollback = run.scrollback_len;
@@ -849,7 +900,12 @@ impl App {
             return Ok(false);
         }
         if key.code == KeyCode::F(7) {
+            self.retain_consoles |= !self.runs.is_empty();
             self.back();
+            return Ok(false);
+        }
+        if key.code == KeyCode::F(9) {
+            self.begin_add();
             return Ok(false);
         }
         if key.code == KeyCode::F(8) {
@@ -971,18 +1027,15 @@ impl App {
         };
         match key.code {
             KeyCode::Char('m') if self.page == Page::Devices => {
-                if self.running_count() == 0 {
-                    self.multi = !self.multi;
-                    self.marked_devices.clear();
-                    self.status = if self.multi {
-                        "Multi-device mode · Space checks devices · Enter chooses configuration."
-                    } else {
-                        "Single-device mode · Enter chooses configuration."
-                    }
-                    .into();
+                self.retain_consoles |= !self.runs.is_empty();
+                self.multi = !self.multi;
+                self.marked_devices.clear();
+                self.status = if self.multi {
+                    "Multi-device mode · Space checks devices · Enter chooses configuration."
                 } else {
-                    self.status = "Stop the current batch before changing selection mode.".into();
+                    "Single-device mode · Enter chooses configuration."
                 }
+                .into();
             }
             KeyCode::Char(' ') if self.page == Page::Devices && self.multi => self.toggle_mark(),
             KeyCode::Up | KeyCode::Char('k') => *index = index.saturating_sub(1),
@@ -1182,6 +1235,7 @@ impl App {
             MouseAction::PreviousConsole => KeyCode::F(5),
             MouseAction::NextConsole => KeyCode::F(6),
             MouseAction::Devices => KeyCode::F(7),
+            MouseAction::AddSession => KeyCode::F(9),
             MouseAction::StopAll => KeyCode::F(8),
             MouseAction::SwitchConsole(index) => {
                 self.switch_run(index);
@@ -1450,6 +1504,7 @@ mod tests {
             ownit: true,
             runs: vec![],
             active_run: 0,
+            retain_consoles: false,
             last_log: None,
             last_log_scrollback: 0,
             last_log_offset: 0,
@@ -1461,6 +1516,132 @@ mod tests {
         };
         app.merge();
         app
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn adding_sessions_evicts_only_completed_histories_and_enforces_capacity() {
+        let mut app = app();
+        app.multi = true;
+        app.ownit = false;
+        let workspace = app.launch.workspace.clone();
+        app.launch = LaunchFile::parse(
+            r#"{"configurations":[{"name":"Shared"}]}"#,
+            &workspace.join("launch.json"),
+            &workspace,
+        )
+        .unwrap();
+        let device = app.devices[0].clone();
+        let sleeper = |device: Device, name: &str| {
+            runs::Run::running(
+                device,
+                name.into(),
+                Session::start(
+                    &flutter_run_tui::tool::RunCommand {
+                        executable: "/bin/sh".into(),
+                        args: vec!["-c".into(), "exec sleep 30".into()],
+                        cwd: workspace.clone(),
+                        env: Default::default(),
+                    },
+                    5,
+                    70,
+                )
+                .unwrap(),
+            )
+        };
+        app.runs = (0..7)
+            .map(|i| {
+                runs::Run::failed(device.clone(), format!("old{i}"), "completed".into(), 5, 70)
+            })
+            .collect();
+        let mut live = sleeper(device.clone(), "Live");
+        live.session
+            .as_mut()
+            .unwrap()
+            .parser
+            .process(b"preserved live output");
+        app.runs.push(live);
+        let mut added_device = device.clone();
+        added_device.id = "additional-device".into();
+        app.marked_devices = vec![added_device.clone()];
+        for _ in 0..3 {
+            app.start_batch(80, 24); // A failed additional spawn also retains the live process.
+            assert_eq!(app.runs.len(), runs::MAX_RUNS);
+            assert_eq!(app.running_count(), 1);
+            assert_eq!(app.active_run, runs::MAX_RUNS - 1);
+            let live = app.runs.iter_mut().find(|r| r.config == "Live").unwrap();
+            assert!(live.session.as_mut().unwrap().tick().unwrap().is_none());
+            assert!(
+                live.screen()
+                    .unwrap()
+                    .contents()
+                    .contains("preserved live output")
+            );
+        }
+        assert!(!app.runs.iter().any(|r| r.config == "old0"));
+        assert_eq!(app.saved.last_device.as_deref(), Some("additional-device"));
+        app.runs = (0..8)
+            .map(|i| {
+                let mut d = device.clone();
+                d.id = format!("running-{i}");
+                sleeper(d, "Shared")
+            })
+            .collect();
+        app.page = Page::Console;
+        app.begin_add();
+        assert_eq!(app.page, Page::Console);
+        assert!(app.status.contains("eight session slots"));
+        app.start_batch(80, 24);
+        assert!(app.status.contains("0 session slot(s) free"));
+        assert_eq!(app.running_count(), 8);
+        app.runs.pop();
+        app.marked_devices.push(device);
+        app.start_batch(80, 24);
+        assert!(app.status.contains("1 session slot(s) free"));
+        assert_eq!(app.running_count(), 7);
+        app.marked_devices = vec![app.runs[0].device.clone()];
+        app.start_batch(80, 24);
+        assert!(app.status.contains("Already running"));
+        assert_eq!(app.running_count(), 7);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn last_session_ending_during_add_does_not_interrupt_configuration_selection() {
+        let mut app = app();
+        let device = app.devices[0].clone();
+        let session = Session::start(
+            &flutter_run_tui::tool::RunCommand {
+                executable: "/bin/sh".into(),
+                args: vec!["-c".into(), "exit 0".into()],
+                cwd: app.launch.workspace.clone(),
+                env: Default::default(),
+            },
+            5,
+            70,
+        )
+        .unwrap();
+        app.runs
+            .push(runs::Run::running(device, "Original".into(), session));
+        app.switch_run(0);
+        app.begin_add();
+        app.key(
+            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+            80,
+            24,
+        )
+        .unwrap();
+        assert!(app.multi);
+        app.page = Page::Configs;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while app.running_count() > 0 {
+            assert!(Instant::now() < deadline);
+            app.tick().unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(app.page, Page::Configs);
+        assert_eq!(app.runs.len(), 1);
+        assert!(app.runs[0].outcome.is_some());
     }
 
     #[test]

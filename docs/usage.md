@@ -86,17 +86,32 @@ Reload, restart, DevTools, animation changes, typing and paste affect only the
 displayed instance.
 
 **q/Esc** stops the displayed instance; pressing it again forces that instance.
-Completed consoles remain available until the next batch starts. **F7** returns
+Completed consoles remain available for review. **F7** returns
 to the device picker without stopping the batch. **F8** or **Actions → Stop all
-sessions** stops every instance; F8 again forces any remaining ones. Stop the
-current batch before starting another or changing selection mode. Quit
+sessions** stops every instance; F8 again forces any remaining ones. Quit
 confirmation and terminal-loss cleanup include every running instance, even
 from the picker. The default single-device flow still returns to the picker
 automatically after the session ends.
 
+**F9**, the **Add** button in wide consoles, or **Actions → Add session** opens
+a fresh device selection while existing sessions keep running. Choose a device
+and configuration, or check several devices in multi-device mode, then Run. New
+consoles join the existing ones and the first new console becomes active. Each
+addition may use a different launch configuration; selection mode can be changed
+without affecting running sessions. F7 also lets you choose additional runs.
+Launching the same configuration on a device where it is already running is
+blocked to avoid accidental duplicates; a stopped session can be launched again.
+
+There are at most eight active sessions and eight retained console slots. A
+launch that would exceed the active limit is rejected before any child starts.
+When adding runs, completed consoles are removed oldest first only if slots
+are needed; running consoles are preserved. Once all sessions have ended,
+starting a new batch replaces the previous histories. An unsuccessful addition
+in single-device mode leaves existing sessions and their history unchanged.
+
 Commands are validated before any instance starts. A startup failure is shown
-in that device's console, and other instances can continue. Each process uses
-the same configuration arguments and environment; fixed application/server
+in that device's console, and other instances can continue. Each addition uses
+its selected configuration's arguments and environment; fixed application/server
 ports in your configuration must support simultaneous runs.
 
 Console ANSI colors (including 256-color and RGB), backgrounds, and emphasis are
