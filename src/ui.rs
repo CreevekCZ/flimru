@@ -45,7 +45,6 @@ pub enum MouseAction {
     Filter,
     ApplyFilter,
     ClearFilter,
-    ToggleColors,
     FlutterKey(char),
     OldestOutput,
     FollowOutput,
@@ -221,15 +220,6 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
             );
         }
     }
-    add(
-        if app.colors {
-            "Colors: on"
-        } else {
-            "Colors: off"
-        },
-        Shortcut::Colors.label(),
-        MouseAction::ToggleColors,
-    );
     add(
         "Launcher help",
         if matches!(app.page, Page::Devices | Page::Configs) {
@@ -464,14 +454,6 @@ fn toolbar_buttons(app: &App, compact: bool) -> Vec<Button> {
                     MouseAction::ToggleAnimations,
                 );
             }
-            add(
-                format!(
-                    "Color{}{}",
-                    if compact { " " } else { ": " },
-                    if app.colors { "on" } else { "off" }
-                ),
-                MouseAction::ToggleColors,
-            );
         }
         Page::LastLog => {
             add("Close".into(), MouseAction::CloseLastLog);
@@ -1120,7 +1102,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
                     screen,
                     run.scrollback(),
                     run.outcome.as_ref().map(|_| run.offset),
-                    app.colors,
                     parts[2],
                     &format!(
                         " {} · {}{} ",
@@ -1165,7 +1146,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
                     parser.screen(),
                     app.last_log_scrollback,
                     Some(app.last_log_offset),
-                    app.colors,
                     parts[2],
                     &format!(" Last console · {} ", app.active_config),
                 );
@@ -1514,7 +1494,6 @@ fn console(
     screen: &vt100::Screen,
     scrollback_len: usize,
     snapshot_offset: Option<usize>,
-    colors: bool,
     area: Rect,
     title: &str,
 ) {
@@ -1558,10 +1537,10 @@ fn console(
                     let mut style = Style::default();
                     ansi_colors |= cell.fgcolor() != vt100::Color::Default
                         || cell.bgcolor() != vt100::Color::Default;
-                    if colors && cell.fgcolor() != vt100::Color::Default {
+                    if cell.fgcolor() != vt100::Color::Default {
                         style = style.fg(terminal_color(cell.fgcolor()));
                     }
-                    if colors && cell.bgcolor() != vt100::Color::Default {
+                    if cell.bgcolor() != vt100::Color::Default {
                         style = style.bg(terminal_color(cell.bgcolor()));
                     }
                     if cell.bold() {
@@ -1588,10 +1567,7 @@ fn console(
                     spans.push(Span::styled(text, style));
                 }
             }
-            if colors
-                && !ansi_colors
-                && let Some(color) = crate::console_style::fallback_color(&plain)
-            {
+            if !ansi_colors && let Some(color) = crate::console_style::fallback_color(&plain) {
                 for span in &mut spans {
                     span.style = span.style.fg(color);
                 }
@@ -1676,7 +1652,7 @@ fn help_overlay(frame: &mut Frame) {
         height,
     );
     frame.render_widget(Clear, modal);
-    frame.render_widget(Paragraph::new("Ctrl+g top · ←→ Enter select\nCtrl+w close ended tab\nCtrl+p menu · Ctrl+n add\nCtrl+b/f switch consoles\nCtrl+d devices · Ctrl+x stop\nCtrl+a slow · Ctrl+l colors\nCtrl+q quit · Esc return\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
+    frame.render_widget(Paragraph::new("Ctrl+g top · ←→ Enter select\nCtrl+w close ended tab\nCtrl+p menu · Ctrl+n add\nCtrl+b/f switch consoles\nCtrl+d devices · Ctrl+x stop\nCtrl+a slow animations\nCtrl+q quit · Esc return\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
 }
 
 fn quit_overlay(frame: &mut Frame, app: &App) {
@@ -1742,17 +1718,7 @@ mod tests {
         parser.process(b"\x1b[1;3;4;31;44mRED\x1b[0m plain\r\n\x1b[38;5;208mINDEX\x1b[0m\r\n\x1b[38;2;12;200;99mRGB\x1b[0m\r\nWARNING: \x1b[35mcustom\x1b[0m body");
         let mut terminal = Terminal::new(TestBackend::new(64, 7)).unwrap();
         terminal
-            .draw(|frame| {
-                console(
-                    frame,
-                    parser.screen(),
-                    0,
-                    None,
-                    true,
-                    frame.area(),
-                    " Test ",
-                )
-            })
+            .draw(|frame| console(frame, parser.screen(), 0, None, frame.area(), " Test "))
             .unwrap();
         let buffer = terminal.backend().buffer();
         let red = &buffer[(1, 1)];
@@ -1771,23 +1737,13 @@ mod tests {
     }
 
     #[test]
-    fn plain_severity_colors_work_in_live_and_saved_console_and_can_be_disabled() {
+    fn plain_severity_colors_work_in_live_and_saved_console() {
         let mut parser = vt100::Parser::new(3, 60, 10);
         parser.process(b"flutter: [Orders] WARNING: retry\r\nflutter: [Orders] SEVERE: failed");
         let mut terminal = Terminal::new(TestBackend::new(64, 5)).unwrap();
         for snapshot in [None, Some(0)] {
             terminal
-                .draw(|frame| {
-                    console(
-                        frame,
-                        parser.screen(),
-                        0,
-                        snapshot,
-                        true,
-                        frame.area(),
-                        " Test ",
-                    )
-                })
+                .draw(|frame| console(frame, parser.screen(), 0, snapshot, frame.area(), " Test "))
                 .unwrap();
             assert_eq!(
                 terminal.backend().buffer()[(1, 1)].fg,
@@ -1798,20 +1754,6 @@ mod tests {
                 Color::Rgb(255, 128, 142)
             );
         }
-        terminal
-            .draw(|frame| {
-                console(
-                    frame,
-                    parser.screen(),
-                    0,
-                    None,
-                    false,
-                    frame.area(),
-                    " Test ",
-                )
-            })
-            .unwrap();
-        assert_eq!(terminal.backend().buffer()[(1, 1)].fg, Color::Reset);
     }
 
     #[test]
@@ -2321,17 +2263,7 @@ mod tests {
             parser.screen_mut().set_scrollback(0);
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal
-                .draw(|frame| {
-                    console(
-                        frame,
-                        parser.screen(),
-                        scrollback_len,
-                        None,
-                        true,
-                        body,
-                        " Test ",
-                    )
-                })
+                .draw(|frame| console(frame, parser.screen(), scrollback_len, None, body, " Test "))
                 .unwrap();
             assert_eq!(
                 terminal.backend().buffer()[(track.x, track.bottom() - 1)].symbol(),
@@ -2339,17 +2271,7 @@ mod tests {
             );
             parser.screen_mut().set_scrollback(scrollback_len);
             terminal
-                .draw(|frame| {
-                    console(
-                        frame,
-                        parser.screen(),
-                        scrollback_len,
-                        None,
-                        true,
-                        body,
-                        " Test ",
-                    )
-                })
+                .draw(|frame| console(frame, parser.screen(), scrollback_len, None, body, " Test "))
                 .unwrap();
             assert_eq!(
                 terminal.backend().buffer()[(track.x, track.y)].symbol(),
@@ -2377,17 +2299,7 @@ mod tests {
         let inner = panel(String::new()).inner(body);
         assert_eq!(inner.height, 8);
         terminal
-            .draw(|frame| {
-                console(
-                    frame,
-                    &snapshot,
-                    scrollback_len,
-                    Some(0),
-                    true,
-                    body,
-                    " Saved ",
-                )
-            })
+            .draw(|frame| console(frame, &snapshot, scrollback_len, Some(0), body, " Saved "))
             .unwrap();
         let visible = (inner.y..inner.bottom())
             .map(|y| row_text(terminal.backend().buffer(), inner, y))
@@ -2410,7 +2322,6 @@ mod tests {
                     &snapshot,
                     scrollback_len,
                     Some(virtual_offset),
-                    true,
                     body,
                     " Saved ",
                 )
@@ -2437,7 +2348,6 @@ mod tests {
                     &snapshot,
                     scrollback_len,
                     Some(0),
-                    true,
                     expanded_body,
                     " Saved ",
                 )

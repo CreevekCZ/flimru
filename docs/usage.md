@@ -54,7 +54,7 @@ and do not require changing macOS keyboard settings.
 Every page has an **Actions** button (**Menu** in narrow terminals), also opened
 with **Ctrl+p**. It includes all page commands: filtering, favorites, refreshing,
 configuration reload, saved logs, Flutter reload/restart/help/DevTools, animation
-speed, colors, and exit. Commands remain reachable at the minimum 34 × 12 size.
+speed, and exit. Commands remain reachable at the minimum 34 × 12 size.
 Use arrows, Tab/Shift+Tab, Home/End or PageUp/PageDown to navigate the menu;
 Enter/Space activates, and Esc/Ctrl+p closes. The mouse supports clicks, wheel
 scrolling, and scrollbar dragging.
@@ -65,7 +65,7 @@ through every top command and clickable navigation step, **Home/End** jumps to
 the first/last target, and **Enter/Space** activates. **Down**, **Esc**, **Tab**,
 or **Ctrl+g** returns to content without running a command. Up from the first list
 item also focuses the top bar. A `›` marker and contrasting background show
-focus, including a visible text cue in monochrome. Keyboard-opened menus and
+focus, with a visible text cue. Keyboard-opened menus and
 confirmation dialogs restore their trigger focus when dismissed.
 
 In narrow windows the contextual actions scroll into view as focus moves;
@@ -154,14 +154,10 @@ This includes Android logcat priorities and `[logger] LEVEL:` / `[LEVEL]` forms.
 Lines with supplied ANSI colors keep their original styling; ordinary messages
 are not classified from words buried in their text.
 
-**Ctrl+l**, the color button, or **Actions → Colors** toggles output colors without
-restarting. `--color auto` is the default and respects nonempty `NO_COLOR`;
-`--color always` explicitly enables colors, while `--color never` starts in
-monochrome. New sessions request matching child color output and advertise a
-truecolor-capable PTY. Explicit `launch.json` environment values are applied last.
-Toggling colors affects rendering immediately; child environment changes apply to
-the next session. Home/End and the matching menu commands jump to oldest/latest
-output in both the live and saved console.
+Colors are always enabled, including when the shell sets `NO_COLOR`. New sessions
+request colored child output and advertise a truecolor-capable PTY. Explicit
+`launch.json` environment values are applied last. Home/End and the matching menu
+commands jump to oldest/latest output in both the live and saved console.
 
 Press **Ctrl+a** or click the animation speed button to toggle normal / **5× slower**,
 using the same Flutter `timeDilation` control as DevTools. The button displays

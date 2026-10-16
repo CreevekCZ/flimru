@@ -22,14 +22,10 @@ struct Terminal {
 
 impl Terminal {
     fn start(project: &Path, state: &Path) -> Self {
-        Self::start_with_color(project, state, "always")
+        Self::start_with_options(project, state, false)
     }
 
-    fn start_with_color(project: &Path, state: &Path, color: &str) -> Self {
-        Self::start_with_options(project, state, color, false)
-    }
-
-    fn start_with_options(project: &Path, state: &Path, color: &str, multi: bool) -> Self {
+    fn start_with_options(project: &Path, state: &Path, multi: bool) -> Self {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 32,
@@ -57,14 +53,12 @@ impl Terminal {
             state.to_str().unwrap(),
             "--refresh-interval",
             "2",
-            "--color",
-            color,
         ]);
         if multi {
             command.arg("--multi");
         }
         command.env("TERM", "xterm-256color");
-        // Reproduce launchers/shells which suppress color. --color always must
+        // Reproduce launchers/shells which suppress color. Always-enabled colors must
         // override this for both the terminal backend and its Flutter child.
         command.env("NO_COLOR", "1");
         command.env("FAKE_LOG", project.join("session.log"));
@@ -645,9 +639,7 @@ fn top_actions_support_keyboard_focus_without_leaking_navigation_to_flutter() {
         tui.send(b"\x07"); // Ctrl+g focuses the bar in a live console.
         tui.until_control("›Stop");
         tui.send(b"R\x1b[200~r\x1b[201~\x1b[C\x1b[C\x1b[C");
-        tui.until_control("›Color");
-        tui.send(b" ");
-        tui.until_control(if compact { "Color off" } else { "Color: off" });
+        tui.until_control(if compact { "›Menu" } else { "›Actions" });
         tui.send(b"\x10"); // Ctrl+p opens the menu without losing the trigger focus.
         tui.until("Actions ·");
         tui.send(b"\x1b");
@@ -660,7 +652,7 @@ fn top_actions_support_keyboard_focus_without_leaking_navigation_to_flutter() {
             assert!(Instant::now() < deadline, "Menu did not close");
             thread::sleep(Duration::from_millis(15));
         }
-        tui.until_control("›Color");
+        tui.until_control(if compact { "›Menu" } else { "›Actions" });
         if compact {
             tui.send(b"\x1b");
         } else {
@@ -758,7 +750,7 @@ fn ended_session_tabs_close_with_mouse_and_control_w_without_stopping_other_runs
     for compact in [true, false] {
         let project = multi_project();
         let state = project.path().join("state.json");
-        let mut tui = Terminal::start_with_options(project.path(), &state, "always", true);
+        let mut tui = Terminal::start_with_options(project.path(), &state, true);
         tui.until("Alpha");
         if compact {
             tui.master
@@ -813,7 +805,7 @@ fn multi_device_quit_and_terminal_loss_reap_every_instance() {
     for hang_up in [false, true] {
         let project = multi_project();
         let state = project.path().join("state.json");
-        let mut tui = Terminal::start_with_options(project.path(), &state, "always", true);
+        let mut tui = Terminal::start_with_options(project.path(), &state, true);
         tui.until("Alpha");
         tui.send(b" \x1b[B ");
         tui.until("Multi 2/8");
@@ -841,7 +833,7 @@ fn multi_device_quit_and_terminal_loss_reap_every_instance() {
 }
 
 #[test]
-fn colors_survive_pty_scrollback_saved_logs_and_runtime_toggle() {
+fn colors_survive_pty_scrollback_and_saved_logs_despite_inherited_no_color() {
     let project = project();
     let state = project.path().join("state.json");
     std::fs::write(
@@ -862,9 +854,8 @@ fn colors_survive_pty_scrollback_saved_logs_and_runtime_toggle() {
     tui.until_color("WARNING:", vt100::Color::Rgb(255, 205, 112));
     tui.until_color("SEVERE:", vt100::Color::Rgb(255, 128, 142));
     tui.until_color("INFO:", vt100::Color::Rgb(96, 210, 225));
-    tui.send(b"\x0c"); // Ctrl+l
-    tui.until_color("WARNING:", vt100::Color::Default);
-    tui.send(b"\x0c");
+    tui.send(b"\x0ch"); // Former Ctrl+l toggle now belongs to Flutter.
+    tui.until("shortcut:h");
     tui.until_color("WARNING:", vt100::Color::Rgb(255, 205, 112));
     tui.send(b"o");
     tui.until("history-line:099");
@@ -886,32 +877,6 @@ fn colors_survive_pty_scrollback_saved_logs_and_runtime_toggle() {
     tui.until("Closed saved console.");
     assert!(!tui.screen.screen().contents().contains("1○"));
     tui.quit();
-}
-
-#[test]
-fn auto_and_never_color_modes_respect_inherited_no_color() {
-    for mode in ["auto", "never"] {
-        let project = project();
-        let state = project.path().join("state.json");
-        std::fs::write(
-            &state,
-            r#"{"favorites":[{"id":"demo-device","name":"Saved phone","platform":"ios"}]}"#,
-        )
-        .unwrap();
-        let mut tui = Terminal::start_with_color(project.path(), &state, mode);
-        tui.until("Saved phone");
-        tui.send(b"\r");
-        tui.until("Demo debug");
-        tui.send(b"\r");
-        tui.until_color("SESSION READY", vt100::Color::Default);
-        tui.send(b"c");
-        tui.until("NO_COLOR=1");
-        tui.until_color("INDEXED COLOR", vt100::Color::Default);
-        tui.until_color("WARNING:", vt100::Color::Default);
-        tui.send(b"q");
-        tui.until("ended (");
-        tui.quit();
-    }
 }
 
 #[test]

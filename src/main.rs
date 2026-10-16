@@ -66,9 +66,6 @@ struct Options {
     /// Leave mouse input to your terminal (for text selection/copying).
     #[arg(long)]
     no_mouse: bool,
-    /// Color output policy. Auto follows NO_COLOR.
-    #[arg(long, value_enum, default_value_t = console_style::ColorMode::Auto)]
-    color: console_style::ColorMode,
     /// Start in multi-device selection mode (up to eight devices per batch).
     #[arg(long)]
     multi: bool,
@@ -107,7 +104,6 @@ impl Drop for RestoreTerminal {
 }
 
 pub(crate) struct App {
-    colors: bool,
     actions_open: bool,
     action_index: usize,
     action_offset: usize,
@@ -236,7 +232,6 @@ fn main() -> Result<()> {
     let ownit = !options.no_project_helpers && has_ownit_helpers(&workspace);
     let discovery = Discovery::start(tool.clone(), Duration::from_secs(options.refresh_interval));
     let mut app = App {
-        colors: options.color.enabled(),
         actions_open: false,
         action_index: 0,
         action_offset: 0,
@@ -281,7 +276,7 @@ fn main() -> Result<()> {
     let signal_quit = quit.clone();
     ctrlc::set_handler(move || signal_quit.store(true, Ordering::Relaxed))?;
     let restore_terminal = RestoreTerminal;
-    crossterm::style::force_color_output(app.colors);
+    crossterm::style::force_color_output(true);
     let mut terminal = ratatui::try_init()?;
     // ratatui's panic hook restores raw mode and the alternate screen.
     let result = (|| -> Result<()> {
@@ -299,7 +294,6 @@ fn main() -> Result<()> {
         let mut last_draw = Instant::now();
         let mut previous_size = terminal.size()?;
         let mut previous_animations = None;
-        let mut previous_colors = app.colors;
         while !quit.load(Ordering::Relaxed) {
             let frame_started = Instant::now();
             if !terminal_input::connected()? {
@@ -307,15 +301,6 @@ fn main() -> Result<()> {
             }
             redraw |= app.tick()?;
             let area = terminal.size()?;
-            if app.colors != previous_colors {
-                execute!(std::io::stdout(), crossterm::style::ResetColor)?;
-                crossterm::style::force_color_output(app.colors);
-                // Repaint without clear()'s cursor-position query: terminals
-                // which cannot answer it must still support the color toggle.
-                terminal.resize(ratatui::layout::Rect::new(0, 0, area.width, area.height))?;
-                previous_colors = app.colors;
-                redraw = true;
-            }
             redraw |= area != previous_size;
             previous_size = area;
             for run in &mut app.runs {
@@ -585,12 +570,7 @@ impl App {
         };
         let mut next_runs = Vec::with_capacity(devices.len());
         for (device, plan) in devices.into_iter().zip(plans) {
-            let run = match Session::start_with_color(
-                &plan,
-                rows.saturating_sub(9),
-                cols.saturating_sub(3),
-                Some(self.colors),
-            ) {
+            let run = match Session::start(&plan, rows.saturating_sub(9), cols.saturating_sub(3)) {
                 Ok(mut session) => {
                     if config.is_test() {
                         session.animations = flimru::animation::AnimationControl::new(false);
@@ -952,16 +932,6 @@ impl App {
         } else if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) && self.page != Page::Console
         {
             ui::focus_top(self, key.code == KeyCode::BackTab);
-            return Ok(false);
-        }
-        if shortcut == Some(Shortcut::Colors) {
-            self.colors = !self.colors;
-            self.status = if self.colors {
-                "Console colors enabled (Ctrl+l toggles)."
-            } else {
-                "Console colors disabled (Ctrl+l toggles)."
-            }
-            .into();
             return Ok(false);
         }
         if matches!(
@@ -1446,9 +1416,6 @@ impl App {
                 self.config_index = 0;
                 return Ok(false);
             }
-            MouseAction::ToggleColors => {
-                return self.key(Shortcut::Colors.key(), area.width, area.height);
-            }
             MouseAction::FlutterKey(key) => KeyCode::Char(key),
             MouseAction::OldestOutput => KeyCode::Home,
             MouseAction::FollowOutput => KeyCode::End,
@@ -1658,7 +1625,6 @@ mod tests {
         ]}"#, &workspace.join("launch.json"), &workspace).unwrap();
         let discovery = Discovery::start(tool.clone(), Duration::from_secs(3600));
         let mut app = App {
-            colors: true,
             actions_open: false,
             action_index: 0,
             action_offset: 0,
@@ -2245,7 +2211,7 @@ mod tests {
                 )
                 .unwrap();
                 assert_eq!(app.page, page);
-                assert!(app.colors && !app.help && !app.actions_open);
+                assert!(!app.help && !app.actions_open);
                 assert!(app.top_focus.is_none());
             }
         }
@@ -2263,7 +2229,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_and_color_commands_agree_between_keyboard_and_pointer_actions() {
+    fn filter_commands_agree_between_keyboard_and_pointer_actions() {
         let mut keyboard = app();
         let mut pointer = app();
         let area = ratatui::layout::Rect::new(0, 0, 34, 12);
@@ -2294,11 +2260,6 @@ mod tests {
             .activate(ui::MouseAction::ClearFilter, area)
             .unwrap();
         assert_eq!(keyboard.search, pointer.search);
-        keyboard.key(Shortcut::Colors.key(), 34, 12).unwrap();
-        pointer
-            .activate(ui::MouseAction::ToggleColors, area)
-            .unwrap();
-        assert_eq!(keyboard.colors, pointer.colors);
     }
 
     #[test]

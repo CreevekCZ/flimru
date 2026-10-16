@@ -1,23 +1,4 @@
-use clap::ValueEnum;
 use ratatui::style::Color;
-
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-pub enum ColorMode {
-    #[default]
-    Auto,
-    Always,
-    Never,
-}
-
-impl ColorMode {
-    pub fn enabled(self) -> bool {
-        match self {
-            Self::Auto => std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty()),
-            Self::Always => true,
-            Self::Never => false,
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Severity {

@@ -11,7 +11,7 @@ configuration, and run. When the session ends, the picker is ready for the next 
 - Refreshes devices in the background; cached favorites stay selectable.
 - Runs Flutter in an interactive console with its usual keyboard shortcuts.
 - Supports mouse selection, wheel scrolling, and a draggable console scrollbar.
-- Preserves ANSI colors and highlights plain log severity; toggle colors with **Ctrl+l**.
+- Preserves ANSI colors and highlights plain log severity; colors are always enabled.
 - Provides every command through the clickable **Actions** menu or **Ctrl+p**.
 - Navigates the top actions with **Tab/Ctrl+g**, arrow keys, and **Enter/Space**.
 - Runs up to eight devices together in **multi-device mode**, with separate consoles.
@@ -47,7 +47,7 @@ configuration, or `--help` for all options.
 | Console | `r`, `R`, `h`, `v` | Flutter reload, restart, help, DevTools |
 | Console | `Ctrl+a` | Toggle animation speed in supported debug/profile apps |
 | Ended console | `Ctrl+w` / tab `×` | Close the session tab and release its history |
-| Anywhere | `Ctrl+l`, `Ctrl+p` | Toggle colors, open the Actions menu |
+| Anywhere | `Ctrl+p` | Open the Actions menu |
 | Picker / saved console | `Tab`, `Shift+Tab` | Focus the top actions |
 | Anywhere | `Ctrl+g` | Focus the top actions, including live consoles |
 | Top actions | `←` / `→`, `Enter` / `Space` | Choose and activate an action |
@@ -60,7 +60,7 @@ configuration, or `--help` for all options.
 Function keys are not used. `Ctrl` means Control, not Command (⌘).
 Mouse controls are enabled by default. Use `--no-mouse` for terminal text
 selection. Animation control requires Flutter's VM Service extension.
-Use `--color always` to override `NO_COLOR`, or `--color never` for monochrome.
+Console colors are always enabled, including when the shell sets `NO_COLOR`.
 Use `--multi` to start in multi-device mode. Check devices, then choose one
 compatible configuration to run on all of them. Click a session tab or use
 Ctrl+b/Ctrl+f to switch; Flutter shortcuts affect only the displayed session.

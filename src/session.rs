@@ -49,18 +49,8 @@ fn size(rows: u16, cols: u16) -> PtySize {
 }
 
 impl Session {
+    /// Request colored child output while honoring explicit launch.json env overrides.
     pub fn start(plan: &RunCommand, rows: u16, cols: u16) -> Result<Self> {
-        Self::start_with_color(plan, rows, cols, None)
-    }
-
-    /// An explicit color choice applies to this child only. launch.json env
-    /// values are applied last, so project-specific overrides remain honored.
-    pub fn start_with_color(
-        plan: &RunCommand,
-        rows: u16,
-        cols: u16,
-        colors: Option<bool>,
-    ) -> Result<Self> {
         let pair = native_pty_system()
             .openpty(size(rows, cols))
             .context("Could not open a pseudo-terminal")?;
@@ -88,21 +78,10 @@ impl Session {
         command.cwd(&plan.cwd);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
-        match colors {
-            Some(true) => {
-                command.env_remove("NO_COLOR");
-                command.env("CLICOLOR", "1");
-                command.env("CLICOLOR_FORCE", "1");
-                command.env("FORCE_COLOR", "3");
-            }
-            Some(false) => {
-                command.env("NO_COLOR", "1");
-                command.env("CLICOLOR", "0");
-                command.env("CLICOLOR_FORCE", "0");
-                command.env("FORCE_COLOR", "0");
-            }
-            None => {}
-        }
+        command.env_remove("NO_COLOR");
+        command.env("CLICOLOR", "1");
+        command.env("CLICOLOR_FORCE", "1");
+        command.env("FORCE_COLOR", "3");
         for (name, value) in &plan.env {
             command.env(name, value);
         }
@@ -407,14 +386,9 @@ mod tests {
 
     #[test]
     fn child_color_policy_and_project_environment_overrides_are_explicit() {
-        for (colors, override_no_color, expected) in [
-            (true, None, "env:xterm-256color|truecolor|3|unset"),
-            (false, None, "env:xterm-256color|truecolor|0|1"),
-            (
-                true,
-                Some("project"),
-                "env:xterm-256color|truecolor|3|project",
-            ),
+        for (override_no_color, expected) in [
+            (None, "env:xterm-256color|truecolor|3|unset"),
+            (Some("project"), "env:xterm-256color|truecolor|3|project"),
         ] {
             let mut plan = command(
                 "printf 'env:%s|%s|%s|%s' \"$TERM\" \"$COLORTERM\" \"$FORCE_COLOR\" \"${NO_COLOR-unset}\"",
@@ -422,7 +396,7 @@ mod tests {
             if let Some(value) = override_no_color {
                 plan.env.insert("NO_COLOR".into(), value.into());
             }
-            let mut session = Session::start_with_color(&plan, 5, 100, Some(colors)).unwrap();
+            let mut session = Session::start(&plan, 5, 100).unwrap();
             let deadline = Instant::now() + Duration::from_secs(3);
             while session.tick().unwrap().is_none() {
                 assert!(Instant::now() < deadline);
