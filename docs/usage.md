@@ -100,13 +100,23 @@ device IDs and survives filtering and discovery, including cached devices.
 A batch supports up to **eight** instances. Each has its own PTY, bounded output
 queue, 10,000-row history, scroll position, and animation control. All instances
 receive output processing and terminal resize updates while hidden. Use
-**Ctrl+b/Ctrl+f** or the clickable console arrows to switch; the Actions menu
-also lists each console directly. The switcher shows the device and running/ended state.
+**Ctrl+b/Ctrl+f** or the clickable session tabs to switch; the Actions menu
+also lists each console directly. Tabs remain available in the device and
+configuration pickers while sessions exist. **●** means running and **○** means
+ended. The selected console has a highlighted tab. All eight tabs fit in the
+minimum terminal width; labels shorten to their number and state as needed.
+The console title shows the full device and configuration names. Use Ctrl+g,
+Left/Right and Enter to select tabs from the keyboard.
 Reload, restart, DevTools, animation changes, typing and paste affect only the
 displayed instance.
 
 **q/Esc** stops the displayed instance; pressing it again forces that instance.
-Completed consoles remain available for review. **Ctrl+d** returns
+Completed consoles remain available for review. **Ctrl+w**, the tab's **×**, or
+**Actions → Close ended session** removes an ended tab and releases its history.
+Closing the selected tab reveals its neighbor; closing the last tab returns
+to the device picker. Ctrl+w leaves running sessions intact: stop one with
+q/Esc first, then close its tab. The saved console from a single-device run
+also has a tab and can be closed the same way. **Ctrl+d** returns
 to the device picker without stopping the batch. **Ctrl+x** or **Actions → Stop all
 sessions** stops every instance; Ctrl+x again forces any remaining ones. Quit
 confirmation and terminal-loss cleanup include every running instance, even

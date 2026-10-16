@@ -709,7 +709,7 @@ fn multi_device_mouse_keyboard_consoles_are_isolated_and_completed_history_is_re
     tui.until("READY:alpha");
     tui.send(b"h");
     tui.until("shortcut:alpha:h");
-    tui.mouse(0, 5, 2); // Next console arrow.
+    tui.click_text("2● Beta"); // Select the second session tab.
     tui.until("READY:beta");
     assert!(!tui.screen.screen().contents().contains("shortcut:alpha:h"));
     tui.send(b"v");
@@ -721,13 +721,13 @@ fn multi_device_mouse_keyboard_consoles_are_isolated_and_completed_history_is_re
     tui.until("alpha-history:099");
     tui.send(b"\x1b[H");
     tui.until("READY:alpha");
-    tui.mouse(0, 5, 2); // Next console arrow.
+    tui.click_text("2● Beta"); // Select the second session tab.
     tui.until("shortcut:beta:v");
-    tui.mouse(0, 1, 2); // Previous console arrow.
+    tui.click_text("1● Alpha"); // Select the first session tab.
     tui.until("READY:alpha"); // Per-console scroll position survives switching.
     tui.send(b"q");
     tui.until("1 session(s) running");
-    tui.mouse(0, 5, 2); // Next console arrow.
+    tui.click_text("2● Beta"); // Select the second session tab.
     tui.send(b"r");
     tui.until("shortcut:beta:r");
     tui.send(b"x");
@@ -751,6 +751,61 @@ fn multi_device_mouse_keyboard_consoles_are_isolated_and_completed_history_is_re
         log.contains("key:alpha:h") && log.contains("key:beta:v") && log.contains("key:beta:r")
     );
     assert!(!log.contains("key:beta:h") && !log.contains("key:alpha:v"));
+}
+
+#[test]
+fn ended_session_tabs_close_with_mouse_and_control_w_without_stopping_other_runs() {
+    for compact in [true, false] {
+        let project = multi_project();
+        let state = project.path().join("state.json");
+        let mut tui = Terminal::start_with_options(project.path(), &state, "always", true);
+        tui.until("Alpha");
+        if compact {
+            tui.master
+                .resize(PtySize {
+                    rows: 12,
+                    cols: 34,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .unwrap();
+            tui.screen.screen_mut().set_size(12, 34);
+            tui.until_control("Menu");
+        }
+        tui.send(b" \x1b[B \r");
+        tui.until_control("Run");
+        tui.send(b"\r");
+        tui.until("READY:alpha");
+        tui.until("2● Beta");
+        tui.send(b"\x17"); // Ctrl+w must not close or send input to a running session.
+        tui.until("Session is running.");
+        tui.send(b"h");
+        tui.until("shortcut:alpha:h");
+        tui.send(b"q");
+        tui.until("1○ Alpha");
+        tui.click_text("2● Beta");
+        tui.until("READY:beta");
+        tui.send(b"h");
+        tui.until("shortcut:beta:h");
+        tui.click_text("×"); // Close the inactive Alpha tab and preserve active Beta.
+        tui.until("Closed ended session");
+        tui.until("1● Beta");
+        assert!(tui.screen.screen().contents().contains("shortcut:beta:h"));
+        tui.send(b"\x17");
+        tui.until("Session is running.");
+        tui.send(b"r");
+        tui.until("shortcut:beta:r");
+        tui.send(b"q");
+        tui.until("1○ Beta");
+        tui.send(b"\x17"); // The last ended tab closes and returns to the picker.
+        tui.until("Closed ended session");
+        tui.until_control("Next");
+        assert!(!tui.screen.screen().contents().contains("1○"));
+        tui.quit();
+        assert_multi_children_reaped(project.path());
+        let log = std::fs::read_to_string(project.path().join("session.log")).unwrap();
+        assert!(!log.contains('\u{17}'));
+    }
 }
 
 #[test]
@@ -820,11 +875,16 @@ fn colors_survive_pty_scrollback_saved_logs_and_runtime_toggle() {
     tui.until("history-line:099");
     tui.send(b"q");
     tui.until("ended (");
-    tui.send(b"l");
+    tui.click_text("1○ Demo debug");
+    tui.until("Last console ·");
+    tui.click_text("1○ Demo debug"); // Clicking the selected saved tab keeps it open.
     tui.until("Last console ·");
     tui.menu_click("Oldest output");
     tui.until_color("TRUE COLOR", vt100::Color::Rgb(12, 200, 99));
     tui.until_color("WARNING:", vt100::Color::Rgb(255, 205, 112));
+    tui.send(b"\x17");
+    tui.until("Closed saved console.");
+    assert!(!tui.screen.screen().contents().contains("1○"));
     tui.quit();
 }
 

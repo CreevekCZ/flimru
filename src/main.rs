@@ -491,6 +491,53 @@ impl App {
         );
     }
 
+    fn close_ended_run(&mut self, index: usize) {
+        let Some(run) = self.runs.get(index) else {
+            return;
+        };
+        if run.session.is_some() {
+            self.status = "Session is running. Stop it with q/Esc before closing its tab.".into();
+            return;
+        }
+        self.runs.remove(index);
+        self.active_run = self
+            .active_run
+            .saturating_sub(usize::from(index < self.active_run))
+            .min(self.runs.len().saturating_sub(1));
+        self.top_focus = None;
+        self.toolbar_offset = 0;
+        self.actions_open = false;
+        self.action_index = 0;
+        self.action_offset = 0;
+        self.dragging_scrollbar = None;
+        self.action_scroll_drag = false;
+        if self.runs.is_empty() {
+            self.retain_consoles = false;
+            if self.page == Page::Console {
+                self.back();
+            }
+        }
+        self.status = format!("Closed ended session · {} running.", self.running_count());
+    }
+
+    fn close_last_log(&mut self) {
+        self.last_log = None;
+        self.last_log_offset = 0;
+        self.last_log_scrollback = 0;
+        self.last_log_view_rows = 0;
+        self.top_focus = None;
+        self.toolbar_offset = 0;
+        self.actions_open = false;
+        self.action_index = 0;
+        self.action_offset = 0;
+        self.dragging_scrollbar = None;
+        self.action_scroll_drag = false;
+        if self.page == Page::LastLog {
+            self.back();
+        }
+        self.status = "Closed saved console.".into();
+    }
+
     fn start_batch(&mut self, cols: u16, rows: u16) {
         let Some(config) = self
             .visible_configs()
@@ -944,6 +991,14 @@ impl App {
             self.begin_add();
             return Ok(false);
         }
+        if shortcut == Some(Shortcut::CloseSession) {
+            match self.page {
+                Page::Console => self.close_ended_run(self.active_run),
+                Page::LastLog => self.close_last_log(),
+                _ => self.status = "Select an ended session tab to close it.".into(),
+            }
+            return Ok(false);
+        }
         if shortcut == Some(Shortcut::StopAll) {
             let mut errors = vec![];
             for run in &mut self.runs {
@@ -1301,7 +1356,14 @@ impl App {
         let focus = self.top_focus.take();
         let page = self.page;
         let result = self.dispatch(action, area);
-        if self.top_focus.is_none() && self.page == page && !self.searching {
+        if self.top_focus.is_none()
+            && self.page == page
+            && !self.searching
+            && !matches!(
+                action,
+                ui::MouseAction::CloseConsole(_) | ui::MouseAction::CloseLastLog
+            )
+        {
             self.top_focus = focus;
         }
         result
@@ -1337,6 +1399,14 @@ impl App {
             }
             MouseAction::SwitchConsole(index) => {
                 self.switch_run(index);
+                return Ok(false);
+            }
+            MouseAction::CloseConsole(index) => {
+                self.close_ended_run(index);
+                return Ok(false);
+            }
+            MouseAction::CloseLastLog => {
+                self.close_last_log();
                 return Ok(false);
             }
             MouseAction::ScrollActions(index) => {
@@ -1416,8 +1486,15 @@ impl App {
                 KeyCode::Char('c')
             }
             MouseAction::LastLog => {
-                self.searching = false;
-                KeyCode::Char('l')
+                if self.last_log.is_some() {
+                    self.page = Page::LastLog;
+                    self.actions_open = false;
+                    self.searching = false;
+                    self.search = None;
+                    self.dragging_scrollbar = None;
+                    self.action_scroll_drag = false;
+                }
+                return Ok(false);
             }
             MouseAction::Quit => {
                 self.actions_open = false;
@@ -1948,6 +2025,70 @@ mod tests {
             .unwrap();
         assert_eq!(app.page, Page::Devices);
         assert!(app.status.contains("at least one"));
+    }
+
+    #[test]
+    fn closing_ended_tabs_preserves_selection_and_last_close_returns_to_devices() {
+        let mut app = app();
+        let device = app.devices[0].clone();
+        app.runs = (0..3)
+            .map(|index| {
+                runs::Run::failed(
+                    device.clone(),
+                    format!("Tab {index}"),
+                    format!("history {index}"),
+                    10,
+                    70,
+                )
+            })
+            .collect();
+        app.retain_consoles = true;
+        app.switch_run(1);
+        app.runs[1].set_offset(0);
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        app.activate(ui::MouseAction::CloseConsole(0), area)
+            .unwrap();
+        assert_eq!(app.active_run, 0);
+        assert_eq!(app.runs[0].config, "Tab 1");
+        assert!(
+            app.runs[0]
+                .screen()
+                .unwrap()
+                .contents()
+                .contains("history 1")
+        );
+        app.top_focus = Some(ui::TopFocus::Toolbar(ui::MouseAction::CloseConsole(0)));
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 80, 24)
+            .unwrap();
+        assert!(app.top_focus.is_none());
+        assert_eq!(app.runs[0].config, "Tab 2");
+        app.key(Shortcut::CloseSession.key(), 80, 24).unwrap();
+        assert!(app.runs.is_empty());
+        assert_eq!(app.active_run, 0);
+        assert_eq!(app.page, Page::Devices);
+        assert!(!app.retain_consoles);
+        app.close_ended_run(9); // Stale tab targets cannot remove another session.
+    }
+
+    #[test]
+    fn close_saved_console_releases_history_and_preserves_picker_flow() {
+        let mut app = app();
+        app.last_log = Some(vt100::Parser::new(10, 70, 100));
+        app.page = Page::Configs;
+        let selected = app.selected_device.clone();
+        app.close_last_log();
+        assert_eq!(app.page, Page::Configs);
+        assert_eq!(app.selected_device, selected);
+        assert!(app.last_log.is_none());
+        app.last_log = Some(vt100::Parser::new(10, 70, 100));
+        app.last_log_offset = 10;
+        app.last_log_scrollback = 20;
+        app.page = Page::LastLog;
+        app.key(Shortcut::CloseSession.key(), 80, 24).unwrap();
+        assert_eq!(app.page, Page::Devices);
+        assert!(app.last_log.is_none());
+        assert_eq!(app.last_log_scrollback, 0);
+        assert_eq!(app.last_log_offset, 0);
     }
 
     #[test]

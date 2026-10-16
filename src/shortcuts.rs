@@ -13,6 +13,7 @@ pub enum Shortcut {
     Devices,
     StopAll,
     AddSession,
+    CloseSession,
 }
 
 impl Shortcut {
@@ -30,6 +31,7 @@ impl Shortcut {
             KeyCode::Char('d') => Self::Devices,
             KeyCode::Char('x') => Self::StopAll,
             KeyCode::Char('n') => Self::AddSession,
+            KeyCode::Char('w') => Self::CloseSession,
             _ => return None,
         })
     }
@@ -45,6 +47,7 @@ impl Shortcut {
             Self::Devices => ('d', "Ctrl+d"),
             Self::StopAll => ('x', "Ctrl+x"),
             Self::AddSession => ('n', "Ctrl+n"),
+            Self::CloseSession => ('w', "Ctrl+w"),
         }
     }
 

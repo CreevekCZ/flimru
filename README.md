@@ -15,6 +15,7 @@ configuration, and run. When the session ends, the picker is ready for the next 
 - Navigates the top actions with **Tab/Ctrl+g**, arrow keys, and **Enter/Space**.
 - Runs up to eight devices together in **multi-device mode**, with separate consoles.
 - Adds sessions while others keep running, with a device and configuration per addition.
+- Switches consoles with clickable session tabs; closes ended tabs with **Ctrl+w** or **×**.
 - Toggles normal / **5× slower animations** with **Ctrl+a**, retaining the speed across hot restarts.
 - Confirms launcher exit and cleans up owned processes when the terminal closes.
 
@@ -44,6 +45,7 @@ configuration, or `--help` for all options.
 | Anywhere | `Ctrl+n` | Add a session without stopping existing runs |
 | Console | `r`, `R`, `h`, `v` | Flutter reload, restart, help, DevTools |
 | Console | `Ctrl+a` | Toggle animation speed in supported debug/profile apps |
+| Ended console | `Ctrl+w` / tab `×` | Close the session tab and release its history |
 | Anywhere | `Ctrl+l`, `Ctrl+p` | Toggle colors, open the Actions menu |
 | Picker / saved console | `Tab`, `Shift+Tab` | Focus the top actions |
 | Anywhere | `Ctrl+g` | Focus the top actions, including live consoles |
@@ -59,7 +61,7 @@ Mouse controls are enabled by default. Use `--no-mouse` for terminal text
 selection. Animation control requires Flutter's VM Service extension.
 Use `--color always` to override `NO_COLOR`, or `--color never` for monochrome.
 Use `--multi` to start in multi-device mode. Check devices, then choose one
-compatible configuration to run on all of them. Click the console arrows or use
+compatible configuration to run on all of them. Click a session tab or use
 Ctrl+b/Ctrl+f to switch; Flutter shortcuts affect only the displayed session.
 Press **Ctrl+n** or choose **Add session** from the Actions menu to add another run.
 

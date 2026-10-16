@@ -55,6 +55,8 @@ pub enum MouseAction {
     PreviousConsole,
     NextConsole,
     SwitchConsole(usize),
+    CloseConsole(usize),
+    CloseLastLog,
     Devices,
     StopAll,
     AddSession,
@@ -153,6 +155,13 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
                     MouseAction::ToggleAnimations,
                 );
             }
+            if app.active_session().is_none() && !app.runs.is_empty() {
+                add(
+                    "Close ended session",
+                    Shortcut::CloseSession.label(),
+                    MouseAction::CloseConsole(app.active_run),
+                );
+            }
             add("Oldest output", "Home", MouseAction::OldestOutput);
             add("Follow output", "End", MouseAction::FollowOutput);
             add(
@@ -166,6 +175,11 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
             );
         }
         Page::LastLog => {
+            add(
+                "Close saved console",
+                Shortcut::CloseSession.label(),
+                MouseAction::CloseLastLog,
+            );
             add("Back to devices", "Esc", MouseAction::Back);
             add("Oldest output", "Home", MouseAction::OldestOutput);
             add("Latest output", "End", MouseAction::FollowOutput);
@@ -431,10 +445,14 @@ fn toolbar_buttons(app: &App, compact: bool) -> Vec<Button> {
                 if app.active_session().is_some() {
                     "Stop"
                 } else {
-                    "Back"
+                    "Close"
                 }
                 .into(),
-                MouseAction::Back,
+                if app.active_session().is_some() {
+                    MouseAction::Back
+                } else {
+                    MouseAction::CloseConsole(app.active_run)
+                },
             );
             add(
                 if compact { "Add" } else { "Add session" }.into(),
@@ -455,7 +473,10 @@ fn toolbar_buttons(app: &App, compact: bool) -> Vec<Button> {
                 MouseAction::ToggleColors,
             );
         }
-        Page::LastLog => add("Back".into(), MouseAction::Back),
+        Page::LastLog => {
+            add("Close".into(), MouseAction::CloseLastLog);
+            add("Back".into(), MouseAction::Back);
+        }
     }
     add(
         if compact { "Menu" } else { "Actions" }.into(),
@@ -467,14 +488,14 @@ fn toolbar_buttons(app: &App, compact: bool) -> Vec<Button> {
 }
 
 fn navigation_action(app: &App, index: usize) -> Option<MouseAction> {
-    if app.page == Page::Console && app.runs.len() > 1 {
-        return [
-            MouseAction::PreviousConsole,
-            MouseAction::NextConsole,
-            MouseAction::Actions,
-        ]
-        .get(index)
-        .copied();
+    if has_session_tabs(app) {
+        return if app.runs.is_empty() {
+            (index == 0).then_some(MouseAction::LastLog)
+        } else {
+            app.runs
+                .get(index)
+                .map(|_| MouseAction::SwitchConsole(index))
+        };
     }
     match (index, app.page) {
         (0, Page::Configs | Page::LastLog) => Some(MouseAction::Back),
@@ -494,7 +515,11 @@ fn top_targets(app: &App) -> Vec<TopFocus> {
         .map(|b| TopFocus::Toolbar(b.action))
         .collect();
     targets.extend(
-        (0..3)
+        (0..if has_session_tabs(app) {
+            app.runs.len().max(1)
+        } else {
+            3
+        })
             .filter(|&i| navigation_action(app, i).is_some())
             .map(TopFocus::Navigation),
     );
@@ -547,38 +572,74 @@ pub fn focused_top_action(app: &App) -> Option<MouseAction> {
     }
 }
 
-fn console_navigation(app: &App, area: Rect) -> Vec<Control> {
-    let Some(run) = app.runs.get(app.active_run) else {
+fn has_session_tabs(app: &App) -> bool {
+    !app.runs.is_empty() || app.last_log.is_some()
+}
+
+fn close_tab_action(app: &App, index: usize) -> Option<MouseAction> {
+    if app.runs.is_empty() {
+        return (index == 0 && app.last_log.is_some()).then_some(MouseAction::CloseLastLog);
+    }
+    app.runs
+        .get(index)
+        .filter(|run| run.session.is_none())
+        .map(|_| MouseAction::CloseConsole(index))
+}
+
+/// All eight tabs fit even at the minimum width. Narrow tabs retain their
+/// number, running/ended marker and close target; the console title has full names.
+fn session_tabs(app: &App, area: Rect) -> Vec<Control> {
+    if !has_session_tabs(app) {
         return vec![];
-    };
-    let state = if run.session.is_some() {
-        "running"
-    } else {
-        "ended"
-    };
-    let summary = format!(
-        " {}/{} {state} · {}",
-        app.active_run + 1,
-        app.runs.len(),
-        run.device.name
-    );
-    vec![
-        Control {
-            label: " ‹ ".into(),
-            rect: Rect::new(area.x, area.y, 3, 1),
-            action: MouseAction::PreviousConsole,
-        },
-        Control {
-            label: " › ".into(),
-            rect: Rect::new(area.x + 4, area.y, 3, 1),
-            action: MouseAction::NextConsole,
-        },
-        Control {
-            label: summary,
-            rect: Rect::new(area.x + 8, area.y, area.width.saturating_sub(8), 1),
-            action: MouseAction::Actions,
-        },
-    ]
+    }
+    let count = app.runs.len().max(1) as u16;
+    let gap = u16::from(area.width / count >= 8);
+    let available = area.width.saturating_sub(gap * count.saturating_sub(1));
+    let mut x = area.x;
+    (0..usize::from(count))
+        .map(|index| {
+            let width = (available / count + u16::from((index as u16) < available % count)).min(40);
+            let (state, name) = match app.runs.get(index) {
+                Some(run) => (
+                    if run.session.is_some() { "●" } else { "○" },
+                    format!("{} · {}", run.device.name, run.config),
+                ),
+                None => ("○", app.active_config.clone()),
+            };
+            let control = Control {
+                label: format!(" {}{state} {name}", index + 1),
+                rect: Rect::new(x, area.y, width, area.height.min(1)),
+                action: if app.runs.is_empty() {
+                    MouseAction::LastLog
+                } else {
+                    MouseAction::SwitchConsole(index)
+                },
+            };
+            x = x.saturating_add(width + gap);
+            control
+        })
+        .collect()
+}
+
+fn tab_close_rect(tab: &Control) -> Rect {
+    Rect::new(
+        tab.rect.right().saturating_sub(1),
+        tab.rect.y,
+        u16::from(tab.rect.width > 0),
+        tab.rect.height,
+    )
+}
+
+fn close_tab_hit(app: &App, area: Rect, event: MouseEvent) -> Option<MouseAction> {
+    session_tabs(app, area)
+        .iter()
+        .enumerate()
+        .find_map(|(index, tab)| {
+            tab_close_rect(tab)
+                .contains((event.column, event.row).into())
+                .then(|| close_tab_action(app, index))
+                .flatten()
+        })
 }
 
 fn toolbar_layout(area: Rect) -> (Rect, Rect) {
@@ -711,8 +772,8 @@ pub fn top_hit(app: &App, area: Rect, event: MouseEvent) -> Option<TopFocus> {
             return Some(TopFocus::Toolbar(control.action));
         }
     }
-    let rectangles: Vec<_> = if app.page == Page::Console && app.runs.len() > 1 {
-        console_navigation(app, parts[1])
+    let rectangles: Vec<_> = if has_session_tabs(app) {
+        session_tabs(app, parts[1])
             .into_iter()
             .map(|c| c.rect)
             .collect()
@@ -832,6 +893,9 @@ pub fn mouse_action(app: &App, area: Rect, event: MouseEvent) -> Option<MouseAct
         } else {
             Some(MouseAction::DismissActions)
         };
+    }
+    if let Some(action) = close_tab_hit(app, body_layout(area)[1], event) {
+        return Some(action);
     }
     if let Some(target) = top_hit(app, area, event) {
         return match target {
@@ -1002,14 +1066,37 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Page::Configs => 1,
         _ => 2,
     };
-    if app.page == Page::Console && app.runs.len() > 1 {
-        for (index, control) in console_navigation(app, parts[1]).into_iter().enumerate() {
+    if has_session_tabs(app) {
+        for (index, tab) in session_tabs(app, parts[1]).into_iter().enumerate() {
             let focused = app.top_focus == Some(TopFocus::Navigation(index));
-            frame.render_widget(
-                Paragraph::new(focused_label(&control.label, focused))
-                    .style(top_style(focused, false)),
-                control.rect,
+            let selected =
+                (app.page == Page::Console && !app.runs.is_empty() && app.active_run == index)
+                    || (app.page == Page::LastLog && app.runs.is_empty());
+            let style = if focused {
+                top_style(true, false)
+            } else if selected {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(34, 64, 78))
+                    .bold()
+            } else {
+                Style::default().fg(MUTED).bg(PANEL)
+            };
+            frame.render_widget(Block::default().style(style), tab.rect);
+            let close = close_tab_action(app, index).is_some();
+            let content = Rect::new(
+                tab.rect.x,
+                tab.rect.y,
+                tab.rect.width.saturating_sub(u16::from(close)),
+                tab.rect.height,
             );
+            frame.render_widget(
+                Paragraph::new(focused_label(&tab.label, focused)).style(style),
+                content,
+            );
+            if close {
+                frame.render_widget(Paragraph::new("×").style(style), tab_close_rect(&tab));
+            }
         }
     } else {
         for (index, (text, rect)) in navigation_tabs(parts[1]).into_iter().enumerate() {
@@ -1146,8 +1233,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 }
             }
             Page::Configs => " ↑↓ select · Enter run · Esc back\n Tab actions · / filter",
-            Page::Console => " r reload · R restart · Esc stop\n Ctrl+g actions · Ctrl+n add",
-            Page::LastLog => " PgUp/PgDn scroll · Esc back\n Tab actions · Home/End",
+            Page::Console if app.active_session().is_some() => {
+                " r reload · R restart · Esc stop\n Ctrl+g actions · Ctrl+n add"
+            }
+            Page::Console | Page::LastLog => {
+                " Ctrl+w / × close ended tab\n Ctrl+g actions · Esc devices"
+            }
         }
     };
     frame.render_widget(
@@ -1585,7 +1676,7 @@ fn help_overlay(frame: &mut Frame) {
         height,
     );
     frame.render_widget(Clear, modal);
-    frame.render_widget(Paragraph::new("Ctrl+g top · ←→ Enter select\nTab: actions in pickers\nCtrl+p menu · Ctrl+n add\nCtrl+b/f switch consoles\nCtrl+d devices · Ctrl+x stop\nCtrl+a slow · Ctrl+l colors\nCtrl+q quit · Esc return\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
+    frame.render_widget(Paragraph::new("Ctrl+g top · ←→ Enter select\nCtrl+w close ended tab\nCtrl+p menu · Ctrl+n add\nCtrl+b/f switch consoles\nCtrl+d devices · Ctrl+x stop\nCtrl+a slow · Ctrl+l colors\nCtrl+q quit · Esc return\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
 }
 
 fn quit_overlay(frame: &mut Frame, app: &App) {
@@ -1788,15 +1879,17 @@ mod tests {
             app.switch_run(0);
             terminal.draw(|f| draw(f, &app)).unwrap();
             let nav = body_layout(area)[1];
-            assert!(row_text(terminal.backend().buffer(), nav, nav.y).contains("1/2 ended"));
-            assert_eq!(
-                mouse_action(&app, area, click(nav.x + 2, nav.y)),
-                Some(MouseAction::PreviousConsole)
-            );
-            assert_eq!(
-                mouse_action(&app, area, click(nav.x + 5, nav.y)),
-                Some(MouseAction::NextConsole)
-            );
+            assert!(row_text(terminal.backend().buffer(), nav, nav.y).contains("1○"));
+            for (index, tab) in session_tabs(&app, nav).iter().enumerate() {
+                assert_eq!(
+                    mouse_action(&app, area, click(tab.rect.x + 1, nav.y)),
+                    Some(MouseAction::SwitchConsole(index))
+                );
+                assert_eq!(
+                    mouse_action(&app, area, click(tab.rect.right() - 1, nav.y)),
+                    Some(MouseAction::CloseConsole(index))
+                );
+            }
             app.actions_open = true;
             for index in 0..available_actions(&app).len() {
                 app.action_index = index;
@@ -1813,6 +1906,57 @@ mod tests {
                 );
             }
             app.actions_open = false;
+        }
+    }
+
+    #[test]
+    fn all_eight_session_tabs_and_close_targets_fit_without_overlap() {
+        let mut app = crate::tests::app();
+        let mut device = app.devices[0].clone();
+        device.name = "Very long phone 📱 with a wide display 日本語".into();
+        app.runs = (0..crate::runs::MAX_RUNS)
+            .map(|index| {
+                crate::runs::Run::failed(
+                    device.clone(),
+                    format!("Configuration {index}"),
+                    "ended".into(),
+                    8,
+                    40,
+                )
+            })
+            .collect();
+        for (width, height) in [(34, 12), (52, 18), (76, 24), (120, 40), (191, 45)] {
+            let area = Rect::new(0, 0, width, height);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for page in [Page::Devices, Page::Configs, Page::Console] {
+                app.page = page;
+                terminal.draw(|frame| draw(frame, &app)).unwrap();
+                let tabs = session_tabs(&app, body_layout(area)[1]);
+                assert_eq!(tabs.len(), 8);
+                for (index, tab) in tabs.iter().enumerate() {
+                    assert!(tab.rect.width >= 4 && tab.rect.right() <= width);
+                    for other in &tabs[index + 1..] {
+                        assert!(tab.rect.intersection(other.rect).is_empty());
+                    }
+                    assert_eq!(
+                        mouse_action(&app, area, click(tab.rect.x + 1, tab.rect.y)),
+                        Some(MouseAction::SwitchConsole(index))
+                    );
+                    let close = tab_close_rect(tab);
+                    assert_eq!(
+                        terminal.backend().buffer()[(close.x, close.y)].symbol(),
+                        "×"
+                    );
+                    assert_eq!(
+                        mouse_action(&app, area, click(close.x, close.y)),
+                        Some(MouseAction::CloseConsole(index))
+                    );
+                    assert_eq!(
+                        terminal.backend().buffer()[(tab.rect.x + 1, tab.rect.y)].symbol(),
+                        (index + 1).to_string()
+                    );
+                }
+            }
         }
     }
 
@@ -1845,8 +1989,8 @@ mod tests {
                                 .rect
                         }
                         TopFocus::Navigation(index) => {
-                            if page == Page::Console {
-                                console_navigation(&app, parts[1])[index].rect
+                            if has_session_tabs(&app) {
+                                session_tabs(&app, parts[1])[index].rect
                             } else {
                                 navigation_tabs(parts[1])[index].1
                             }
