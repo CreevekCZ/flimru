@@ -1,9 +1,12 @@
 # Usage guide
 
-`flutter-run-tui` is a small terminal launcher for Flutter projects. It reads
+`flimru` is a small terminal launcher for Flutter projects. It reads
 VS Code style `.vscode/launch.json` files, discovers devices in the background,
 and starts Flutter in an interactive Ratatui console. It targets macOS and
 Linux. Windows support is currently unqualified.
+
+Flimru was previously named `flutter-run-tui`. Favorites and last selections
+keep their original configuration location, so the rename preserves them.
 
 Install it from this checkout with:
 
@@ -14,7 +17,7 @@ cargo install --path . --locked
 Start the picker in a project with:
 
 ```sh
-flutter-run-tui /path/to/project
+flimru /path/to/project
 cargo run -- /path/to/flutter/project
 ```
 

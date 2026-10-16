@@ -48,7 +48,7 @@ impl Terminal {
             assert_ne!(flags, -1);
             assert_ne!(libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK), -1);
         }
-        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_flutter-run-tui"));
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_flimru"));
         command.arg(project);
         command.args([
             "--flutter",
@@ -320,7 +320,7 @@ impl Terminal {
 
     fn quit(&mut self) {
         self.send(&[0x11]);
-        self.until("Quit Flutter Run?");
+        self.until("Quit Flimru?");
         assert!(self.child.try_wait().unwrap().is_none());
         self.send(b"y");
         let deadline = Instant::now() + Duration::from_secs(4);
@@ -974,7 +974,7 @@ fn compact_actions_support_pointer_commands_and_keyboard_navigation() {
     tui.send(b"\x1b[F");
     tui.until("Quit launcher");
     tui.send(b"\r");
-    tui.until("Quit Flutter Run?");
+    tui.until("Quit Flimru?");
     tui.send(b"\r"); // Safe default remains Cancel.
     tui.until_control("Menu");
     tui.quit();
@@ -1084,7 +1084,7 @@ fn mouse_controls_scrollbar_and_quit_confirmation_in_real_tui() {
     tui.until("history-line:099");
     tui.send(b"\x1b[<0;111;27m"); // Release drag
     tui.send(&[0x11]);
-    tui.until("Quit Flutter Run?");
+    tui.until("Quit Flimru?");
     tui.until("active Flutter session");
     assert!(tui.child.try_wait().unwrap().is_none());
     tui.send(b"\r"); // Enter cancels by default

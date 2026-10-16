@@ -2,7 +2,7 @@
 // Test fixtures intentionally fail fast on setup/protocol errors.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Lifecycle checks run in their own test process so FD counts are isolated.
-use flutter_run_tui::{session::Session, tool::RunCommand};
+use flimru::{session::Session, tool::RunCommand};
 use std::{
     path::Path,
     thread,

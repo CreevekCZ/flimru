@@ -148,7 +148,7 @@ impl FlutterTool {
                 let mut wrapped = vec![
                     "-c".into(),
                     script.into(),
-                    "flutter-run-tui".into(),
+                    "flimru".into(),
                     guard.to_string_lossy().into_owned(),
                     files.len().to_string(),
                 ];

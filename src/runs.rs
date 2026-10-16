@@ -1,5 +1,5 @@
 //! A bounded batch owns each child and console independently.
-use flutter_run_tui::{device::Device, session::Session};
+use flimru::{device::Device, session::Session};
 
 pub const MAX_RUNS: usize = 8;
 

@@ -1,7 +1,7 @@
 // Test fixtures intentionally fail fast on setup/protocol errors.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Exercise the VM Service client against an isolated local HTTP service.
-use flutter_run_tui::animation::{AnimationControl, AnimationState};
+use flimru::animation::{AnimationControl, AnimationState};
 use serde_json::{Value, json};
 use std::{
     io::{Read, Write},

@@ -979,7 +979,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if area.width < 34 || area.height < 12 {
         frame.render_widget(
             Paragraph::new(if app.quit_confirmation {
-                "Quit Flutter Run?\ny quits · Enter/Esc cancels"
+                "Quit Flimru?\ny quits · Enter/Esc cancels"
             } else {
                 "Enlarge the terminal to at least 34 × 12.\nCtrl+q opens quit confirmation."
             })
@@ -1032,7 +1032,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     .split(Rect::new(parts[0].x, parts[0].y, parts[0].width, 1));
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" Flutter Run", Style::default().bold()),
+            Span::styled(" Flimru", Style::default().bold()),
             Span::styled(format!(" / {project}"), Style::default().fg(ACCENT)),
         ])),
         header[0],
@@ -1682,7 +1682,7 @@ fn help_overlay(frame: &mut Frame) {
 fn quit_overlay(frame: &mut Frame, app: &App) {
     let (modal, quit, cancel) = quit_modal(frame.area());
     frame.render_widget(Clear, modal);
-    frame.render_widget(panel(" Quit Flutter Run? ".into()), modal);
+    frame.render_widget(panel(" Quit Flimru? ".into()), modal);
     let inner = modal.inner(ratatui::layout::Margin {
         horizontal: 2,
         vertical: 1,
@@ -1718,7 +1718,7 @@ fn quit_overlay(frame: &mut Frame, app: &App) {
 mod tests {
     use super::*;
     use crossterm::event::KeyModifiers;
-    use flutter_run_tui::device::Device;
+    use flimru::device::Device;
     use ratatui::{Terminal, backend::TestBackend, style::Modifier};
 
     fn click(x: u16, y: u16) -> MouseEvent {

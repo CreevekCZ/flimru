@@ -25,6 +25,8 @@ pub struct State {
 }
 
 pub fn default_path() -> Result<PathBuf> {
+    // Keep the storage identity stable across the rename to Flimru so existing
+    // favorites and last selections continue to load without copying user data.
     let project_dirs = ProjectDirs::from("dev", "flutter-run-tui", "flutter-run-tui")
         .context("could not determine the platform config directory")?;
     Ok(project_dirs.config_dir().join("state.json"))

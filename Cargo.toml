@@ -1,10 +1,10 @@
 [package]
-name = "flutter-run-tui"
+name = "flimru"
 version = "0.1.0"
 edition = "2024"
 description = "A persistent terminal launcher for Flutter and VS Code launch configurations"
 license = "MIT"
-repository = "https://github.com/CreevekCZ/flutter-run-tui"
+repository = "https://github.com/CreevekCZ/flimru"
 
 [dependencies]
 anyhow = "1"

@@ -1,6 +1,7 @@
-# flutter-run-tui
+# Flimru
 
-A persistent terminal launcher for Flutter, built with Rust and
+**Flutter Interactive Multi-device Runner** — a persistent terminal launcher
+for Flutter, built with Rust and
 [Ratatui](https://ratatui.rs/). Pick a device, choose a VS Code launch
 configuration, and run. When the session ends, the picker is ready for the next one.
 
@@ -28,7 +29,7 @@ From this checkout:
 
 ```sh
 cargo install --path . --locked
-flutter-run-tui /path/to/flutter/project
+flimru /path/to/flutter/project
 ```
 
 Run inside a Flutter project to omit its path. Use `--check` to validate the

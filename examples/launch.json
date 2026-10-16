@@ -1,5 +1,5 @@
 {
-  // Example JSONC accepted by flutter-run-tui.
+  // Example JSONC accepted by flimru.
   "configurations": [
     {
       "name": "Debug flavor",

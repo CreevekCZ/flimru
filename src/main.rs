@@ -15,7 +15,7 @@ use crossterm::{
     execute,
     terminal::{DisableLineWrap, EnableLineWrap},
 };
-use flutter_run_tui::{
+use flimru::{
     config::{LaunchConfig, LaunchFile},
     device::{Device, Discovery, DiscoveryEvent, merge_devices},
     session::Session,
@@ -593,8 +593,7 @@ impl App {
             ) {
                 Ok(mut session) => {
                     if config.is_test() {
-                        session.animations =
-                            flutter_run_tui::animation::AnimationControl::new(false);
+                        session.animations = flimru::animation::AnimationControl::new(false);
                     }
                     runs::Run::running(device, config.name.clone(), session)
                 }
@@ -1647,7 +1646,7 @@ mod tests {
     pub(super) fn app() -> App {
         let workspace = std::env::temp_dir();
         let tool = FlutterTool {
-            executable: workspace.join("flutter-run-tui-nonexistent-test-tool"),
+            executable: workspace.join("flimru-nonexistent-test-tool"),
             prefix: vec![],
             workspace: workspace.clone(),
         };
@@ -1801,7 +1800,7 @@ mod tests {
                 device,
                 name.into(),
                 Session::start(
-                    &flutter_run_tui::tool::RunCommand {
+                    &flimru::tool::RunCommand {
                         executable: "/bin/sh".into(),
                         args: vec!["-c".into(), "exec sleep 30".into()],
                         cwd: workspace.clone(),
@@ -1875,7 +1874,7 @@ mod tests {
         let mut app = app();
         let device = app.devices[0].clone();
         let session = Session::start(
-            &flutter_run_tui::tool::RunCommand {
+            &flimru::tool::RunCommand {
                 executable: "/bin/sh".into(),
                 args: vec!["-c".into(), "exit 0".into()],
                 cwd: app.launch.workspace.clone(),
