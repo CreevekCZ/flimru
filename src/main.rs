@@ -1,5 +1,7 @@
+mod clipboard;
 mod console_style;
 mod runs;
+mod selection;
 mod shortcuts;
 mod terminal_input;
 mod ui;
@@ -104,6 +106,8 @@ impl Drop for RestoreTerminal {
 }
 
 pub(crate) struct App {
+    selection: Option<selection::Selection>,
+    clipboard: clipboard::Clipboard,
     actions_open: bool,
     action_index: usize,
     action_offset: usize,
@@ -232,6 +236,8 @@ fn main() -> Result<()> {
     let ownit = !options.no_project_helpers && has_ownit_helpers(&workspace);
     let discovery = Discovery::start(tool.clone(), Duration::from_secs(options.refresh_interval));
     let mut app = App {
+        selection: None,
+        clipboard: clipboard::Clipboard::default(),
         actions_open: false,
         action_index: 0,
         action_offset: 0,
@@ -301,6 +307,9 @@ fn main() -> Result<()> {
             }
             redraw |= app.tick()?;
             let area = terminal.size()?;
+            if area != previous_size {
+                app.selection = None;
+            }
             redraw |= area != previous_size;
             previous_size = area;
             for run in &mut app.runs {
@@ -445,6 +454,7 @@ impl App {
     }
 
     fn switch_run(&mut self, index: usize) {
+        self.selection = None;
         if index < self.runs.len() {
             self.active_run = index;
             self.top_focus = None;
@@ -756,6 +766,13 @@ impl App {
 
     fn tick(&mut self) -> Result<bool> {
         let mut changed = false;
+        if let Some(result) = self.clipboard.tick() {
+            changed = true;
+            self.status = match result {
+                Ok(()) => "Selection copied to clipboard. Esc or click clears selection.".into(),
+                Err(error) => format!("Copy failed: {error:#}"),
+            };
+        }
         while let Ok(event) = self.discovery.events.try_recv() {
             changed = true;
             match event {
@@ -811,6 +828,7 @@ impl App {
     }
 
     fn back(&mut self) {
+        self.selection = None;
         self.top_focus = None;
         self.toolbar_offset = 0;
         self.actions_open = false;
@@ -827,6 +845,40 @@ impl App {
         // Leave function keys to the terminal/macOS; they are never launcher
         // commands or an implicit dismissal of a saved console or modal.
         if matches!(key.code, KeyCode::F(_)) {
+            return Ok(false);
+        }
+        if self
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.keyboard)
+        {
+            let delta = match key.code {
+                KeyCode::Left => Some((-1, 0)),
+                KeyCode::Right => Some((1, 0)),
+                KeyCode::Up => Some((0, -1)),
+                KeyCode::Down => Some((0, 1)),
+                KeyCode::Home => Some((-i16::MAX, 0)),
+                KeyCode::End => Some((i16::MAX, 0)),
+                _ => None,
+            };
+            if let Some((dx, dy)) = delta {
+                if let Some(selection) = &mut self.selection {
+                    selection.move_end(dx, dy, key.modifiers.contains(KeyModifiers::SHIFT));
+                }
+                return Ok(false);
+            }
+            if key.code == KeyCode::Enter {
+                let text = self
+                    .selection
+                    .as_ref()
+                    .and_then(selection::Selection::selected_text);
+                if let Some(text) = text {
+                    self.copy_selection(&text)?;
+                }
+                return Ok(false);
+            }
+        }
+        if self.selection.take().is_some() && key.code == KeyCode::Esc {
             return Ok(false);
         }
         if self.quit_confirmation {
@@ -853,6 +905,10 @@ impl App {
             self.action_scroll_drag = false;
             self.action_index = 0;
             self.action_offset = 0;
+            return Ok(false);
+        }
+        if shortcut == Some(Shortcut::SelectText) && !self.actions_open && !self.help {
+            self.begin_text_selection(ratatui::layout::Rect::new(0, 0, cols, rows));
             return Ok(false);
         }
         if self.actions_open {
@@ -1194,6 +1250,7 @@ impl App {
 
 impl App {
     fn paste(&mut self, text: &str) {
+        self.selection = None;
         if self.quit_confirmation || self.help || self.actions_open || self.top_focus.is_some() {
             return;
         }
@@ -1216,7 +1273,65 @@ impl App {
         }
     }
 
+    fn copy_selection(&mut self, text: &str) -> Result<()> {
+        match self.clipboard.copy(text) {
+            Ok(None) => self.status = "Copying selection…".into(),
+            Ok(Some(text)) => {
+                execute!(
+                    std::io::stdout(),
+                    crossterm::clipboard::CopyToClipboard::to_clipboard_from(text)
+                )?;
+                self.status =
+                    "Copy requested. Terminal clipboard permission may be required.".into();
+            }
+            Err(error) => self.status = format!("Copy failed: {error:#}"),
+        }
+        Ok(())
+    }
+
+    fn begin_text_selection(&mut self, area: ratatui::layout::Rect) {
+        self.prepare_last_log(area.height.saturating_sub(9).max(1));
+        if area.width < 34 || area.height < 12 {
+            return;
+        }
+        if let Some((screen, offset)) = self.selection_screen() {
+            let content = ui::console_content_area(area);
+            let start_row = ui::console_start_row(screen, offset, content.height);
+            self.selection = selection::Selection::capture(
+                screen,
+                start_row,
+                content,
+                (content.x, content.y).into(),
+            );
+            if let Some(selection) = &mut self.selection {
+                selection.enable_keyboard();
+            }
+            self.top_focus = None;
+        }
+    }
+
+    fn selection_screen(&self) -> Option<(&vt100::Screen, Option<usize>)> {
+        match self.page {
+            Page::Console => self.runs.get(self.active_run).and_then(|run| {
+                run.screen()
+                    .map(|screen| (screen, run.outcome.as_ref().map(|_| run.offset)))
+            }),
+            Page::LastLog => self
+                .last_log
+                .as_ref()
+                .map(|parser| (parser.screen(), Some(self.last_log_offset))),
+            _ => None,
+        }
+    }
+
     fn mouse(&mut self, event: MouseEvent, area: ratatui::layout::Rect) -> Result<bool> {
+        if self
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.viewport != ui::console_content_area(area))
+        {
+            self.selection = None;
+        }
         self.prepare_last_log(area.height.saturating_sub(9).max(1));
         ui::update_picker_viewport(self, area);
         if matches!(event.kind, MouseEventKind::Down(MouseButton::Left))
@@ -1230,11 +1345,39 @@ impl App {
         // Menu clicks use the viewport actually drawn, not a pending keyboard
         // or wheel selection which has not reached the next frame yet.
         if matches!(event.kind, MouseEventKind::Up(MouseButton::Left)) {
+            let was_selecting = self
+                .selection
+                .as_ref()
+                .is_some_and(|selection| selection.dragging);
+            let text = self
+                .selection
+                .as_mut()
+                .filter(|selection| selection.dragging)
+                .and_then(|selection| selection.finish((event.column, event.row).into()));
+            if let Some(text) = text {
+                self.copy_selection(&text)?;
+            }
+            if was_selecting
+                && self
+                    .selection
+                    .as_ref()
+                    .is_some_and(|selection| !selection.has_range())
+            {
+                self.selection = None;
+            }
             self.dragging_scrollbar = None;
             self.action_scroll_drag = false;
             return Ok(false);
         }
         if !self.quit_confirmation && !self.help {
+            if !self.actions_open
+                && matches!(event.kind, MouseEventKind::Drag(MouseButton::Left))
+                && let Some(selection) = &mut self.selection
+                && selection.dragging
+            {
+                selection.update((event.column, event.row).into());
+                return Ok(false);
+            }
             if self.actions_open
                 && self.action_scroll_drag
                 && matches!(event.kind, MouseEventKind::Drag(MouseButton::Left))
@@ -1248,6 +1391,7 @@ impl App {
                 _ => None,
             };
             if let Some(direction) = wheel {
+                self.selection = None;
                 if self.actions_open {
                     self.action_index = self
                         .action_index
@@ -1305,6 +1449,29 @@ impl App {
                 return Ok(false);
             }
         }
+        if matches!(event.kind, MouseEventKind::Down(MouseButton::Left)) {
+            self.selection = None;
+            if !self.actions_open
+                && !self.help
+                && !self.quit_confirmation
+                && area.width >= 34
+                && area.height >= 12
+                && let Some((screen, offset)) = self.selection_screen()
+            {
+                let content = ui::console_content_area(area);
+                let start_row = ui::console_start_row(screen, offset, content.height);
+                self.selection = selection::Selection::capture(
+                    screen,
+                    start_row,
+                    content,
+                    (event.column, event.row).into(),
+                );
+                if self.selection.is_some() {
+                    self.dragging_scrollbar = None;
+                    return Ok(false);
+                }
+            }
+        }
         let Some(action) = ui::mouse_action(self, area, event) else {
             return Ok(false);
         };
@@ -1322,6 +1489,7 @@ impl App {
     }
 
     fn activate(&mut self, action: ui::MouseAction, area: ratatui::layout::Rect) -> Result<bool> {
+        self.selection = None;
         let focus = self.top_focus.take();
         let page = self.page;
         let result = self.dispatch(action, area);
@@ -1330,7 +1498,9 @@ impl App {
             && !self.searching
             && !matches!(
                 action,
-                ui::MouseAction::CloseConsole(_) | ui::MouseAction::CloseLastLog
+                ui::MouseAction::CloseConsole(_)
+                    | ui::MouseAction::CloseLastLog
+                    | ui::MouseAction::SelectText
             )
         {
             self.top_focus = focus;
@@ -1417,6 +1587,12 @@ impl App {
                 return Ok(false);
             }
             MouseAction::FlutterKey(key) => KeyCode::Char(key),
+            MouseAction::SelectText => {
+                self.actions_open = false;
+                self.top_focus = None;
+                self.begin_text_selection(area);
+                return Ok(false);
+            }
             MouseAction::OldestOutput => KeyCode::Home,
             MouseAction::FollowOutput => KeyCode::End,
             MouseAction::SelectDevice(index) => {
@@ -1625,6 +1801,8 @@ mod tests {
         ]}"#, &workspace.join("launch.json"), &workspace).unwrap();
         let discovery = Discovery::start(tool.clone(), Duration::from_secs(3600));
         let mut app = App {
+            selection: None,
+            clipboard: clipboard::Clipboard::default(),
             actions_open: false,
             action_index: 0,
             action_offset: 0,
@@ -2330,5 +2508,101 @@ mod tests {
         )
         .unwrap();
         assert_eq!(app.last_log.as_ref().unwrap().screen().scrollback(), 0);
+    }
+    #[test]
+    fn text_selection_freezes_only_the_view_and_clears_without_leaving_console() {
+        use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+        let mut app = app();
+        let mut parser = vt100::Parser::new(23, 109, 1000);
+        parser.process(b"alpha text\r\nbeta");
+        app.last_log = Some(parser);
+        app.page = Page::LastLog;
+        let area = Rect::new(0, 0, 112, 32);
+        let content = ui::console_content_area(area);
+        let event = |kind, x, y| MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.mouse(
+            event(
+                MouseEventKind::Down(MouseButton::Left),
+                content.x,
+                content.y,
+            ),
+            area,
+        )
+        .unwrap();
+        app.mouse(
+            event(
+                MouseEventKind::Drag(MouseButton::Left),
+                content.x + 4,
+                content.y,
+            ),
+            area,
+        )
+        .unwrap();
+        app.last_log.as_mut().unwrap().process(b"\x1b[Hnew output");
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(content.x, content.y)].symbol(),
+            "a"
+        );
+        assert_eq!(
+            terminal.backend().buffer()[(content.x, content.y)].bg,
+            ratatui::style::Color::Rgb(96, 210, 225)
+        );
+        app.key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            area.width,
+            area.height,
+        )
+        .unwrap();
+        assert!(app.selection.is_none());
+        assert_eq!(app.page, Page::LastLog);
+        terminal.draw(|frame| ui::draw(frame, &app)).unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(content.x, content.y)].symbol(),
+            "n"
+        );
+        app.mouse(
+            event(
+                MouseEventKind::Down(MouseButton::Left),
+                content.x,
+                content.y,
+            ),
+            area,
+        )
+        .unwrap();
+        app.mouse(
+            event(MouseEventKind::Up(MouseButton::Left), content.x, content.y),
+            area,
+        )
+        .unwrap();
+        assert!(app.selection.is_none()); // Plain clicks neither copy nor freeze.
+        app.key(Shortcut::SelectText.key(), area.width, area.height)
+            .unwrap();
+        assert!(app.selection.as_ref().unwrap().keyboard);
+        let track = ui::console_scrollbar_area(area);
+        app.mouse(
+            event(MouseEventKind::Down(MouseButton::Left), track.x, track.y),
+            area,
+        )
+        .unwrap();
+        assert!(app.selection.is_none());
+        app.key(Shortcut::SelectText.key(), area.width, area.height)
+            .unwrap();
+        app.mouse(
+            event(
+                MouseEventKind::Drag(MouseButton::Left),
+                content.x,
+                content.y,
+            ),
+            Rect::new(0, 0, 80, 24),
+        )
+        .unwrap();
+        assert!(app.selection.is_none()); // Resize invalidates the old text coordinates.
     }
 }

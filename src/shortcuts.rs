@@ -6,6 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub enum Shortcut {
     FocusActions,
     Actions,
+    SelectText,
     Animations,
     PreviousConsole,
     NextConsole,
@@ -23,6 +24,7 @@ impl Shortcut {
         Some(match key.code {
             KeyCode::Char('g') => Self::FocusActions,
             KeyCode::Char('p') => Self::Actions,
+            KeyCode::Char('e') => Self::SelectText,
             KeyCode::Char('a') => Self::Animations,
             KeyCode::Char('b') => Self::PreviousConsole,
             KeyCode::Char('f') => Self::NextConsole,
@@ -38,6 +40,7 @@ impl Shortcut {
         match self {
             Self::FocusActions => ('g', "Ctrl+g"),
             Self::Actions => ('p', "Ctrl+p"),
+            Self::SelectText => ('e', "Ctrl+e"),
             Self::Animations => ('a', "Ctrl+a"),
             Self::PreviousConsole => ('b', "Ctrl+b"),
             Self::NextConsole => ('f', "Ctrl+f"),

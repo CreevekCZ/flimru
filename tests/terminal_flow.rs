@@ -18,6 +18,7 @@ struct Terminal {
     reader: Box<dyn Read + Send>,
     writer: Box<dyn Write + Send>,
     screen: vt100::Parser,
+    raw_output: Vec<u8>,
 }
 
 impl Terminal {
@@ -61,6 +62,8 @@ impl Terminal {
         // Reproduce launchers/shells which suppress color. Always-enabled colors must
         // override this for both the terminal backend and its Flutter child.
         command.env("NO_COLOR", "1");
+        // Exercise OSC52 without modifying the real test runner's clipboard.
+        command.env("SSH_CONNECTION", "flimru-pty-fixture");
         command.env("FAKE_LOG", project.join("session.log"));
         command.env("FAKE_PID", project.join("child.pid"));
         command.env("FAKE_SCRIPT", project.join("probe.dart"));
@@ -75,6 +78,7 @@ impl Terminal {
             reader,
             writer,
             screen: vt100::Parser::new(32, 112, 1000),
+            raw_output: Vec::new(),
         }
     }
 
@@ -83,7 +87,13 @@ impl Terminal {
         loop {
             match self.reader.read(&mut buffer) {
                 Ok(0) => break,
-                Ok(count) => self.screen.process(&buffer[..count]),
+                Ok(count) => {
+                    if self.raw_output.len() + count > 256 * 1024 {
+                        self.raw_output.clear();
+                    }
+                    self.raw_output.extend_from_slice(&buffer[..count]);
+                    self.screen.process(&buffer[..count]);
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
                 Err(error) => panic!("{error}"),
@@ -151,6 +161,31 @@ impl Terminal {
                 Instant::now() < deadline,
                 "Missing color {color:?} on {needle:?}: {}",
                 self.screen.screen().contents()
+            );
+            thread::sleep(Duration::from_millis(15));
+        }
+    }
+
+    fn until_clipboard_request(&mut self, text: &str) {
+        let mut expected = String::new();
+        crossterm::Command::write_ansi(
+            &crossterm::clipboard::CopyToClipboard::to_clipboard_from(text),
+            &mut expected,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(6);
+        loop {
+            self.read();
+            if self
+                .raw_output
+                .windows(expected.len())
+                .any(|window| window == expected.as_bytes())
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Clipboard request was not emitted"
             );
             thread::sleep(Duration::from_millis(15));
         }
@@ -1198,5 +1233,66 @@ exec "$FAKE_DART" --disable-dart-dev --enable-vm-service=0 "$FAKE_SCRIPT"
     tui.until("Animations: normal");
     tui.send(b"q");
     tui.until("ended (");
+    tui.quit();
+}
+
+#[test]
+fn mouse_drag_copies_live_and_saved_console_text_without_forwarding_events() {
+    let project = project();
+    let state = project.path().join("state.json");
+    std::fs::write(
+        &state,
+        r#"{"favorites":[{"id":"demo-device","name":"Saved phone","platform":"ios"}]}"#,
+    )
+    .unwrap();
+    let mut tui = Terminal::start(project.path(), &state);
+    tui.until("Saved phone");
+    tui.send(b"\r");
+    tui.until("Demo debug");
+    tui.send(b"\r");
+    tui.until("SESSION READY");
+    for saved in [false, true] {
+        tui.menu_click("Oldest output");
+        tui.until("SESSION READY");
+        let (row, column) = tui
+            .screen
+            .screen()
+            .rows(0, 112)
+            .enumerate()
+            .find_map(|(row, line)| {
+                line.find("SESSION READY")
+                    .map(|index| (row as u16, line[..index].chars().count() as u16))
+            })
+            .unwrap();
+        tui.raw_output.clear();
+        tui.mouse(0, column, row);
+        tui.mouse(32, column + 6, row);
+        tui.send(format!("\x1b[<0;{};{}m", column + 13, row + 1).as_bytes());
+        tui.until("Copy requested.");
+        tui.until_clipboard_request("SESSION READY");
+        let cell = tui.screen.screen().cell(row, column).unwrap();
+        assert_eq!(cell.bgcolor(), vt100::Color::Rgb(96, 210, 225));
+        tui.send(b"\x1b"); // Clear selection; do not stop the live session.
+        tui.until_color("SESSION READY", vt100::Color::Idx(2));
+        if !saved {
+            tui.send(b"\x05"); // Ctrl+e enters keyboard selection.
+            tui.until("Shift+arrows select");
+            tui.raw_output.clear();
+            tui.send(b"\x1b[C\x1b[C\x1b[C\x1b[1;2C\x1b[1;2C\r");
+            tui.until_clipboard_request("SIO");
+            tui.send(b"\x1b");
+            tui.until_color("SESSION READY", vt100::Color::Idx(2));
+            tui.send(b"h");
+            tui.until("shortcut:h");
+            let log = std::fs::read_to_string(project.path().join("session.log")).unwrap();
+            assert!(!log.contains("key:\x1b"));
+            tui.send(b"q");
+            tui.until("ended (");
+            tui.click_text("1○ Demo debug");
+            tui.until("Last console ·");
+        }
+    }
+    tui.send(b"\x17");
+    tui.until("Closed saved console.");
     tui.quit();
 }

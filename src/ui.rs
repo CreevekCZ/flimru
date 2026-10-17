@@ -3,7 +3,7 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
         Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
@@ -47,6 +47,7 @@ pub enum MouseAction {
     ClearFilter,
     FlutterKey(char),
     OldestOutput,
+    SelectText,
     FollowOutput,
     ScrollActions(usize),
     ToggleMulti,
@@ -183,6 +184,13 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
             add("Oldest output", "Home", MouseAction::OldestOutput);
             add("Latest output", "End", MouseAction::FollowOutput);
         }
+    }
+    if matches!(app.page, Page::Console | Page::LastLog) {
+        add(
+            "Select text",
+            Shortcut::SelectText.label(),
+            MouseAction::SelectText,
+        );
     }
     if !app.runs.is_empty() {
         add(
@@ -819,6 +827,17 @@ fn small_exit_buttons(area: Rect) -> Option<(Rect, Rect)> {
     })
 }
 
+/// Exact text rectangle, excluding borders and the scrollbar gutter.
+pub fn console_content_area(area: Rect) -> Rect {
+    let inner = panel(String::new()).inner(body_layout(area)[2]);
+    Rect::new(
+        inner.x,
+        inner.y,
+        inner.width.saturating_sub(1),
+        inner.height,
+    )
+}
+
 /// The scrollbar gutter for the full terminal area, shared with pointer dragging.
 pub fn console_scrollbar_area(area: Rect) -> Rect {
     let inner = panel(String::new()).inner(body_layout(area)[2]);
@@ -1128,6 +1147,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
                     && !app.actions_open
                     && !app.quit_confirmation
                     && run.session.is_some()
+                    && app
+                        .selection
+                        .as_ref()
+                        .is_none_or(|selection| !selection.has_range())
                     && screen.scrollback() == 0
                     && !screen.hide_cursor()
                 {
@@ -1153,6 +1176,29 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
     }
 
+    if matches!(app.page, Page::Console | Page::LastLog)
+        && let Some(selection) = &app.selection
+        && selection.viewport == console_content_area(area)
+        && selection.has_range()
+    {
+        let lines: Vec<_> = selection
+            .rows()
+            .map(|row| console_line(row.iter()))
+            .collect();
+        frame.render_widget(Paragraph::new(Text::from(lines)), selection.area);
+        for row in 0..selection.area.height {
+            for col in 0..selection.area.width {
+                if selection.contains(row, col) {
+                    frame.buffer_mut()[(selection.area.x + col, selection.area.y + row)].set_style(
+                        Style::default()
+                            .fg(Color::Rgb(14, 19, 27))
+                            .bg(ACCENT)
+                            .remove_modifier(Modifier::REVERSED | Modifier::DIM),
+                    );
+                }
+            }
+        }
+    }
     let status = if let Some(search) = &app.search {
         format!(
             "  / {search}{}  {}",
@@ -1199,7 +1245,19 @@ pub fn draw(frame: &mut Frame, app: &App) {
             .wrap(Wrap { trim: false }),
         status_area,
     );
-    let help = if app.top_focus.is_some() {
+    let help = if app
+        .selection
+        .as_ref()
+        .is_some_and(|selection| selection.keyboard)
+    {
+        " Arrows move · Shift+arrows select\n Enter copies · Esc clears"
+    } else if app
+        .selection
+        .as_ref()
+        .is_some_and(|selection| selection.has_range())
+    {
+        " Drag to select · release copies\n Esc clears selection"
+    } else if app.top_focus.is_some() {
         " ←/→ choose · Enter/Space select\n ↓ / Esc / Tab return to content"
     } else {
         match app.page {
@@ -1214,7 +1272,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             }
             Page::Configs => " ↑↓ select · Enter run · Esc back\n Tab actions · / filter",
             Page::Console if app.active_session().is_some() => {
-                " r reload · R restart · Esc stop\n Ctrl+g actions · Ctrl+n add"
+                " r reload · R restart · Esc stop\n Drag to copy · Ctrl+g actions"
             }
             Page::Console | Page::LastLog => {
                 " Ctrl+w / × close ended tab\n Ctrl+g actions · Esc devices"
@@ -1489,6 +1547,67 @@ fn terminal_color(color: vt100::Color) -> Color {
     }
 }
 
+fn console_line<'a>(cells: impl Iterator<Item = &'a vt100::Cell>) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut plain = String::new();
+    let mut ansi_colors = false;
+    for cell in cells {
+        if cell.is_wide_continuation() {
+            continue;
+        }
+        let mut style = Style::default();
+        ansi_colors |=
+            cell.fgcolor() != vt100::Color::Default || cell.bgcolor() != vt100::Color::Default;
+        if cell.fgcolor() != vt100::Color::Default {
+            style = style.fg(terminal_color(cell.fgcolor()));
+        }
+        if cell.bgcolor() != vt100::Color::Default {
+            style = style.bg(terminal_color(cell.bgcolor()));
+        }
+        if cell.bold() {
+            style = style.bold();
+        }
+        if cell.italic() {
+            style = style.italic();
+        }
+        if cell.underline() {
+            style = style.underlined();
+        }
+        if cell.dim() {
+            style = style.dim();
+        }
+        if cell.inverse() {
+            style = style.reversed();
+        }
+        let text = if cell.has_contents() {
+            cell.contents().to_owned()
+        } else {
+            " ".into()
+        };
+        plain.push_str(&text);
+        spans.push(Span::styled(text, style));
+    }
+    if !ansi_colors && let Some(color) = crate::console_style::fallback_color(&plain) {
+        for span in &mut spans {
+            span.style = span.style.fg(color);
+        }
+    }
+    Line::from(spans)
+}
+
+pub fn console_start_row(
+    screen: &vt100::Screen,
+    snapshot_offset: Option<usize>,
+    height: u16,
+) -> u16 {
+    let hidden = if snapshot_offset.is_some() {
+        screen.size().0.saturating_sub(height)
+    } else {
+        0
+    };
+    hidden.saturating_sub(snapshot_offset.unwrap_or(0).min(u16::MAX as usize) as u16)
+}
+
 fn console(
     frame: &mut Frame,
     screen: &vt100::Screen,
@@ -1522,57 +1641,13 @@ fn console(
     } else {
         0
     };
-    let start_row = hidden_rows.saturating_sub(offset.min(u16::MAX as usize) as u16);
+    let start_row = console_start_row(screen, snapshot_offset, content.height);
     let capacity = scrollback_len.saturating_add(usize::from(hidden_rows));
     let lines: Vec<_> = (0..rows.saturating_sub(start_row).min(content.height))
         .map(|row| {
-            let mut spans = Vec::new();
-            let mut plain = String::new();
-            let mut ansi_colors = false;
-            for col in 0..cols.min(content.width) {
-                if let Some(cell) = screen.cell(start_row + row, col) {
-                    if cell.is_wide_continuation() {
-                        continue;
-                    }
-                    let mut style = Style::default();
-                    ansi_colors |= cell.fgcolor() != vt100::Color::Default
-                        || cell.bgcolor() != vt100::Color::Default;
-                    if cell.fgcolor() != vt100::Color::Default {
-                        style = style.fg(terminal_color(cell.fgcolor()));
-                    }
-                    if cell.bgcolor() != vt100::Color::Default {
-                        style = style.bg(terminal_color(cell.bgcolor()));
-                    }
-                    if cell.bold() {
-                        style = style.bold();
-                    }
-                    if cell.italic() {
-                        style = style.italic();
-                    }
-                    if cell.underline() {
-                        style = style.underlined();
-                    }
-                    if cell.dim() {
-                        style = style.dim();
-                    }
-                    if cell.inverse() {
-                        style = style.reversed();
-                    }
-                    let text = if cell.has_contents() {
-                        cell.contents().to_string()
-                    } else {
-                        " ".into()
-                    };
-                    plain.push_str(&text);
-                    spans.push(Span::styled(text, style));
-                }
-            }
-            if !ansi_colors && let Some(color) = crate::console_style::fallback_color(&plain) {
-                for span in &mut spans {
-                    span.style = span.style.fg(color);
-                }
-            }
-            Line::from(spans)
+            console_line(
+                (0..cols.min(content.width)).filter_map(|col| screen.cell(start_row + row, col)),
+            )
         })
         .collect();
     frame.render_widget(Paragraph::new(Text::from(lines)), content);
@@ -1652,7 +1727,7 @@ fn help_overlay(frame: &mut Frame) {
         height,
     );
     frame.render_widget(Clear, modal);
-    frame.render_widget(Paragraph::new("Ctrl+g top · ←→ Enter select\nCtrl+w close ended tab\nCtrl+p menu · Ctrl+n add\nCtrl+b/f switch consoles\nCtrl+d devices · Ctrl+x stop\nCtrl+a slow animations\nCtrl+q quit · Esc return\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
+    frame.render_widget(Paragraph::new("Ctrl+g top · ←→ Enter select\nCtrl+w close ended tab\nCtrl+p menu · Ctrl+n add\nCtrl+b/f switch consoles\nCtrl+d devices · Ctrl+x stop\nCtrl+a slow · Ctrl+e select\nCtrl+q quit · Esc return\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
 }
 
 fn quit_overlay(frame: &mut Frame, app: &App) {

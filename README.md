@@ -10,7 +10,7 @@ configuration, and run. When the session ends, the picker is ready for the next 
 - Reads `.vscode/launch.json`, including comments and trailing commas.
 - Refreshes devices in the background; cached favorites stay selectable.
 - Runs Flutter in an interactive console with its usual keyboard shortcuts.
-- Supports mouse selection, wheel scrolling, and a draggable console scrollbar.
+- Supports drag-to-copy text selection, wheel scrolling, and a draggable console scrollbar.
 - Preserves ANSI colors and highlights plain log severity; colors are always enabled.
 - Provides every command through the clickable **Actions** menu or **Ctrl+p**.
 - Navigates the top actions with **Tab/Ctrl+g**, arrow keys, and **Enter/Space**.
@@ -53,6 +53,8 @@ configuration, or `--help` for all options.
 | Top actions | `←` / `→`, `Enter` / `Space` | Choose and activate an action |
 | Top actions | `↓`, `Esc`, `Tab` | Return to the list or console |
 | Console | `PgUp` / `PgDn`, `End` | Scroll history, follow output |
+| Console / saved output | Mouse drag | Select text; releasing automatically copies it |
+| Console / saved output | `Ctrl+e`, arrows, `Shift+arrows`, `Enter` | Position, select, copy text (`Esc` clears) |
 | Console | `q` / `Esc` | Stop session and return to the picker |
 | Picker | `?` | Open help (also available from Help or Actions everywhere) |
 | Anywhere | `Ctrl+q` | Confirm launcher exit |

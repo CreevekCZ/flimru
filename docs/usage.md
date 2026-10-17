@@ -42,8 +42,24 @@ and use the buttons to proceed. The wheel moves through picker items.
 button open a confirmation: `y` or clicking Quit confirms; `Enter`, `n`, or
 `Esc` cancels. Confirming also stops an active session. `?` opens help in pickers;
 the Help button and Actions menu work everywhere.
-Use `--no-mouse` to leave mouse input to your terminal for selection/copying;
-many terminals also allow selecting text while holding Shift.
+Drag across console text and release to automatically copy the highlighted range.
+This works in live output, scrollback, and saved consoles. New logs continue to be
+processed while the selected viewport stays stable. Esc clears selection without
+stopping Flutter; a click, scrolling, switching consoles, or resizing also clears it.
+A click without dragging does not copy anything. Borders and the scrollbar are
+excluded. Selection is limited to the visible viewport; scroll first to select older
+output. ANSI formatting is omitted, Unicode is preserved, and soft-wrapped rows
+are joined when copying. Clipboard text is limited to 128 KiB.
+
+For keyboard selection, press **Ctrl+e** or choose **Actions → Select text**.
+Arrows position the cursor, Shift+arrows extend the range, Enter copies, and Esc
+clears it. Other launcher/Flutter keys leave selection mode and retain their usual action.
+
+macOS uses the system clipboard. SSH and other platforms request copying through
+OSC52; terminal support and clipboard permission are required, so the status says
+“Copy requested” rather than claiming the terminal accepted it. Use `--no-mouse`
+to keep your terminal's own selection behavior instead; many terminals also allow
+native selection while holding Shift.
 If the terminal disappears, the launcher automatically stops its owned run
 and discovery processes. Mouse hovering does not trigger continuous redraws;
 updates are limited to 30 frames per second and idle redraws to once per second.
