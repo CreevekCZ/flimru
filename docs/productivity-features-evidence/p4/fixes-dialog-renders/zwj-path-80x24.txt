@@ -1,0 +1,24 @@
+LIVE FLUTTER CONSOLE · other tabs keep running                                  
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ ┌ Export retained console log ───────────────────────────────────────────────┐ 
+ │ Source: Frozen source                                                      │ 
+ │ Full snapshot, including                                                   │ 
+ │ query/filter-hidden lines.                                                 │ 
+ │ Destination (no overwrite)                                                 │ 
+ │ /👩‍💻 👩‍💻 👩‍💻 👩‍💻 👩‍💻 👩‍💻 👩‍💻 👩‍💻 👩‍💻 👩‍💻 👩‍💻 👩‍💻 👩‍💻 👩‍💻 👩‍💻 👩‍💻 👩‍💻 👩‍💻 👩‍💻 👩‍💻 /tail.txt                         │ 
+ │ Ready · 35 B retained text                                                 │ 
+ │ May contain secrets. UTF-8.                                                │ 
+ │ [ Export ]  [ Cancel ]                                                     │ 
+ │ Enter Export · Esc Cancel                                                  │ 
+ │ ←→ Home End edit · Tab focus                                               │ 
+ └────────────────────────────────────────────────────────────────────────────┘ 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                

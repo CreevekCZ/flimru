@@ -1,0 +1,40 @@
+ Flimru / Example                                                                                              0 devices
+  Select a row   Show unavailable   Back   Reload                                               │ Actions   Help   Quit 
+ Devices   › Configuration   › Console                                                                                  
+┌ Configs · 1 ready / 0 blocked ───────────────────────────────┐┌ Details ─────────────────────────────────────────────┐
+│ Replacement 界  é                                             ││Select a configuration to see details.                │
+│ ready                                                        ││Catalog: 1 ready / 0 blocked / 0 checking. Select an  │
+│                                                              ││entry to inspect its reasons and warnings.            │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────┘
+  Unrelated session status remains available.                                                                 [Filter /]
+                                                                                                                        
+ Select a configuration to run                                                                                          
+ ↑↓ choose · u unavailable · / filter                                                                                   

@@ -1,0 +1,24 @@
+┌ Frozen source details ───────────────────────────────────────────────────────┐
+│Frozen source ID: 93                                                          │
+│Shortened: label 96; fields 128.                                              │
+│… marks omitted characters.                                                   │
+│Label: Physical Pixel 界  · long configuration segment long configuration segme│
+│nt long configuration seg…                                                    │
+│Device: Physical Pixel 界  é · development device identity suffix              │
+│Configuration: Development profile 界  · long configuration identity suffix    │
+│Outcome: ended successfully                                                   │
+│Captured: Unix UTC 1700000000 s                                               │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│↑↓ PgUp/PgDn · Esc back                                                       │
+└──────────────────────────────────────────────────────────────────────────────┘

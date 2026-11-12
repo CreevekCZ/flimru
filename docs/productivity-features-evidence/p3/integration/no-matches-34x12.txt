@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+  Close     ›│ Menu   Help   Quit 
+ 1○ Physical Pixel 界  long device×
+┌ Snapshot · Physical Pixel 界  l…┐
+│Search: missing                 │
+│All · No matches                │
+│I/flutter: [Orders] SEVERE: requ│
+│W/Tag: retry scheduled          │
+│  stack continuation            │
+│n/N matches · f filter · / edit │
+│r refresh · Esc resume live     │
+└ i source ──────────────────────┘

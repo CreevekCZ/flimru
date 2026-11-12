@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+  Close     ›│ Menu   Help   Quit 
+ 1○ Pixel 界  · development       ×
+┌ Latest operation outcome ──────┐
+│Latest operation outcome (live; │
+│not frozen metadata).           │
+│Hot reload: Input queue is full;│
+│ wait for Flutter to read input │
+│                                │
+│                                │
+│↑↓ PgUp/PgDn · Esc back         │
+└────────────────────────────────┘

@@ -1,0 +1,12 @@
+ Flimru · Finishing rel  0 devices
+  Finishin… ›│ Menu   Help   Quit 
+ Devices  › Config  › Console     
+┌ Configs · 2 ready / 0 blocked ─┐
+│›  Stable 界  é                  │
+│   ready                        │
+│                                │
+└────────────────────────────────┘
+  Launch configurations [Filter /]
+reloaded.                         
+ Finishing reload…                
+ Choose Run when it appears       

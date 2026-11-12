@@ -1,0 +1,40 @@
+ Flimru / Example                                                                                              0 devices
+  Next   Multi: off   Refresh   Configs                                                         │ Actions   Help   Quit 
+ Devices   › Configuration   › Console                                                                                  
+┌ Devices (0) ─────────────────────────────────────────────────┐┌ Details ─────────────────────────────────────────────┐
+│                                                              ││Discovery runs in the background.                     │
+│  No devices yet.                                             ││You can select saved favorites immediately.           │
+│  Connect a device or start an emulator.                      ││                                                      │
+│  d · configuration diagnostics                               ││1 catalog warning(s). Select a configuration to       │
+│  r · refresh                                                 ││inspect its reasons and warnings; --check prints full │
+│                                                              ││output.                                               │
+│                                                              ││File warnings:                                        │
+│                                                              ││Compound launch configurations are not supported.     │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────┘
+                                                                                                              [Filter /]
+                                                                                                                        
+ ↑↓ select · Enter next · f favorite                                                                                    
+ Tab actions · / filter · m multi                                                                                       

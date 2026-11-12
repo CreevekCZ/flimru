@@ -1,0 +1,40 @@
+ Flimru · Config error / Example                                                                               3 devices
+ ┌ Diagnostics ───────────────────────────────────────────────────────────────────────────────────────────────────────┐ 
+ │Configuration reload error: Launch configuration file contains invalid JSONC or an invalid catalog structure.       │ 
+┌│                                                                                                                    │┐
+││Using the last good catalog. Correct the file; reload retries automatically.                                        ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││Stable 界  é                                                                                                         ││
+││                                                                                                                    ││
+││Ready to run on the selected target(s).                                                                             ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+└│                                                                                                                    │┘
+ │                                                                                                                    │]
+ │↑↓ scroll · Esc close                                                                                               │ 
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ 
+ u unavailable · / filter · r reload                                                                                    

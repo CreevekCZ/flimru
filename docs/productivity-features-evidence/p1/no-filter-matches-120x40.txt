@@ -1,0 +1,40 @@
+ Flimru / Example                                                                                              3 devices
+  Select a row   Show unavailable   Back   Reload                                               │ Actions   Help   Quit 
+ Devices   › Configuration   › Console                                                                                  
+┌ Configs · 1 ready / 1 blocked ───────────────────────────────┐┌ Details ─────────────────────────────────────────────┐
+│                                                              ││No visible configurations. Clear the filter or show   │
+│  No text-filter matches.                                     ││unavailable entries.                                  │
+│  Esc clears the filter.                                      ││Catalog: 1 ready / 1 blocked / 0 checking. Select an  │
+│  u · show unavailable                                        ││entry to inspect its reasons and warnings.            │
+│                                                              ││1 catalog warning(s); use --check for full output.    │
+│                                                              ││File warnings:                                        │
+│                                                              ││Compound launch configurations are not supported.     │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────┘
+  / missing text  Esc clears filter                                                                      [Apply] [Clear]
+                                                                                                                        
+ Enter explains · Esc back                                                                                              
+ u unavailable · i details · / filter                                                                                   

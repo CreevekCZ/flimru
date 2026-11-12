@@ -1,0 +1,24 @@
+ Flimru / T                                                            3 devices
+  Close   Add session                                   │ Actions   Help   Quit 
+ 1○ and┌ Actions · Ctrl+p / Esc close ──────────────────────────────────┐inal  ×
+┌ Froze│  Add session                                           Ctrl+n  │──────┐
+│ERROR:│  Device picker                                         Ctrl+d  │     ││
+│ERROR:│  Close ended session                                   Ctrl+w  │     ││
+│ERROR:│  Oldest output                                           Home  │     ││
+│ERROR:│  Follow output                                            End  │     ││
+│ERROR:│  Back to devices                                      q / Esc  │     ││
+│ERROR:│  Export retained console log                                   │     ││
+│ERROR:│  Search console                                        Ctrl+s  │     ││
+│ERROR:│  Select text                                           Ctrl+e  │     ││
+│ERROR:│  Reload all eligible (0)                                       │     ││
+│ERROR:│› Restart all eligible (0)                                      │     ││
+│ERROR:│  Previous console                                      Ctrl+b  │     ││
+│ERROR:│  Next console                                          Ctrl+f  │     ││
+│ERROR:│  Console 1: android-device · Frozen original (ended)           │     ││
+│ERROR:│  Console 2: android-device · Frozen original (ended)           │     █│
+│      │  Launcher help                                                 │     █│
+└──────│  Quit launcher                                         Ctrl+q  │──────┘
+  Devic│Hot restart · input requests                                    │uch    
+file or└────────────────────────────────────────────────────────────────┘       
+ Ctrl+w / × close ended tab                                                     
+ Ctrl+g actions · Esc devices                                                   

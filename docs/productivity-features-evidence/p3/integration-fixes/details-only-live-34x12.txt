@@ -1,0 +1,12 @@
+ Flimru / T              1 running
+  Stop      ›│ Menu   Help   Quit 
+ 1● Live pixel · Frozen launch-tim
+┌ Latest operation outcome ──────┐
+│Latest operation outcome (live; │
+│not frozen metadata).           │
+│Hot reload: Input queue is full;│
+│ wait for Flutter to read input │
+│                                │
+│                                │
+│↑↓ PgUp/PgDn · Esc back         │
+└────────────────────────────────┘

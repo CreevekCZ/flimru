@@ -1,0 +1,1941 @@
+diff --git a/.gitignore b/.gitignore
+index 8307ee2..c8b46bb 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,3 +1,7 @@
+ /target/
+ *.log
+ .DS_Store
++
++# Local release archives and metadata
++/dist/
++__pycache__/
+diff --git a/CONTRIBUTING.md b/CONTRIBUTING.md
+index e6f0526..5b22f2f 100644
+--- a/CONTRIBUTING.md
++++ b/CONTRIBUTING.md
+@@ -2,8 +2,8 @@
+ 
+ Run `make setup-tools` once to install the pinned dependency audit tool. Rust's
+ `rustfmt` and `clippy` components must also be installed. Run `make check` before
+-finishing a change: it checks formatting, all-target Clippy warnings, tests, and
+-the current RustSec advisory database. Dependency warnings fail the check;
++finishing a change: it checks formatting, all-target Clippy warnings, Rust and
++packaging tests, and the current RustSec advisory database. Dependency warnings fail the check;
+ investigate them rather than adding a blanket exception. Builds and tests use
+ `Cargo.lock` without changing dependency resolution.
+ 
+@@ -38,3 +38,6 @@ of runtime safety: review the change and fix findings before calling it done.
+ The optional real Dart VM test requires `FLUTTER_TUI_TEST_DART`; it uses an
+ isolated fixture and does not qualify a physical-device run of a Flutter app.
+ All checks run locally; GitHub Actions is disabled for this repository.
++
++Release preparation also uses Python 3.9+ (standard library only). See
++[the release guide](docs/releasing.md); preparation does not publish anything.
+diff --git a/Makefile b/Makefile
+index 841e72b..e71d66b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,9 +1,10 @@
+ CARGO ?= cargo
++PYTHON ?= python3
+ AUDIT_VERSION := 0.22.2
+ 
+-.PHONY: check fmt lint test audit setup-tools build
++.PHONY: check fmt lint test audit setup-tools build release release-draft packaging-test
+ 
+-check: fmt lint test audit
++check: fmt lint test audit packaging-test
+ 
+ fmt:
+ 	$(CARGO) fmt --all -- --check
+@@ -22,3 +23,13 @@ setup-tools:
+ 
+ build:
+ 	$(CARGO) build --locked --release
++
++# Both targets only build local assets; neither publishes a release.
++release:
++	$(PYTHON) scripts/prepare_release.py
++
++release-draft:
++	$(PYTHON) scripts/prepare_release.py --allow-dirty
++
++packaging-test:
++	$(PYTHON) -m unittest discover -s scripts -p 'test_*.py'
+diff --git a/README.md b/README.md
+index f90d444..47687f2 100644
+--- a/README.md
++++ b/README.md
+@@ -18,14 +18,24 @@ configuration, and run. When the session ends, the picker is ready for the next
+ - Adds sessions while others keep running, with a device and configuration per addition.
+ - Switches consoles with clickable session tabs; closes ended tabs with **Ctrl+w** or **×**.
+ - Toggles normal / **5× slower animations** with **Ctrl+a**, retaining the speed across hot restarts.
++- Captures each run's VM Service address and offers **Reconnect** to recover animation control.
+ - Confirms launcher exit and cleans up owned processes when the terminal closes.
+ 
+ ## Get started
+ 
+-Requires Rust, a Flutter SDK, and an interactive terminal. Project FVM SDKs are
+-detected automatically. Targets macOS and Linux; Windows is unqualified.
++Requires a Flutter SDK and an interactive terminal. Project FVM SDKs are detected
++automatically. Targets macOS and Linux; Windows is unqualified.
+ 
+-From this checkout:
++Homebrew packaging is **in preparation** for Apple Silicon Macs. Once the release
++is published, installation will be:
++
++```sh
++brew install CreevekCZ/tap/flimru
++flimru /path/to/flutter/project
++```
++
++The Homebrew package will not require Rust. Until publication, build from this
++checkout with Rust installed:
+ 
+ ```sh
+ cargo install --path . --locked
+@@ -40,7 +50,9 @@ configuration, or `--help` for all options.
+ | Where | Keys | Action |
+ | --- | --- | --- |
+ | Picker | `↑` / `↓`, `Enter` | Select device, then configuration |
+-| Picker | `f`, `r`, `/`, `l` | Favorite, refresh, filter, last console |
++| Picker | `/`, `l`, `c` | Filter, last console, reload launch configurations |
++| Devices | `f`, `r` | Favorite, refresh devices |
++| Configurations | `r` | Reload launch configurations |
+ | Devices | `m`, `Space` | Toggle multi-device mode, check/uncheck a device |
+ | Anywhere | `Ctrl+b` / `Ctrl+f`, `Ctrl+d`, `Ctrl+x` | Switch consoles, device picker, stop all sessions |
+ | Anywhere | `Ctrl+n` | Add a session without stopping existing runs |
+@@ -80,7 +92,8 @@ make check
+ 
+ Checks run locally and cover formatting, strict Clippy lints, regression tests,
+ and dependency advisories. GitHub Actions is disabled for this repository.
+-See [contributing](CONTRIBUTING.md) for coding standards.
++See [contributing](CONTRIBUTING.md) for coding standards and the
++[release guide](docs/releasing.md) for local packaging and the Homebrew handoff.
+ 
+ ## License
+ 
+diff --git a/docs/usage.md b/docs/usage.md
+index 126819d..769fe32 100644
+--- a/docs/usage.md
++++ b/docs/usage.md
+@@ -38,6 +38,9 @@ saved immediately and cached devices remain selectable while discovery runs.
+ `r` requests a refresh, `c` reloads `launch.json`, `/` filters, and `l` opens
+ the last console. Click a row to select it, click its star to toggle favorites,
+ and use the buttons to proceed. The wheel moves through picker items.
++On the configuration screen, `r` or `c` reloads `launch.json`; the Reload button
++and Actions menu offer the same command. If reloading fails, the current
++configurations remain available and the status line shows the error.
+ `Esc` goes back or requests exit from the device screen. `Ctrl+q` and the Quit
+ button open a confirmation: `y` or clicking Quit confirms; `Enter`, `n`, or
+ `Esc` cancels. Confirming also stops an active session. `?` opens help in pickers;
+@@ -45,10 +48,13 @@ the Help button and Actions menu work everywhere.
+ Drag across console text and release to automatically copy the highlighted range.
+ This works in live output, scrollback, and saved consoles. New logs continue to be
+ processed while the selected viewport stays stable. Esc clears selection without
+-stopping Flutter; a click, scrolling, switching consoles, or resizing also clears it.
++stopping Flutter; a click, scrolling after release, switching consoles, or resizing
++also clears it.
+ A click without dragging does not copy anything. Borders and the scrollbar are
+-excluded. Selection is limited to the visible viewport; scroll first to select older
+-output. ANSI formatting is omitted, Unicode is preserved, and soft-wrapped rows
++excluded. While dragging, hold at the top or bottom text edge to scroll through
++older or newer output, or use the mouse wheel without releasing the button. The
++range stays anchored in a snapshot of the available history when the drag began.
++ANSI formatting is omitted, Unicode is preserved, and soft-wrapped rows
+ are joined when copying. Clipboard text is limited to 128 KiB.
+ 
+ For keyboard selection, press **Ctrl+e** or choose **Actions → Select text**.
+@@ -187,6 +193,22 @@ Service and registers the extension. Release apps and standard Flutter tests
+ show it as unavailable; connection failures show disconnected rather than
+ claiming a speed change succeeded.
+ 
++For normal debug/profile runs, Flimru asks Flutter to write its VM Service
++address into a private file owned by that session. This allows animation control
++to connect even when the startup URL was missed in console output. The file is
++monitored for address changes and removed after the session closes. Addresses
++are not reused across sessions or saved in favorites. An explicitly configured
++`--vmservice-out-file` is preserved; custom runners and those configurations
++continue to discover addresses from console output.
++
++If animation control is waiting or disconnected, click **Reconnect**, or choose
++**Actions → Reconnect animation control**. This retries the connection and sends
++Flutter's help command to print its current debugger addresses without restarting
++the app. Once the speed is available, use **Ctrl+a** to toggle it. Connection
++failures show a short diagnostic without exposing the authenticated URL. A
++reachable service without the Flutter animation extension remains unavailable;
++reconnecting cannot enable that extension in release apps or ordinary tests.
++
+ Restoration uses Flutter's VM Service extension and happens when that extension
+ becomes callable. It cannot guarantee slowdown before the first frame or before
+ `main()` runs. Testing those earliest animations at a guaranteed slow speed
+diff --git a/src/animation.rs b/src/animation.rs
+index 129f3a4..937a2ce 100644
+--- a/src/animation.rs
++++ b/src/animation.rs
+@@ -4,6 +4,8 @@
+ use anyhow::{Result, bail};
+ use serde_json::Value;
+ use std::{
++    io::Read,
++    path::{Path, PathBuf},
+     sync::{
+         Arc, Mutex, MutexGuard,
+         atomic::{AtomicBool, Ordering},
+@@ -46,6 +48,7 @@ enum Command {
+     Toggle,
+     Restarting,
+     Restarted,
++    Reconnect,
+     Shutdown,
+ }
+ 
+@@ -67,6 +70,7 @@ enum Escape {
+ 
+ pub struct AnimationControl {
+     state: Arc<Mutex<AnimationState>>,
++    connection_error: Arc<Mutex<Option<String>>>,
+     commands: SyncSender<Command>,
+     cancelled: Arc<AtomicBool>,
+     worker: Option<JoinHandle<()>>,
+@@ -79,16 +83,26 @@ pub struct AnimationControl {
+ 
+ impl AnimationControl {
+     pub fn new(enabled: bool) -> Self {
++        Self::start(enabled, None)
++    }
++
++    pub fn with_service_file(path: PathBuf) -> Self {
++        Self::start(true, Some(path))
++    }
++
++    fn start(enabled: bool, service_file: Option<PathBuf>) -> Self {
+         let state = Arc::new(Mutex::new(if enabled {
+             AnimationState::Waiting
+         } else {
+             AnimationState::Unavailable
+         }));
++        let connection_error = Arc::new(Mutex::new(None));
+         let (commands, rx) = mpsc::sync_channel(16);
+         let cancelled = Arc::new(AtomicBool::new(false));
+         let pending_toggle = Arc::new(AtomicBool::new(false));
+         let worker = if enabled {
+             let state = state.clone();
++            let connection_error = connection_error.clone();
+             let cancelled = cancelled.clone();
+             let pending_toggle = pending_toggle.clone();
+             Some(thread::spawn(move || {
+@@ -100,6 +114,7 @@ impl AnimationControl {
+                         .build(),
+                 );
+                 let mut endpoint = None;
++                let mut last_file_endpoint = None;
+                 let mut preference = Preference::default();
+                 let mut fast_until = None;
+                 while !cancelled.load(Ordering::Relaxed) {
+@@ -111,6 +126,8 @@ impl AnimationControl {
+                         Duration::from_millis(100)
+                     } else if endpoint.is_some() {
+                         Duration::from_secs(1)
++                    } else if service_file.is_some() {
++                        Duration::from_millis(250)
+                     } else {
+                         Duration::from_secs(3600)
+                     });
+@@ -138,19 +155,37 @@ impl AnimationControl {
+                             fast_until = Some(Instant::now() + Duration::from_secs(2));
+                             false
+                         }
++                        Ok(Command::Reconnect) => {
++                            fast_until = Some(Instant::now() + Duration::from_secs(5));
++                            *lock_state(&state) = if endpoint.is_some() {
++                                AnimationState::Checking
++                            } else {
++                                AnimationState::Waiting
++                            };
++                            false
++                        }
+                         Err(mpsc::RecvTimeoutError::Timeout) => false,
+                     };
+                     if cancelled.load(Ordering::Relaxed) {
+                         break;
+                     }
++                    if let Some(url) = service_file.as_deref().and_then(read_service_file)
++                        && last_file_endpoint.as_ref() != Some(&url)
++                    {
++                        last_file_endpoint = Some(url.clone());
++                        if endpoint.as_ref() != Some(&url) {
++                            endpoint = Some(url);
++                            preference.isolate = None;
++                            preference.restore = preference.factor.is_some();
++                        }
++                    }
+                     if let Some(endpoint) = &endpoint {
+-                        let status = match read_factor(
+-                            &agent,
+-                            endpoint,
+-                            toggle,
+-                            &mut preference,
+-                            &cancelled,
+-                        ) {
++                        let result =
++                            read_factor(&agent, endpoint, toggle, &mut preference, &cancelled);
++                        if let Ok(mut detail) = connection_error.lock() {
++                            *detail = result.as_ref().err().map(ToString::to_string);
++                        }
++                        let status = match result {
+                             Ok(Some(factor)) => AnimationState::Confirmed(factor),
+                             Ok(None) if preference.restore || preference.restarting => preference
+                                 .factor
+@@ -173,6 +208,7 @@ impl AnimationControl {
+         };
+         Self {
+             state,
++            connection_error,
+             commands,
+             cancelled,
+             worker,
+@@ -192,6 +228,14 @@ impl AnimationControl {
+         }
+     }
+ 
++    /// Transport diagnostics never include the authenticated service URL.
++    pub fn connection_error(&self) -> Option<String> {
++        if self.state() != AnimationState::Disconnected {
++            return None;
++        }
++        self.connection_error.lock().ok()?.clone()
++    }
++
+     pub fn label(&self) -> String {
+         match self.state() {
+             AnimationState::Confirmed(factor) if (factor - 1.0).abs() < 0.001 => {
+@@ -226,13 +270,17 @@ impl AnimationControl {
+         match &*state {
+             AnimationState::Confirmed(_) => {}
+             AnimationState::Waiting | AnimationState::Checking | AnimationState::Restoring(_) => {
+-                bail!("Animation control is waiting for Flutter's VM Service.")
++                bail!(
++                    "Animation control is waiting for Flutter's VM Service. Try Actions → Reconnect animation control."
++                )
+             }
+             AnimationState::Unavailable => bail!(
+                 "Animation control needs a Flutter debug/profile app with the timeDilation service extension."
+             ),
+             AnimationState::Disconnected => {
+-                bail!("Animation control is reconnecting to Flutter's VM Service.")
++                bail!(
++                    "Cannot reach Flutter's VM Service. Try Actions → Reconnect animation control."
++                )
+             }
+         }
+         self.pending_toggle.store(true, Ordering::Release);
+@@ -243,6 +291,15 @@ impl AnimationControl {
+         Ok(())
+     }
+ 
++    pub fn reconnect(&self) -> Result<()> {
++        if !self.enabled {
++            bail!("Animation control needs a Flutter debug/profile app.");
++        }
++        self.commands
++            .try_send(Command::Reconnect)
++            .map_err(|_| anyhow::anyhow!("Animation control is busy; try again shortly."))
++    }
++
+     /// Wake the worker before forwarding `R`; output markers also cover
+     /// restarts initiated through other Flutter terminal input paths.
+     pub fn restarting(&self) {
+@@ -284,7 +341,7 @@ impl AnimationControl {
+                 }
+                 Escape::Text => match byte {
+                     0x1b => self.escape = Escape::Start,
+-                    b'\n' => {
++                    b'\n' | b'\r' => {
+                         self.finish_line();
+                         self.line.clear();
+                     }
+@@ -371,6 +428,20 @@ fn service_url(candidate: &str) -> Option<Url> {
+     Some(url)
+ }
+ 
++fn read_service_file(path: &Path) -> Option<Url> {
++    let file = std::fs::File::open(path).ok()?;
++    let metadata = file.metadata().ok()?;
++    if !metadata.is_file() || metadata.len() > 16_384 {
++        return None;
++    }
++    let mut value = String::new();
++    file.take(16_385).read_to_string(&mut value).ok()?;
++    if value.len() > 16_384 {
++        return None;
++    }
++    service_url(value.trim())
++}
++
+ fn rpc(
+     agent: &ureq::Agent,
+     endpoint: &Url,
+@@ -385,11 +456,17 @@ fn rpc(
+     url.query_pairs_mut().extend_pairs(params.iter().copied());
+     let response: Value = agent
+         .get(url.as_str())
+-        .call()?
++        .call()
++        .map_err(|error| match error {
++            ureq::Error::Timeout(_) => anyhow::anyhow!("VM Service request timed out"),
++            ureq::Error::StatusCode(code) => anyhow::anyhow!("VM Service returned HTTP {code}"),
++            _ => anyhow::anyhow!("Could not connect to VM Service"),
++        })?
+         .body_mut()
+         .with_config()
+         .limit(1024 * 1024)
+-        .read_json()?;
++        .read_json()
++        .map_err(|_| anyhow::anyhow!("Invalid VM Service response"))?;
+     if response.get("error").is_some() {
+         bail!("VM Service rejected the request");
+     }
+@@ -555,6 +632,33 @@ mod tests {
+         control.feed(b"0m\r\n");
+         assert_eq!(control.endpoint.as_ref().unwrap().path(), "/code=/");
+     }
++    #[test]
++    fn service_file_rejects_oversized_non_local_and_invalid_addresses() {
++        let directory = tempfile::tempdir().unwrap();
++        let path = directory.path().join("service-uri");
++        assert!(read_service_file(&path).is_none());
++        for value in [
++            "http://example.com:8181/token/".into(),
++            "x".repeat(16_385),
++            "ws://".into(),
++        ] {
++            std::fs::write(&path, value).unwrap();
++            assert!(read_service_file(&path).is_none());
++        }
++        std::fs::write(&path, "ws://127.0.0.1:8181/token=/ws\r\n").unwrap();
++        assert_eq!(
++            read_service_file(&path).unwrap().as_str(),
++            "http://127.0.0.1:8181/token=/"
++        );
++    }
++
++    #[test]
++    fn carriage_return_terminated_service_line_is_detected() {
++        let mut control = AnimationControl::new(true);
++        control.feed(b"Connecting to VM Service at ws://127.0.0.1:8181/token=/ws\r");
++        assert_eq!(control.endpoint.as_ref().unwrap().path(), "/token=/");
++    }
++
+     #[test]
+     fn invalid_factors_and_release_control_never_claim_to_be_enabled() {
+         for value in [
+@@ -567,5 +671,6 @@ mod tests {
+         let control = AnimationControl::new(false);
+         assert_eq!(control.label(), "Animations: unavailable");
+         assert!(control.toggle().is_err());
++        assert!(control.reconnect().is_err());
+     }
+ }
+diff --git a/src/main.rs b/src/main.rs
+index 0072d1e..7a99712 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -83,6 +83,11 @@ enum Page {
+ 
+ struct RestoreTerminal;
+ 
++struct Update {
++    redraw: bool,
++    output_received: bool,
++}
++
+ #[derive(Clone, Copy)]
+ struct ScrollDrag {
+     start_row: u16,
+@@ -297,7 +302,6 @@ fn main() -> Result<()> {
+         }
+         let frame_interval = Duration::from_millis(33);
+         let mut redraw = true;
+-        let mut last_draw = Instant::now();
+         let mut previous_size = terminal.size()?;
+         let mut previous_animations = None;
+         while !quit.load(Ordering::Relaxed) {
+@@ -305,7 +309,8 @@ fn main() -> Result<()> {
+             if !terminal_input::connected()? {
+                 break;
+             }
+-            redraw |= app.tick()?;
++            let update = app.tick()?;
++            redraw |= update.redraw;
+             let area = terminal.size()?;
+             if area != previous_size {
+                 app.selection = None;
+@@ -321,12 +326,22 @@ fn main() -> Result<()> {
+                     )?;
+                 }
+             }
+-            let animations = app
+-                .active_session()
+-                .map(|session| session.animations.state());
++            let animations = app.active_session().map(|session| {
++                (
++                    session.animations.state(),
++                    session.animations.connection_error(),
++                )
++            });
+             redraw |= animations != previous_animations;
+             previous_animations = animations;
+-            if redraw || last_draw.elapsed() >= Duration::from_secs(1) {
++            // Input wakes poll immediately; quiet background workers only need
++            // a bounded check. Keep the normal frame rate while output changes.
++            let wait_interval = if redraw || update.output_received {
++                frame_interval
++            } else {
++                Duration::from_millis(100)
++            };
++            if redraw {
+                 app.prepare_last_log(area.height.saturating_sub(9).max(1));
+                 ui::update_picker_viewport(
+                     &mut app,
+@@ -343,19 +358,28 @@ fn main() -> Result<()> {
+                     );
+                 }
+                 terminal.draw(|frame| ui::draw(frame, &app))?;
+-                last_draw = Instant::now();
+                 redraw = false;
+             }
+             let mut exit_requested = false;
+-            let input_started = Instant::now();
+-            for _ in 0..128 {
++            let mut input_started = None;
++            for input_index in 0..128 {
+                 if !terminal_input::connected()? {
+                     exit_requested = true;
+                     break;
+                 }
+-                if !event::poll(Duration::from_millis(1))? {
++                let timeout = if input_index == 0 {
++                    wait_interval.saturating_sub(frame_started.elapsed())
++                } else {
++                    Duration::from_millis(1)
++                };
++                // The tty backend needs a positive timeout to inspect its
++                // parser. Waiting here avoids a separate idle polling sleep.
++                if !event::poll(timeout.max(Duration::from_millis(1)))? {
+                     break;
+                 }
++                // The input budget measures ready-event work, excluding the
++                // blocking wait for the first event. Drain bursts together.
++                let input_started = input_started.get_or_insert_with(Instant::now);
+                 match event::read()? {
+                     Event::Key(key) if key.kind != KeyEventKind::Release => {
+                         redraw = true;
+@@ -764,8 +788,12 @@ impl App {
+         }
+     }
+ 
+-    fn tick(&mut self) -> Result<bool> {
++    fn tick(&mut self) -> Result<Update> {
+         let mut changed = false;
++        let mut output_received = false;
++        if let Some(selection) = &mut self.selection {
++            changed |= selection.tick(Instant::now());
++        }
+         if let Some(result) = self.clipboard.tick() {
+             changed = true;
+             self.status = match result {
+@@ -801,10 +829,14 @@ impl App {
+             }
+         }
+         let mut ended = false;
+-        for run in &mut self.runs {
++        for (index, run) in self.runs.iter_mut().enumerate() {
+             let was_running = run.session.is_some();
+-            changed |= run.tick();
+-            ended |= was_running && run.session.is_none();
++            let output_changed = run.tick();
++            output_received |= output_changed;
++            let just_ended = was_running && run.session.is_none();
++            changed |= just_ended
++                || (output_changed && self.page == Page::Console && index == self.active_run);
++            ended |= just_ended;
+         }
+         if ended {
+             let running = self.running_count();
+@@ -824,7 +856,10 @@ impl App {
+                 self.merge();
+             }
+         }
+-        Ok(changed)
++        Ok(Update {
++            redraw: changed,
++            output_received,
++        })
+     }
+ 
+     fn back(&mut self) {
+@@ -870,7 +905,7 @@ impl App {
+             if key.code == KeyCode::Enter {
+                 let text = self
+                     .selection
+-                    .as_ref()
++                    .as_mut()
+                     .and_then(selection::Selection::selected_text);
+                 if let Some(text) = text {
+                     self.copy_selection(&text)?;
+@@ -1174,17 +1209,18 @@ impl App {
+                 self.searching = true;
+             }
+             KeyCode::Char('?') => self.help = true,
+-            KeyCode::Char('r') => self.discovery.refresh(),
+-            KeyCode::Char('c') => match LaunchFile::load(&self.launch.path, &self.launch.workspace)
+-            {
+-                Ok(launch) => {
+-                    self.launch = launch;
+-                    self.config_index = 0;
+-                    self.merge();
+-                    self.status = "Launch configurations reloaded.".into();
++            KeyCode::Char('r') if self.page == Page::Devices => self.discovery.refresh(),
++            KeyCode::Char('r' | 'c') => {
++                match LaunchFile::load(&self.launch.path, &self.launch.workspace) {
++                    Ok(launch) => {
++                        self.launch = launch;
++                        self.config_index = 0;
++                        self.merge();
++                        self.status = "Launch configurations reloaded.".into();
++                    }
++                    Err(error) => self.status = format!("Reload failed: {error:#}"),
+                 }
+-                Err(error) => self.status = format!("Reload failed: {error:#}"),
+-            },
++            }
+             KeyCode::Char('l') if self.last_log.is_some() => self.page = Page::LastLog,
+             KeyCode::Char('f') if self.page == Page::Devices => {
+                 if let Some(device) = self
+@@ -1391,6 +1427,13 @@ impl App {
+                 _ => None,
+             };
+             if let Some(direction) = wheel {
++                if !self.actions_open
++                    && let Some(selection) = &mut self.selection
++                    && selection.dragging
++                {
++                    selection.scroll(direction * 3);
++                    return Ok(false);
++                }
+                 self.selection = None;
+                 if self.actions_open {
+                     self.action_index = self
+@@ -1460,7 +1503,7 @@ impl App {
+             {
+                 let content = ui::console_content_area(area);
+                 let start_row = ui::console_start_row(screen, offset, content.height);
+-                self.selection = selection::Selection::capture(
++                self.selection = selection::Selection::capture_history(
+                     screen,
+                     start_row,
+                     content,
+@@ -1655,6 +1698,15 @@ impl App {
+             MouseAction::ToggleAnimations => {
+                 return self.key(Shortcut::Animations.key(), area.width, area.height);
+             }
++            MouseAction::ReconnectAnimations => {
++                if let Some(session) = self.active_session_mut() {
++                    self.status = match session.reconnect_animations() {
++                        Ok(()) => "VM Service reconnect requested.".into(),
++                        Err(error) => format!("Animation reconnect: {error:#}"),
++                    };
++                }
++                return Ok(false);
++            }
+             MouseAction::ConsoleScroll(row) => {
+                 let track = ui::console_scrollbar_area(area);
+                 self.begin_scrollbar_drag(track.y.saturating_add(row), track);
+@@ -1945,6 +1997,7 @@ mod tests {
+                 name.into(),
+                 Session::start(
+                     &flimru::tool::RunCommand {
++                        capture_vm_service: false,
+                         executable: "/bin/sh".into(),
+                         args: vec!["-c".into(), "exec sleep 30".into()],
+                         cwd: workspace.clone(),
+@@ -2019,6 +2072,7 @@ mod tests {
+         let device = app.devices[0].clone();
+         let session = Session::start(
+             &flimru::tool::RunCommand {
++                capture_vm_service: false,
+                 executable: "/bin/sh".into(),
+                 args: vec!["-c".into(), "exit 0".into()],
+                 cwd: app.launch.workspace.clone(),
+diff --git a/src/selection.rs b/src/selection.rs
+index 197c9a0..b3c76d1 100644
+--- a/src/selection.rs
++++ b/src/selection.rs
+@@ -1,5 +1,6 @@
+-//! A bounded viewport snapshot keeps selected text stable while the PTY continues.
++//! Frozen console history lets selections cross viewport edges while the PTY continues.
+ use ratatui::layout::{Position, Rect};
++use std::time::{Duration, Instant};
+ 
+ const MAX_CELLS: usize = 65_536;
+ pub const MAX_COPY_BYTES: usize = 128 * 1024;
+@@ -9,11 +10,20 @@ pub struct Selection {
+     pub viewport: Rect,
+     pub dragging: bool,
+     pub keyboard: bool,
+-    anchor: (u16, u16),
+-    end: (u16, u16),
++    anchor: (usize, u16),
++    end: (usize, u16),
+     moved: bool,
+     rows: Vec<Vec<vt100::Cell>>,
+     wrapped: Vec<bool>,
++    history: Option<History>,
++    top: usize,
++    pointer: Position,
++    last_scroll: Instant,
++}
++
++struct History {
++    screen: vt100::Screen,
++    rows: usize,
+ }
+ 
+ impl Selection {
+@@ -50,13 +60,38 @@ impl Selection {
+             moved: false,
+             rows,
+             wrapped,
++            history: None,
++            top: 0,
++            pointer: point,
++            last_scroll: Instant::now(),
+         };
+         selection.anchor = selection.point(point);
+         selection.end = selection.anchor;
+         Some(selection)
+     }
+ 
+-    fn point(&self, point: Position) -> (u16, u16) {
++    /// Own the existing bounded PTY history, independent of future output/eviction.
++    pub fn capture_history(
++        screen: &vt100::Screen,
++        start_row: u16,
++        area: Rect,
++        point: Position,
++    ) -> Option<Self> {
++        let mut selection = Self::capture(screen, start_row, area, point)?;
++        let mut frozen = screen.clone();
++        frozen.set_scrollback(usize::MAX);
++        let rows = frozen.scrollback();
++        selection.top = rows.saturating_sub(screen.scrollback()) + usize::from(start_row);
++        selection.anchor.0 += selection.top;
++        selection.end = selection.anchor;
++        selection.history = Some(History {
++            screen: frozen,
++            rows,
++        });
++        Some(selection)
++    }
++
++    fn point(&self, point: Position) -> (usize, u16) {
+         let row = point
+             .y
+             .saturating_sub(self.area.y)
+@@ -68,14 +103,76 @@ impl Selection {
+         if self.rows[usize::from(row)][usize::from(col)].is_wide_continuation() {
+             col = col.saturating_sub(1);
+         }
+-        (row, col)
++        (self.top + usize::from(row), col)
+     }
+ 
+     pub fn update(&mut self, point: Position) {
++        self.pointer = point;
+         self.end = self.point(point);
+         self.moved |= self.end != self.anchor;
+     }
+ 
++    /// A stationary pointer at either edge keeps scrolling on the normal UI tick.
++    pub fn tick(&mut self, now: Instant) -> bool {
++        if !self.dragging
++            || !self.moved
++            || now.duration_since(self.last_scroll) < Duration::from_millis(75)
++        {
++            return false;
++        }
++        let amount = if self.pointer.y <= self.area.y {
++            -1
++        } else if self.pointer.y >= self.area.bottom().saturating_sub(1) {
++            1
++        } else {
++            return false;
++        };
++        self.last_scroll = now;
++        self.scroll(amount)
++    }
++
++    /// Positive amounts reveal newer rows; the anchor stays in frozen history.
++    pub fn scroll(&mut self, amount: isize) -> bool {
++        let Some(history) = &mut self.history else {
++            return false;
++        };
++        let total = history.rows + usize::from(history.screen.size().0);
++        let top = self
++            .top
++            .saturating_add_signed(amount)
++            .min(total.saturating_sub(usize::from(self.area.height)));
++        if top == self.top {
++            return false;
++        }
++        self.top = top;
++        history
++            .screen
++            .set_scrollback(history.rows.saturating_sub(top));
++        let start = top.saturating_sub(history.rows) as u16;
++        self.rows = (start..start + self.area.height)
++            .map(|row| {
++                (0..self.area.width)
++                    .filter_map(|col| history.screen.cell(row, col).cloned())
++                    .collect()
++            })
++            .collect();
++        self.wrapped = (start..start + self.area.height)
++            .map(|row| {
++                self.area.width == history.screen.size().1 && history.screen.row_wrapped(row)
++            })
++            .collect();
++        self.update(self.pointer);
++        true
++    }
++
++    pub fn scroll_position(&self) -> Option<(usize, usize)> {
++        self.history.as_ref().map(|history| {
++            let max = (history.rows + usize::from(history.screen.size().0))
++                .saturating_sub(usize::from(self.area.height));
++            (self.top, max)
++        })
++    }
++
+     pub fn finish(&mut self, point: Position) -> Option<String> {
+         self.update(point);
+         self.dragging = false;
+@@ -94,27 +191,26 @@ impl Selection {
+         let row = self
+             .end
+             .0
+-            .saturating_add_signed(dy)
+-            .min(self.area.height - 1);
++            .saturating_add_signed(isize::from(dy))
++            .min(usize::from(self.area.height - 1));
+         let col = self
+             .end
+             .1
+             .saturating_add_signed(dx)
+             .min(self.area.width - 1);
+-        let col = if dx > 0 && self.rows[usize::from(row)][usize::from(col)].is_wide_continuation()
+-        {
++        let col = if dx > 0 && self.rows[row][usize::from(col)].is_wide_continuation() {
+             col.saturating_add(1).min(self.area.width - 1)
+         } else {
+             col
+         };
+-        self.end = self.point((self.area.x + col, self.area.y + row).into());
++        self.end = self.point((self.area.x + col, self.area.y + row as u16).into());
+         if !extend {
+             self.anchor = self.end;
+         }
+         self.moved = true;
+     }
+ 
+-    pub fn selected_text(&self) -> Option<String> {
++    pub fn selected_text(&mut self) -> Option<String> {
+         self.moved
+             .then(|| self.text())
+             .filter(|text| !text.is_empty())
+@@ -141,14 +237,31 @@ impl Selection {
+             col = col.saturating_sub(1);
+         }
+         let (start, end) = (self.anchor.min(self.end), self.anchor.max(self.end));
+-        (row, col) >= start && (row, col) <= end
++        let point = (self.top + usize::from(row), col);
++        point >= start && point <= end
+     }
+ 
+-    fn text(&self) -> String {
++    fn text(&mut self) -> String {
+         let (start, end) = (self.anchor.min(self.end), self.anchor.max(self.end));
+         let mut text = String::new();
++        // Only the snapshot cursor moves; rendering uses cached viewport cells.
++        let history_rows = self.history.as_ref().map_or(0, |history| history.rows);
++        let mut history = self.history.as_mut().map(|history| &mut history.screen);
++        let mut previous_wrapped = false;
+         for row in start.0..=end.0 {
+-            if row > start.0 && !self.wrapped[usize::from(row - 1)] {
++            let (cells, wrapped) = if let Some(screen) = &mut history {
++                screen.set_scrollback(history_rows.saturating_sub(row));
++                let local = row.saturating_sub(history_rows) as u16;
++                (
++                    (0..self.area.width)
++                        .filter_map(|col| screen.cell(local, col))
++                        .collect::<Vec<_>>(),
++                    self.area.width == screen.size().1 && screen.row_wrapped(local),
++                )
++            } else {
++                (self.rows[row].iter().collect(), self.wrapped[row])
++            };
++            if row > start.0 && !previous_wrapped {
+                 text.push('\n');
+             }
+             let first = if row == start.0 { start.1 } else { 0 };
+@@ -158,7 +271,7 @@ impl Selection {
+                 self.area.width - 1
+             };
+             let mut line = String::new();
+-            for cell in &self.rows[usize::from(row)][usize::from(first)..=usize::from(last)] {
++            for cell in &cells[usize::from(first)..=usize::from(last)] {
+                 if cell.is_wide_continuation() {
+                     continue;
+                 }
+@@ -168,11 +281,16 @@ impl Selection {
+                     " "
+                 });
+             }
+-            if row < end.0 && self.wrapped[usize::from(row)] {
++            if row < end.0 && wrapped {
+                 text.push_str(&line);
+             } else {
+                 text.push_str(line.trim_end_matches(' '));
+             }
++            // Clipboard rejects oversized ranges; avoid building the rest of a huge copy.
++            if text.len() > MAX_COPY_BYTES {
++                break;
++            }
++            previous_wrapped = wrapped;
+         }
+         text
+     }
+@@ -195,6 +313,82 @@ mod tests {
+         .unwrap()
+     }
+ 
++    fn history_fixture() -> vt100::Parser {
++        let mut parser = vt100::Parser::new(4, 12, 100);
++        for row in 0..20 {
++            parser.process(format!("row:{row:02}\r\n").as_bytes());
++        }
++        parser
++    }
++
++    #[test]
++    fn selection_crosses_history_in_both_directions_without_losing_its_anchor() {
++        let mut parser = history_fixture();
++        parser.screen_mut().set_scrollback(usize::MAX);
++        let mut selection =
++            Selection::capture_history(parser.screen(), 0, Rect::new(2, 4, 12, 4), (2, 4).into())
++                .unwrap();
++        selection.update((7, 7).into());
++        assert!(selection.scroll(10));
++        let expected = (0..=13)
++            .map(|row| format!("row:{row:02}"))
++            .collect::<Vec<_>>()
++            .join("\n");
++        // Original history may be evicted or overwritten while selection stays frozen.
++        parser.process(b"\x1b[Hchanged");
++        assert_eq!(selection.selected_text().unwrap(), expected);
++        assert!(selection.scroll(isize::MAX));
++        assert!(!selection.scroll(1));
++        selection.update((7, 4).into());
++        assert!(selection.scroll(isize::MIN));
++        assert_eq!(selection.selected_text().unwrap(), "row:00");
++        assert!(!selection.scroll(-1));
++
++        parser.screen_mut().set_scrollback(0);
++        let mut reverse =
++            Selection::capture_history(parser.screen(), 0, Rect::new(0, 0, 12, 4), (5, 1).into())
++                .unwrap();
++        reverse.update((0, 0).into());
++        assert!(reverse.scroll(-10));
++        let text = reverse.selected_text().unwrap();
++        assert!(text.starts_with("row:07\n"), "{text:?}");
++        assert!(text.ends_with("row:18"), "{text:?}");
++    }
++
++    #[test]
++    fn stationary_edge_scroll_is_timed_and_stops_on_release_or_leaving_edge() {
++        let mut parser = history_fixture();
++        parser.screen_mut().set_scrollback(usize::MAX);
++        let mut selection =
++            Selection::capture_history(parser.screen(), 0, Rect::new(0, 2, 12, 4), (0, 2).into())
++                .unwrap();
++        let now = selection.last_scroll;
++        assert!(!selection.tick(now + Duration::from_millis(100))); // A click is not a drag.
++        selection.update((5, 5).into());
++        assert!(!selection.tick(now + Duration::from_millis(20)));
++        assert!(selection.tick(now + Duration::from_millis(100)));
++        assert!(selection.tick(now + Duration::from_millis(200))); // No new mouse event.
++        selection.update((5, 3).into());
++        assert!(!selection.tick(now + Duration::from_millis(300)));
++        selection.finish((5, 5).into());
++        assert!(!selection.tick(now + Duration::from_millis(400)));
++    }
++
++    #[test]
++    fn saved_console_hidden_rows_and_soft_wraps_remain_selectable() {
++        let mut parser = vt100::Parser::new(6, 4, 20);
++        parser.process(b"ab  cd efghijklmnop");
++        let mut selection =
++            Selection::capture_history(parser.screen(), 2, Rect::new(0, 0, 4, 2), (0, 0).into())
++                .unwrap();
++        selection.update((0, 0).into());
++        selection.scroll(-2);
++        assert_eq!(selection.selected_text().unwrap(), "ab  cd ef");
++        selection.update((3, 1).into());
++        selection.scroll(3);
++        assert_eq!(selection.selected_text().unwrap(), "fghijklmnop");
++    }
++
+     #[test]
+     fn reverse_multiline_selection_copies_plain_text_without_terminal_padding() {
+         let mut selection = snapshot(b"\x1b[31malpha\x1b[0m\r\n  beta\r\ngamma", 4, 12, (2, 2));
+diff --git a/src/session.rs b/src/session.rs
+index 0ad5585..74fd928 100644
+--- a/src/session.rs
++++ b/src/session.rs
+@@ -37,6 +37,8 @@ pub struct Session {
+     closed: bool,
+     exited: Option<(portable_pty::ExitStatus, Instant)>,
+     interrupt_sent: bool,
++    // Dropped after the animation worker and after the child has exited.
++    _service_directory: Option<tempfile::TempDir>,
+ }
+ 
+ fn size(rows: u16, cols: u16) -> PtySize {
+@@ -48,16 +50,75 @@ fn size(rows: u16, cols: u16) -> PtySize {
+     }
+ }
+ 
++#[cfg(unix)]
++fn wait_for_output(fd: Option<std::os::fd::RawFd>) -> std::io::Result<()> {
++    let Some(fd) = fd else {
++        thread::sleep(Duration::from_millis(5));
++        return Ok(());
++    };
++    let mut descriptor = libc::pollfd {
++        fd,
++        events: libc::POLLIN,
++        revents: 0,
++    };
++    // SAFETY: descriptor is writable for one pollfd. The caller keeps master
++    // alive until the reader is joined, so fd is valid throughout this call.
++    // The deadline bounds cancellation when a descendant retains an idle slave.
++    let ready = unsafe { libc::poll(&mut descriptor, 1, 100) };
++    if ready < 0 {
++        let error = std::io::Error::last_os_error();
++        if error.kind() != std::io::ErrorKind::Interrupted {
++            return Err(error);
++        }
++    }
++    if descriptor.revents & libc::POLLNVAL != 0 {
++        return Err(std::io::Error::from_raw_os_error(libc::EBADF));
++    }
++    Ok(())
++}
++
+ impl Session {
+     /// Request colored child output while honoring explicit launch.json env overrides.
+     pub fn start(plan: &RunCommand, rows: u16, cols: u16) -> Result<Self> {
++        let mut args = plan.args.clone();
++        // Preserve an explicitly configured output file. Custom runners, tests,
++        // and release builds continue to use console detection only.
++        let service_directory = if plan.capture_vm_service
++            && !args.iter().any(|arg| {
++                arg == "--vmservice-out-file" || arg.starts_with("--vmservice-out-file=")
++            }) {
++            let mut directory = tempfile::Builder::new();
++            directory.prefix("flimru-vm-service-");
++            #[cfg(unix)]
++            {
++                use std::os::unix::fs::PermissionsExt;
++                directory.permissions(std::fs::Permissions::from_mode(0o700));
++            }
++            let directory = directory.tempdir()?;
++            let position = args
++                .iter()
++                .position(|arg| arg == "--")
++                .unwrap_or(args.len());
++            args.insert(
++                position,
++                format!(
++                    "--vmservice-out-file={}",
++                    directory.path().join("service-uri").display()
++                ),
++            );
++            Some(directory)
++        } else {
++            None
++        };
+         let pair = native_pty_system()
+             .openpty(size(rows, cols))
+             .context("Could not open a pseudo-terminal")?;
+         let mut reader = pair.master.try_clone_reader()?;
+         let writer = pair.master.take_writer()?;
+         #[cfg(unix)]
+-        if let Some(fd) = pair.master.as_raw_fd() {
++        let reader_fd = pair.master.as_raw_fd();
++        #[cfg(unix)]
++        if let Some(fd) = reader_fd {
+             // The cloned reader and writer share this file description. Both are
+             // nonblocking, so neither a full output channel nor pasted input can
+             // hold up shutdown or the UI.
+@@ -74,7 +135,7 @@ impl Session {
+             }
+         }
+         let mut command = CommandBuilder::new(&plan.executable);
+-        command.args(&plan.args);
++        command.args(&args);
+         command.cwd(&plan.cwd);
+         command.env("TERM", "xterm-256color");
+         command.env("COLORTERM", "truecolor");
+@@ -100,8 +161,16 @@ impl Session {
+                     Ok(0) => Output::Closed,
+                     Ok(count) => Output::Bytes(buffer[..count].to_vec()),
+                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+-                        thread::sleep(Duration::from_millis(5));
+-                        continue;
++                        #[cfg(unix)]
++                        match wait_for_output(reader_fd) {
++                            Ok(()) => continue,
++                            Err(error) => Output::Error(error.to_string()),
++                        }
++                        #[cfg(not(unix))]
++                        {
++                            thread::sleep(Duration::from_millis(5));
++                            continue;
++                        }
+                     }
+                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                     // Linux PTYs return EIO when their last slave closes.
+@@ -131,7 +200,17 @@ impl Session {
+         });
+         Ok(Self {
+             parser: vt100::Parser::new(rows.max(1), cols.max(1), 10_000),
+-            animations: AnimationControl::new(!plan.args.iter().any(|arg| arg == "--release")),
++            animations: match &service_directory {
++                Some(directory) => {
++                    AnimationControl::with_service_file(directory.path().join("service-uri"))
++                }
++                None => AnimationControl::new(
++                    !plan
++                        .args
++                        .iter()
++                        .any(|arg| matches!(arg.as_str(), "--release" | "--release=true")),
++                ),
++            },
+             scrollback_len: 0,
+             visual_revision: 0,
+             child,
+@@ -146,9 +225,17 @@ impl Session {
+             closed: false,
+             exited: None,
+             interrupt_sent: false,
++            _service_directory: service_directory,
+         })
+     }
+ 
++    pub fn reconnect_animations(&mut self) -> Result<()> {
++        self.animations.reconnect()?;
++        // Flutter's help command reprints debugger addresses without restarting
++        // the app. This also recovers custom runners without a service file.
++        self.send(b"h")
++    }
++
+     pub fn send(&mut self, bytes: &[u8]) -> Result<()> {
+         if self.pending.len() + bytes.len() > 65_536 {
+             bail!("Input queue is full; wait for Flutter to read input");
+@@ -338,6 +425,7 @@ mod tests {
+     use super::*;
+     fn command(script: &str) -> RunCommand {
+         RunCommand {
++            capture_vm_service: false,
+             executable: "/bin/sh".into(),
+             args: vec!["-c".into(), script.into()],
+             cwd: std::env::temp_dir(),
+@@ -345,6 +433,82 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn service_files_are_private_per_session_and_cleaned_after_children_exit() {
++        let directory = tempfile::tempdir().unwrap();
++        let mut plan = command(
++            "printf '%s' \"$1\" > \"$URI_LOG\"; printf 'CAPTURE READY\\r\\n'; exec sleep 30",
++        );
++        plan.capture_vm_service = true;
++        plan.args.push("fixture".into());
++        // Capture must be a Flutter option, before the application separator.
++        plan.args
++            .extend(["--".into(), "application argument".into()]);
++        plan.env.insert(
++            "URI_LOG".into(),
++            directory
++                .path()
++                .join("uri.log")
++                .to_string_lossy()
++                .into_owned(),
++        );
++        let mut first = Session::start(&plan, 10, 80).unwrap();
++        let first_path = first
++            ._service_directory
++            .as_ref()
++            .unwrap()
++            .path()
++            .to_path_buf();
++        use std::os::unix::fs::PermissionsExt;
++        assert_eq!(
++            std::fs::metadata(&first_path).unwrap().permissions().mode() & 0o077,
++            0
++        );
++        let deadline = Instant::now() + Duration::from_secs(5);
++        while !first.parser.screen().contents().contains("CAPTURE READY") {
++            assert!(Instant::now() < deadline);
++            first.tick().unwrap();
++            thread::sleep(Duration::from_millis(5));
++        }
++        assert_eq!(
++            std::fs::read_to_string(directory.path().join("uri.log")).unwrap(),
++            format!(
++                "--vmservice-out-file={}",
++                first_path.join("service-uri").display()
++            )
++        );
++        let second = Session::start(&plan, 10, 80).unwrap();
++        let second_path = second
++            ._service_directory
++            .as_ref()
++            .unwrap()
++            .path()
++            .to_path_buf();
++        assert_ne!(first_path, second_path);
++        drop(first);
++        assert!(!first_path.exists());
++        assert!(second_path.exists());
++        drop(second);
++        assert!(!second_path.exists());
++    }
++
++    #[test]
++    fn explicit_service_output_is_not_overridden_or_deleted() {
++        let directory = tempfile::tempdir().unwrap();
++        let path = directory.path().join("user-service-uri");
++        std::fs::write(&path, "user data").unwrap();
++        let mut plan = command("exec sleep 30");
++        plan.capture_vm_service = true;
++        plan.args.extend([
++            "fixture".into(),
++            format!("--vmservice-out-file={}", path.display()),
++        ]);
++        let session = Session::start(&plan, 10, 80).unwrap();
++        assert!(session._service_directory.is_none());
++        drop(session);
++        assert_eq!(std::fs::read_to_string(path).unwrap(), "user data");
++    }
++
+     #[test]
+     fn pty_controls_resize_and_exit() {
+         let mut session = Session::start(&command("stty raw -echo; printf 'ready\\r\\n'; while :; do c=$(dd bs=1 count=1 2>/dev/null); printf 'key:%s\\r\\n' \"$c\"; [ \"$c\" = q ] && exit 7; done"), 20, 90).unwrap();
+diff --git a/src/tool.rs b/src/tool.rs
+index 541226c..1394ad6 100644
+--- a/src/tool.rs
++++ b/src/tool.rs
+@@ -19,6 +19,7 @@ pub struct RunCommand {
+     pub args: Vec<String>,
+     pub cwd: PathBuf,
+     pub env: std::collections::BTreeMap<String, String>,
++    pub capture_vm_service: bool,
+ }
+ 
+ fn on_path(name: &str) -> Option<PathBuf> {
+@@ -102,6 +103,11 @@ impl FlutterTool {
+             bail!("Working directory does not exist: {}", config.cwd.display());
+         }
+         let flutter_args = config.flutter_args(device)?;
++        let capture_vm_service = !config.is_test()
++            && !flutter_args
++                .iter()
++                .any(|arg| matches!(arg.as_str(), "--release" | "--release=true"))
++            && !(ownit_compat && device == "mac-designed-for-ipad");
+         let mut executable = self.executable.clone();
+         let mut args = self.prefix.clone();
+         args.extend(flutter_args);
+@@ -168,6 +174,7 @@ impl FlutterTool {
+             args,
+             cwd: config.cwd.clone(),
+             env: config.env.clone(),
++            capture_vm_service,
+         })
+     }
+ }
+@@ -209,9 +216,55 @@ mod tests {
+     use super::*;
+     use crate::config::LaunchFile;
+ 
++    #[test]
++    fn vm_service_capture_is_only_enabled_for_supported_app_runs() {
++        let directory = tempfile::tempdir().unwrap();
++        let workspace = directory.path();
++        let launch = LaunchFile::parse(
++            r#"{"configurations":[
++            {"name":"Debug"},
++            {"name":"Profile","flutterMode":"profile"},
++            {"name":"Release","args":["--release"]},
++            {"name":"Explicit release","args":["--release=true"]},
++            {"name":"Tests","program":"test"}
++        ]}"#,
++            &workspace.join("launch.json"),
++            workspace,
++        )
++        .unwrap();
++        let tool = FlutterTool {
++            executable: "/bin/echo".into(),
++            prefix: vec![],
++            workspace: workspace.into(),
++        };
++        for (config, expected) in launch
++            .configurations
++            .iter()
++            .zip([true, true, false, false, false])
++        {
++            assert_eq!(
++                tool.plan(config, "device", false)
++                    .unwrap()
++                    .capture_vm_service,
++                expected,
++                "{}",
++                config.name
++            );
++        }
++        std::fs::create_dir(workspace.join("scripts")).unwrap();
++        std::fs::write(workspace.join("scripts/run_mac_designed_for_ipad.sh"), "").unwrap();
++        assert!(
++            !tool
++                .plan(&launch.configurations[0], "mac-designed-for-ipad", true)
++                .unwrap()
++                .capture_vm_service
++        );
++    }
++
+     #[test]
+     fn display_redacts_split_and_joined_defines() {
+         let command = RunCommand {
++            capture_vm_service: false,
+             executable: "flutter".into(),
+             args: vec![
+                 "run".into(),
+diff --git a/src/ui.rs b/src/ui.rs
+index 267e2c9..e20fc4c 100644
+--- a/src/ui.rs
++++ b/src/ui.rs
+@@ -36,6 +36,7 @@ pub enum MouseAction {
+     Help,
+     DismissHelp,
+     ToggleAnimations,
++    ReconnectAnimations,
+     ConsoleScroll(u16),
+     ConfirmQuit,
+     CancelQuit,
+@@ -132,8 +133,18 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
+                     );
+                 }
+             }
+-            add("Refresh devices", "r", MouseAction::Refresh);
+-            add("Reload configs", "c", MouseAction::ReloadConfigs);
++            if app.page == Page::Devices {
++                add("Refresh devices", "r", MouseAction::Refresh);
++            }
++            add(
++                "Reload configs",
++                if app.page == Page::Configs {
++                    "r / c"
++                } else {
++                    "c"
++                },
++                MouseAction::ReloadConfigs,
++            );
+             if app.last_log.is_some() {
+                 add("Last console", "l", MouseAction::LastLog);
+             }
+@@ -154,6 +165,11 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
+                     Shortcut::Animations.label(),
+                     MouseAction::ToggleAnimations,
+                 );
++                add(
++                    "Reconnect animation control",
++                    "",
++                    MouseAction::ReconnectAnimations,
++                );
+             }
+             if app.active_session().is_none() && !app.runs.is_empty() {
+                 add(
+@@ -435,8 +451,7 @@ fn toolbar_buttons(app: &App, compact: bool) -> Vec<Button> {
+         Page::Configs => {
+             add("Run".into(), MouseAction::NextOrRun);
+             add("Back".into(), MouseAction::Back);
+-            add("Refresh".into(), MouseAction::Refresh);
+-            add("Configs".into(), MouseAction::ReloadConfigs);
++            add("Reload".into(), MouseAction::ReloadConfigs);
+         }
+         Page::Console => {
+             add(
+@@ -461,6 +476,13 @@ fn toolbar_buttons(app: &App, compact: bool) -> Vec<Button> {
+                     format!("Speed {}", session.animations.short_label()),
+                     MouseAction::ToggleAnimations,
+                 );
++                if matches!(
++                    session.animations.state(),
++                    flimru::animation::AnimationState::Waiting
++                        | flimru::animation::AnimationState::Disconnected
++                ) {
++                    add("Reconnect".into(), MouseAction::ReconnectAnimations);
++                }
+             }
+         }
+         Page::LastLog => {
+@@ -1186,6 +1208,21 @@ pub fn draw(frame: &mut Frame, app: &App) {
+             .map(|row| console_line(row.iter()))
+             .collect();
+         frame.render_widget(Paragraph::new(Text::from(lines)), selection.area);
++        if let Some((position, max)) = selection.scroll_position() {
++            let mut scrollbar = ScrollbarState::new(max.saturating_add(1))
++                .viewport_content_length(usize::from(selection.area.height))
++                .position(position);
++            frame.render_stateful_widget(
++                Scrollbar::new(ScrollbarOrientation::VerticalRight)
++                    .begin_symbol(None)
++                    .end_symbol(None)
++                    .track_symbol(Some("│"))
++                    .thumb_symbol("█")
++                    .style(Style::default().fg(if max > 0 { ACCENT } else { MUTED })),
++                console_scrollbar_area(area),
++                &mut scrollbar,
++            );
++        }
+         for row in 0..selection.area.height {
+             for col in 0..selection.area.width {
+                 if selection.contains(row, col) {
+@@ -1212,7 +1249,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
+     } else if app.page == Page::Console
+         && let Some(session) = app.active_session()
+     {
+-        format!("  {} · {}", app.status, session.animations.label())
++        let diagnostic = session
++            .animations
++            .connection_error()
++            .map(|error| format!(" · {error}"))
++            .unwrap_or_default();
++        format!(
++            "  {} · {}{diagnostic}",
++            app.status,
++            session.animations.label()
++        )
+     } else {
+         format!("  {}", app.status)
+     };
+@@ -1256,7 +1302,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
+         .as_ref()
+         .is_some_and(|selection| selection.has_range())
+     {
+-        " Drag to select · release copies\n Esc clears selection"
++        " Drag to edge to scroll · release copies\n Esc clears selection"
+     } else if app.top_focus.is_some() {
+         " ←/→ choose · Enter/Space select\n ↓ / Esc / Tab return to content"
+     } else {
+@@ -1270,7 +1316,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
+                     " ↑↓ select · Enter next · f favorite\n Tab actions · / filter · m multi"
+                 }
+             }
+-            Page::Configs => " ↑↓ select · Enter run · Esc back\n Tab actions · / filter",
++            Page::Configs => {
++                " ↑↓ select · Enter run · Esc back\n r reload · Tab actions · / filter"
++            }
+             Page::Console if app.active_session().is_some() => {
+                 " r reload · R restart · Esc stop\n Drag to copy · Ctrl+g actions"
+             }
+@@ -1547,7 +1595,7 @@ fn terminal_color(color: vt100::Color) -> Color {
+     }
+ }
+ 
+-fn console_line<'a>(cells: impl Iterator<Item = &'a vt100::Cell>) -> Line<'static> {
++fn console_line<'a>(cells: impl Iterator<Item = &'a vt100::Cell>) -> Line<'a> {
+     let mut spans = Vec::new();
+     let mut plain = String::new();
+     let mut ansi_colors = false;
+@@ -1580,11 +1628,11 @@ fn console_line<'a>(cells: impl Iterator<Item = &'a vt100::Cell>) -> Line<'stati
+             style = style.reversed();
+         }
+         let text = if cell.has_contents() {
+-            cell.contents().to_owned()
++            cell.contents()
+         } else {
+-            " ".into()
++            " "
+         };
+-        plain.push_str(&text);
++        plain.push_str(text);
+         spans.push(Span::styled(text, style));
+     }
+     if !ansi_colors && let Some(color) = crate::console_style::fallback_color(&plain) {
+@@ -1787,6 +1835,27 @@ mod tests {
+             .collect()
+     }
+ 
++    #[test]
++    fn console_text_borrows_cells_without_losing_wide_or_combining_characters() {
++        let mut parser = vt100::Parser::new(1, 12, 0);
++        parser.process("\x1b[31mA界e\u{301}\x1b[0m!".as_bytes());
++        let screen = parser.screen();
++        let line = console_line((0..12).filter_map(|column| screen.cell(0, column)));
++        assert!(
++            line.spans
++                .iter()
++                .all(|span| matches!(span.content, std::borrow::Cow::Borrowed(_)))
++        );
++        let text: String = line
++            .spans
++            .iter()
++            .map(|span| span.content.as_ref())
++            .collect();
++        assert_eq!(text.trim_end(), "A界e\u{301}!");
++        assert_eq!(line.spans[1].style.fg, Some(Color::Indexed(1)));
++        assert_eq!(line.spans[2].content, "e\u{301}");
++    }
++
+     #[test]
+     fn console_preserves_ansi_palette_rgb_background_and_modifiers() {
+         let mut parser = vt100::Parser::new(5, 60, 10);
+@@ -2264,6 +2333,41 @@ mod tests {
+         assert_eq!(list_offset(0, 0, 10, 16), 0);
+     }
+ 
++    #[test]
++    fn reload_actions_match_each_picker_page() {
++        let mut app = crate::tests::app();
++        let actions = available_actions(&app);
++        assert!(
++            actions
++                .iter()
++                .any(|item| { item.action == MouseAction::Refresh && item.shortcut == "r" })
++        );
++        assert!(
++            actions
++                .iter()
++                .any(|item| { item.action == MouseAction::ReloadConfigs && item.shortcut == "c" })
++        );
++
++        app.page = Page::Configs;
++        let actions = available_actions(&app);
++        assert!(
++            !actions
++                .iter()
++                .any(|item| item.action == MouseAction::Refresh)
++        );
++        assert!(
++            actions.iter().any(|item| {
++                item.action == MouseAction::ReloadConfigs && item.shortcut == "r / c"
++            })
++        );
++        for compact in [false, true] {
++            let buttons = toolbar_buttons(&app, compact);
++            assert!(buttons.iter().any(|button| {
++                button.label == "Reload" && button.action == MouseAction::ReloadConfigs
++            }));
++        }
++    }
++
+     #[test]
+     fn configuration_rows_and_toolbar_buttons_use_rendered_hit_regions() {
+         let mut app = crate::tests::app();
+diff --git a/tests/animation_control.rs b/tests/animation_control.rs
+index f068456..2f812b5 100644
+--- a/tests/animation_control.rs
++++ b/tests/animation_control.rs
+@@ -225,6 +225,71 @@ fn confirmed(control: &AnimationControl, expected: f64) {
+     until(|| control.state() == AnimationState::Confirmed(expected));
+ }
+ 
++#[test]
++fn service_file_discovers_missing_output_and_tracks_changed_addresses() {
++    let directory = tempfile::tempdir().unwrap();
++    let path = directory.path().join("service-uri");
++    let first = Service::new(true);
++    let replacement = Service::new(true);
++    let mut control = AnimationControl::with_service_file(path.clone());
++    assert_eq!(control.state(), AnimationState::Waiting);
++    // An incomplete write must not prevent discovery when Flutter finishes it.
++    std::fs::write(&path, "ws://").unwrap();
++    control.reconnect().unwrap();
++    std::fs::write(
++        &path,
++        format!("{}ws\n", first.endpoint.replacen("http://", "ws://", 1)),
++    )
++    .unwrap();
++    confirmed(&control, 1.0);
++    control.toggle().unwrap();
++    confirmed(&control, 5.0);
++
++    std::fs::write(&path, &replacement.endpoint).unwrap();
++    until(|| replacement.state.lock().unwrap().factor == 5.0);
++    confirmed(&control, 5.0);
++    control.toggle().unwrap();
++    confirmed(&control, 1.0);
++    assert_eq!(first.state.lock().unwrap().factor, 5.0);
++
++    // An unchanged file must not overwrite a newer URL printed by Flutter.
++    let newest = Service::new(true);
++    newest.connect(&mut control);
++    until(|| !newest.requests().is_empty());
++    confirmed(&control, 1.0);
++    thread::sleep(Duration::from_millis(1100));
++    control.toggle().unwrap();
++    confirmed(&control, 5.0);
++    assert_eq!(newest.state.lock().unwrap().factor, 5.0);
++    assert_eq!(replacement.state.lock().unwrap().factor, 1.0);
++}
++
++#[test]
++fn reconnect_retries_known_service_without_toggling_or_leaking_authentication() {
++    let service = Service::new(true);
++    let mut control = AnimationControl::new(true);
++    control.reconnect().unwrap();
++    assert_eq!(control.state(), AnimationState::Waiting);
++    service.connect(&mut control);
++    confirmed(&control, 1.0);
++    service.state.lock().unwrap().fail_all = true;
++    until(|| control.state() == AnimationState::Disconnected);
++    let diagnostic = control.connection_error().unwrap();
++    assert!(diagnostic.contains("VM Service"));
++    assert!(!diagnostic.contains(AUTH_PATH));
++    assert!(!diagnostic.contains(&service.endpoint));
++    service.state.lock().unwrap().fail_all = false;
++    control.reconnect().unwrap();
++    confirmed(&control, 1.0);
++    assert!(control.connection_error().is_none());
++    assert!(
++        service
++            .requests()
++            .iter()
++            .all(|request| request.parameter("timeDilation").is_none())
++    );
++}
++
+ #[test]
+ fn toggles_use_authenticated_endpoint_and_confirm_actual_factors() {
+     let service = Service::new(true);
+diff --git a/tests/session_resources.rs b/tests/session_resources.rs
+index f6cfe7f..e14c1b1 100644
+--- a/tests/session_resources.rs
++++ b/tests/session_resources.rs
+@@ -11,6 +11,7 @@ use std::{
+ 
+ fn command(directory: &Path, script: &str) -> RunCommand {
+     RunCommand {
++        capture_vm_service: false,
+         executable: "/bin/sh".into(),
+         args: vec!["-c".into(), script.into()],
+         cwd: directory.into(),
+@@ -112,4 +113,24 @@ fn repeated_sessions_release_descriptors_and_exited_wrapper_descendants() {
+         "A descendant kept running after its session was dropped"
+     );
+     assert_eq!(open_descriptors(), baseline);
++
++    // A producer larger than the channel must backpressure rather than grow
++    // memory while the UI is not consuming. Resuming ticks must recover all
++    // queued data, reach EOF, and keep only the bounded terminal history.
++    let script = "i=0; while [ $i -lt 14000 ]; do \
++        printf '%080d\\r\\n' $i; i=$((i+1)); done; printf 'OUTPUT COMPLETE\\r\\n'";
++    let mut session = Session::start(&command(directory.path(), script), 10, 80).unwrap();
++    thread::sleep(Duration::from_millis(300));
++    assert!(session.parser.screen().contents().is_empty());
++    until(|| session.tick().unwrap().is_some());
++    assert!(
++        session
++            .parser
++            .screen()
++            .contents()
++            .contains("OUTPUT COMPLETE")
++    );
++    assert_eq!(session.scrollback_len, 10_000);
++    drop(session);
++    assert_eq!(open_descriptors(), baseline);
+ }
+diff --git a/tests/terminal_flow.rs b/tests/terminal_flow.rs
+index 20a54ec..bd7ffa8 100644
+--- a/tests/terminal_flow.rs
++++ b/tests/terminal_flow.rs
+@@ -27,6 +27,15 @@ impl Terminal {
+     }
+ 
+     fn start_with_options(project: &Path, state: &Path, multi: bool) -> Self {
++        Self::start_with_refresh_interval(project, state, multi, 2)
++    }
++
++    fn start_with_refresh_interval(
++        project: &Path,
++        state: &Path,
++        multi: bool,
++        refresh_interval: u64,
++    ) -> Self {
+         let pair = native_pty_system()
+             .openpty(PtySize {
+                 rows: 32,
+@@ -53,7 +62,7 @@ impl Terminal {
+             "--state",
+             state.to_str().unwrap(),
+             "--refresh-interval",
+-            "2",
++            &refresh_interval.to_string(),
+         ]);
+         if multi {
+             command.arg("--multi");
+@@ -483,6 +492,157 @@ done
+     project
+ }
+ 
++#[test]
++fn animation_reconnect_requests_fresh_connection_details_without_stopping_the_app() {
++    let project = project();
++    let mut tui = Terminal::start(project.path(), &project.path().join("state.json"));
++    tui.until("Demo phone");
++    tui.send(b"\r");
++    tui.until_control("Run");
++    tui.send(b"\r");
++    tui.until("SESSION READY");
++    tui.until("Animations: waiting");
++    tui.click_control("Reconnect");
++    tui.until("shortcut:h");
++    tui.until("VM Service reconnect requested");
++    tui.send(b"r");
++    tui.until("shortcut:r");
++    tui.menu_click("Reconnect animation control");
++    tui.send(b"v");
++    tui.until("shortcut:v");
++    let log = std::fs::read_to_string(project.path().join("session.log")).unwrap();
++    assert_eq!(log.matches("key:h\n").count(), 2);
++    tui.quit();
++}
++
++#[test]
++fn configuration_reload_shortcut_recovers_from_invalid_and_empty_launch_files() {
++    let project = project();
++    let launch_path = project.path().join(".vscode/launch.json");
++    let mut tui = Terminal::start(project.path(), &project.path().join("state.json"));
++    tui.until("Demo phone");
++    tui.send(b"\r");
++    tui.until_control("Reload");
++    tui.until("r reload");
++
++    std::fs::write(
++        &launch_path,
++        r#"{"configurations":[{"name":"Reloaded config","args":["--flavor","fresh"]}]}"#,
++    )
++    .unwrap();
++    tui.send(b"r");
++    tui.until("Reloaded config");
++    tui.until("Launch configurations reloaded.");
++
++    std::fs::write(&launch_path, "{invalid json").unwrap();
++    tui.send(b"r");
++    tui.until("Reload failed:");
++    assert!(tui.screen.screen().contents().contains("Reloaded config"));
++
++    std::fs::write(&launch_path, r#"{"configurations":[]}"#).unwrap();
++    tui.send(b"r");
++    tui.until("No matching configurations.");
++    assert!(!tui.screen.screen().contents().contains("Reloaded config"));
++
++    // The existing alias and mouse command must also work after an empty reload.
++    std::fs::write(
++        &launch_path,
++        r#"{"configurations":[{"name":"Alias config"}]}"#,
++    )
++    .unwrap();
++    tui.send(b"c");
++    tui.until("Alias config");
++    std::fs::write(
++        &launch_path,
++        r#"{"configurations":[{"name":"Button config","args":["--flavor","fresh"]}]}"#,
++    )
++    .unwrap();
++    tui.click_control("Reload");
++    tui.until("Button config");
++    tui.send(b"\r");
++    tui.until("SESSION READY");
++    let log = std::fs::read_to_string(project.path().join("session.log")).unwrap();
++    assert!(log.contains("--flavor\nfresh\n"), "{log}");
++    tui.send(b"r");
++    tui.until("shortcut:r");
++    tui.quit();
++}
++
++#[test]
++fn quiet_picker_and_console_stop_redrawing_and_wake_for_input() {
++    let project = project();
++    let mut tui = Terminal::start_with_refresh_interval(
++        project.path(),
++        &project.path().join("state.json"),
++        false,
++        3600,
++    );
++    tui.until("Demo phone");
++    // Drain any frame already in flight, then observe more than the old
++    // one-second unconditional redraw interval.
++    let assert_quiet = |tui: &mut Terminal| {
++        thread::sleep(Duration::from_millis(150));
++        tui.read();
++        tui.raw_output.clear();
++        thread::sleep(Duration::from_millis(1200));
++        tui.read();
++        assert!(tui.raw_output.is_empty(), "Unchanged screen was redrawn");
++        assert!(tui.child.try_wait().unwrap().is_none());
++    };
++    assert_quiet(&mut tui);
++    tui.send(b"\r");
++    tui.until("Demo debug");
++    tui.send(b"\r");
++    tui.until("SESSION READY");
++    assert_quiet(&mut tui);
++    tui.send(b"h");
++    tui.until("shortcut:h");
++    tui.quit();
++}
++
++#[test]
++fn hidden_console_output_is_drained_without_redrawing_the_visible_console() {
++    let project = multi_project();
++    let script_path = project.path().join("fake-flutter");
++    let script = std::fs::read_to_string(&script_path).unwrap().replace(
++        "while :; do\n  IFS= read",
++        "if [ \"$device\" = alpha ]; then\n\
++         (while [ ! -f \"$FAKE_SCRIPT\" ]; do sleep 0.02; done; \
++         printf 'BACKGROUND:alpha\\r\\n') &\nfi\nwhile :; do\n  IFS= read",
++    );
++    assert!(script.contains("BACKGROUND:alpha"));
++    std::fs::write(script_path, script).unwrap();
++    let mut tui = Terminal::start_with_refresh_interval(
++        project.path(),
++        &project.path().join("state.json"),
++        true,
++        3600,
++    );
++    tui.until("Alpha");
++    tui.send(b" \x1b[B ");
++    tui.until("Multi 2/8");
++    tui.send(b"\r");
++    tui.until("Demo debug");
++    tui.send(b"\r");
++    tui.until("READY:alpha");
++    tui.send(b"\x06");
++    tui.until("READY:beta");
++    thread::sleep(Duration::from_millis(150));
++    tui.read();
++    tui.raw_output.clear();
++    std::fs::write(project.path().join("probe.dart"), "emit background output").unwrap();
++    thread::sleep(Duration::from_millis(500));
++    tui.read();
++    assert!(
++        tui.raw_output.is_empty(),
++        "Hidden output redrew the visible console"
++    );
++    tui.send(b"\x02");
++    tui.until("BACKGROUND:alpha");
++    tui.quit();
++    assert_multi_children_reaped(project.path());
++}
++
+ fn assert_multi_children_reaped(project: &Path) {
+     for device in ["alpha", "beta"] {
+         let pid = std::fs::read_to_string(project.join(format!("child.pid.{device}")))
+@@ -673,7 +833,8 @@ fn top_actions_support_keyboard_focus_without_leaking_navigation_to_flutter() {
+         }
+         tui.send(b"\x07"); // Ctrl+g focuses the bar in a live console.
+         tui.until_control("›Stop");
+-        tui.send(b"R\x1b[200~r\x1b[201~\x1b[C\x1b[C\x1b[C");
++        // Add, Speed, and the recovery button precede the Actions menu.
++        tui.send(b"R\x1b[200~r\x1b[201~\x1b[C\x1b[C\x1b[C\x1b[C");
+         tui.until_control(if compact { "›Menu" } else { "›Actions" });
+         tui.send(b"\x10"); // Ctrl+p opens the menu without losing the trigger focus.
+         tui.until("Actions ·");
+@@ -1281,6 +1442,11 @@ fn mouse_drag_copies_live_and_saved_console_text_without_forwarding_events() {
+             tui.send(b"\x1b[C\x1b[C\x1b[C\x1b[1;2C\x1b[1;2C\r");
+             tui.until_clipboard_request("SIO");
+             tui.send(b"\x1b");
++            // The first S is outside the keyboard range (columns 3..5), so
++            // its color cannot acknowledge clearing that selection. Wait for
++            // the footer transition before sending h; ESC+h in one unread
++            // terminal packet is an Alt+h key rather than a separate Escape.
++            tui.until("r reload · R restart · Esc stop");
+             tui.until_color("SESSION READY", vt100::Color::Idx(2));
+             tui.send(b"h");
+             tui.until("shortcut:h");
+@@ -1296,3 +1462,59 @@ fn mouse_drag_copies_live_and_saved_console_text_without_forwarding_events() {
+     tui.until("Closed saved console.");
+     tui.quit();
+ }
++
++#[test]
++fn dragging_at_console_edges_scrolls_and_copies_across_viewports() {
++    let project = project();
++    let state = project.path().join("state.json");
++    let mut tui = Terminal::start(project.path(), &state);
++    tui.until("Demo phone");
++    tui.send(b"\r");
++    tui.until("Demo debug");
++    tui.send(b"\r");
++    tui.until("SESSION READY");
++    tui.send(b"o");
++    tui.until("history-line:099");
++    for saved in [false, true] {
++        tui.menu_click("Oldest output");
++        tui.until("history-line:000");
++        let (row, column) = tui
++            .screen
++            .screen()
++            .rows(0, 112)
++            .enumerate()
++            .find_map(|(row, line)| {
++                line.find("history-line:000")
++                    .map(|index| (row as u16, line[..index].chars().count() as u16))
++            })
++            .unwrap();
++        tui.mouse(0, column, row);
++        // A single edge event must keep scrolling after the pointer stops moving.
++        tui.mouse(32, column + 15, 26);
++        tui.until("history-line:030");
++        // Wheel input extends the same selection instead of clearing it.
++        for _ in 0..40 {
++            tui.mouse(65, column + 15, 26);
++        }
++        tui.until("history-line:099");
++        tui.raw_output.clear();
++        tui.send(format!("\x1b[<0;{};27m", column + 16).as_bytes());
++        tui.until("Copy requested.");
++        let mut expected = (0..100)
++            .map(|row| format!("history-line:{row:03}\n"))
++            .collect::<String>();
++        if saved {
++            expected.push_str("shortcut:q\n");
++        }
++        tui.until_clipboard_request(&expected);
++        tui.send(b"\x1b");
++        if !saved {
++            tui.until("r reload · R restart · Esc stop");
++            tui.send(b"q");
++            tui.until("ended (");
++            tui.click_text("1○ Demo debug");
++            tui.until("Last console ·");
++        }
++    }
++    tui.quit();
++}

@@ -27,6 +27,25 @@ impl Terminal {
     }
 
     fn start_with_options(project: &Path, state: &Path, multi: bool) -> Self {
+        Self::start_with_refresh_interval(project, state, multi, 2)
+    }
+
+    fn start_with_refresh_interval(
+        project: &Path,
+        state: &Path,
+        multi: bool,
+        refresh_interval: u64,
+    ) -> Self {
+        Self::start_configured(project, state, multi, refresh_interval, None)
+    }
+
+    fn start_configured(
+        project: &Path,
+        state: &Path,
+        multi: bool,
+        refresh_interval: u64,
+        launch: Option<&Path>,
+    ) -> Self {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 32,
@@ -53,10 +72,14 @@ impl Terminal {
             "--state",
             state.to_str().unwrap(),
             "--refresh-interval",
-            "2",
+            &refresh_interval.to_string(),
         ]);
         if multi {
             command.arg("--multi");
+        }
+        if let Some(launch) = launch {
+            command.arg("--launch");
+            command.arg(launch);
         }
         command.env("TERM", "xterm-256color");
         // Reproduce launchers/shells which suppress color. Always-enabled colors must
@@ -483,6 +506,484 @@ done
     project
 }
 
+#[test]
+fn explicit_batch_hot_actions_send_once_to_each_eligible_child_and_results_consume_input() {
+    let project = multi_project();
+    let mut tui =
+        Terminal::start_with_options(project.path(), &project.path().join("state.json"), true);
+    tui.until("Alpha");
+    tui.send(b" \x1b[B ");
+    tui.until("Multi 2/8");
+    tui.send(b"\r");
+    tui.until_control("Run");
+    tui.send(b"\r");
+    tui.until("READY:alpha");
+    tui.send(b"rR");
+    tui.until("shortcut:alpha:R");
+    let path = project.path().join("session.log");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "key:alpha:r\nkey:alpha:R\n"
+    );
+    tui.menu_click("Reload all eligible (2)");
+    tui.until("Hot reload delivery report");
+    tui.until("Requested/queued: 2");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::fs::read_to_string(&path).unwrap().lines().count() != 4 {
+        assert!(Instant::now() < deadline);
+        tui.read();
+        thread::sleep(Duration::from_millis(5));
+    }
+    tui.send(b"rR\x05\x1b[200~should-stay-in-modal\x1b[201~");
+    tui.mouse(0, 0, 0);
+    tui.send(b"\r");
+    tui.until("shortcut:alpha:r");
+    let lines = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(lines.lines().count(), 4);
+    assert_eq!(
+        lines.lines().filter(|line| *line == "key:beta:r").count(),
+        1
+    );
+    assert_eq!(
+        lines.lines().filter(|line| *line == "key:alpha:r").count(),
+        2
+    );
+    tui.menu_click("Restart all eligible (2)");
+    tui.until("Hot restart delivery report");
+    tui.until("Requested/queued: 2");
+    tui.send(b"\x1b");
+    tui.until("shortcut:alpha:R");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let log = std::fs::read_to_string(&path).unwrap();
+        if log.lines().count() == 6 {
+            assert_eq!(log.lines().filter(|line| *line == "key:beta:R").count(), 1);
+            assert_eq!(log.lines().filter(|line| *line == "key:alpha:R").count(), 2);
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        tui.read();
+        thread::sleep(Duration::from_millis(5));
+    }
+    tui.quit();
+}
+
+#[test]
+fn animation_reconnect_requests_fresh_connection_details_without_stopping_the_app() {
+    let project = project();
+    let mut tui = Terminal::start(project.path(), &project.path().join("state.json"));
+    tui.until("Demo phone");
+    tui.send(b"\r");
+    tui.until_control("Run");
+    tui.send(b"\r");
+    tui.until("SESSION READY");
+    tui.until("Animations: waiting");
+    tui.click_control("Reconnect");
+    tui.until("shortcut:h");
+    tui.until("VM Service reconnect requested");
+    tui.send(b"r");
+    tui.until("shortcut:r");
+    tui.menu_click("Reconnect animation control");
+    tui.send(b"v");
+    tui.until("shortcut:v");
+    let log = std::fs::read_to_string(project.path().join("session.log")).unwrap();
+    assert_eq!(log.matches("key:h\n").count(), 2);
+    tui.quit();
+}
+
+#[test]
+fn configuration_reload_shortcut_recovers_from_invalid_and_empty_launch_files() {
+    let project = project();
+    let launch_path = project.path().join(".vscode/launch.json");
+    let mut tui = Terminal::start(project.path(), &project.path().join("state.json"));
+    tui.until("Demo phone");
+    tui.send(b"\r");
+    tui.until_control("Reload");
+    tui.until("r reload");
+
+    std::fs::write(
+        &launch_path,
+        r#"{"configurations":[{"name":"Reloaded config","args":["--flavor","fresh"]}]}"#,
+    )
+    .unwrap();
+    tui.send(b"r");
+    tui.until("Reloaded config");
+    tui.until("Launch configurations reloaded.");
+
+    std::fs::write(&launch_path, "{invalid json").unwrap();
+    tui.send(b"r");
+    tui.until("Reload failed:");
+    assert!(tui.screen.screen().contents().contains("Reloaded config"));
+
+    std::fs::write(&launch_path, r#"{"configurations":[]}"#).unwrap();
+    tui.send(b"r");
+    tui.until("Empty configurations array.");
+    assert!(!tui.screen.screen().contents().contains("Reloaded config"));
+
+    // The existing alias and mouse command must also work after an empty reload.
+    std::fs::write(
+        &launch_path,
+        r#"{"configurations":[{"name":"Alias config"}]}"#,
+    )
+    .unwrap();
+    tui.send(b"c");
+    tui.until("Alias config");
+    std::fs::write(
+        &launch_path,
+        r#"{"configurations":[{"name":"Button config","args":["--flavor","fresh"]}]}"#,
+    )
+    .unwrap();
+    tui.click_control("Reload");
+    tui.until("Button config");
+    // The former selected configuration was removed, so reload requires an
+    // explicit selection rather than silently activating the replacement row.
+    tui.send(b"\x1b[B");
+    tui.until_control("Run");
+    tui.send(b"\r");
+    tui.until("SESSION READY");
+    let log = std::fs::read_to_string(project.path().join("session.log")).unwrap();
+    assert!(log.contains("--flavor\nfresh\n"), "{log}");
+    tui.send(b"r");
+    tui.until("shortcut:r");
+    tui.quit();
+}
+
+#[test]
+fn automatic_reload_watches_explicit_path_atomic_saves_and_recovers_last_good() {
+    let project = project();
+    let custom = project.path().join("custom-launch.json");
+    let catalog = |name| format!(r#"{{"configurations":[{{"name":"{name}"}}]}}"#);
+    std::fs::write(&custom, catalog("Custom initial")).unwrap();
+    let mut tui = Terminal::start_configured(
+        project.path(),
+        &project.path().join("state.json"),
+        false,
+        3600,
+        Some(Path::new("custom-launch.json")),
+    );
+    tui.until("Demo phone");
+    tui.send(b"\r");
+    tui.until("Custom initial");
+    tui.until_control("Run");
+    // Writes to the conventional path are unrelated to the explicitly selected file.
+    std::fs::write(
+        project.path().join(".vscode/launch.json"),
+        catalog("Wrong path"),
+    )
+    .unwrap();
+    let replacement = project.path().join("atomic-save.json");
+    std::fs::write(&replacement, catalog("Atomic replacement 界")).unwrap();
+    std::fs::rename(&replacement, &custom).unwrap();
+    tui.until("Atomic replacement 界");
+    assert!(!tui.screen.screen().contents().contains("Wrong path"));
+    tui.until("Select a configuration to run");
+    tui.send(b"\r");
+    tui.until("Select a configuration first.");
+    assert!(!project.path().join("session.log").exists());
+    std::fs::write(&custom, "{PRIVATE_SECRET_INVALID_JSON").unwrap();
+    tui.until("Config error");
+    assert!(
+        tui.screen
+            .screen()
+            .contents()
+            .contains("Atomic replacement 界")
+    );
+    tui.send(b"i");
+    tui.until("last good catalog");
+    assert!(!tui.screen.screen().contents().contains("PRIVATE_SECRET"));
+    tui.send(b"\x1b");
+    // Delete/recreate with identical accepted content still clears the error.
+    std::fs::remove_file(&custom).unwrap();
+    tui.send(b"c");
+    tui.until("not found");
+    std::fs::write(&custom, catalog("Atomic replacement 界")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(6);
+    loop {
+        tui.read();
+        if !tui.screen.screen().contents().contains("Config error") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "recovery left the persistent error marker"
+        );
+        thread::sleep(Duration::from_millis(15));
+    }
+    tui.send(b"\x1b[B");
+    tui.until_control("Run");
+    tui.send(b"\r");
+    tui.until("SESSION READY");
+    let pid_before = std::fs::read_to_string(project.path().join("child.pid")).unwrap();
+    let log_before = std::fs::read_to_string(project.path().join("session.log")).unwrap();
+    std::fs::write(&custom, catalog("Future launches only")).unwrap();
+    // A failed update is visible in the console while its existing child stays alive.
+    std::fs::write(&custom, "{broken").unwrap();
+    tui.until("Config error");
+    tui.send(b"r");
+    tui.until("shortcut:r");
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("child.pid")).unwrap(),
+        pid_before
+    );
+    let log = std::fs::read_to_string(project.path().join("session.log")).unwrap();
+    assert!(log.starts_with(&log_before));
+    assert_eq!(log.matches("--device-id\n").count(), 1);
+    std::fs::write(&custom, catalog("Future launches only")).unwrap();
+    tui.send(b"\x04"); // Ctrl+d: the running session survives browsing the new catalog.
+    tui.until("Demo phone");
+    tui.send(b"\r");
+    tui.until("Future launches only");
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("child.pid")).unwrap(),
+        pid_before
+    );
+    tui.quit();
+}
+
+#[test]
+fn manual_reload_enter_burst_never_launches_old_arguments_and_menu_uses_same_path() {
+    let project = project();
+    let path = project.path().join(".vscode/launch.json");
+    let mut tui = Terminal::start(project.path(), &project.path().join("state.json"));
+    tui.until("Demo phone");
+    tui.send(b"\r");
+    tui.until_control("Run");
+    std::fs::write(
+        &path,
+        r#"{"configurations":[{"name":"Demo debug","args":["--flavor","fresh-after-manual"]}]}"#,
+    )
+    .unwrap();
+    tui.send(b"r\r");
+    tui.until("Launch configurations reloaded.");
+    tui.until_control("Run");
+    assert!(
+        !project.path().join("session.log").exists(),
+        "r+Enter launched a child before an explicit post-reload Run"
+    );
+    // Menu reload also completes immediately without the automatic debounce.
+    std::fs::write(
+        &path,
+        r#"{"configurations":[{"name":"Demo debug","args":["--flavor","menu-version"]}]}"#,
+    )
+    .unwrap();
+    tui.menu_click("Reload configs");
+    tui.until("Launch configurations reloaded.");
+    tui.until_control("Run");
+    assert!(!project.path().join("session.log").exists());
+    tui.send(b"\r");
+    tui.until("SESSION READY");
+    let log = std::fs::read_to_string(project.path().join("session.log")).unwrap();
+    assert!(log.contains("--flavor\nmenu-version\n"), "{log}");
+    assert!(
+        !log.contains("GREETING=hello world"),
+        "old launch arguments escaped the manual guard: {log}"
+    );
+    tui.quit();
+}
+
+#[test]
+fn manual_reload_queued_enter_crossing_event_count_budget_requires_fresh_run() {
+    assert_manual_reload_burst_is_fenced(false);
+}
+
+#[test]
+fn manual_reload_queued_enter_crossing_time_budget_requires_fresh_run() {
+    assert_manual_reload_burst_is_fenced(true);
+}
+
+fn assert_manual_reload_burst_is_fenced(time_budget: bool) {
+    for toolbar in [false, true] {
+        for fail in [false, true] {
+            let project = project();
+            let path = project.path().join(".vscode/launch.json");
+            // Keep the existing safe fake process protocol, without waiting for
+            // its artificial device-discovery delay in each regression case.
+            let executable = project.path().join("fake-flutter");
+            let fake = std::fs::read_to_string(&executable).unwrap();
+            std::fs::write(&executable, fake.replace("  sleep 2\n", "")).unwrap();
+            let catalog = |fresh| {
+                let mut entries = vec![serde_json::json!({
+                    "name":"Demo debug", "args":["--flavor", if fresh {"fresh-burst"} else {"last-good"}]
+                })];
+                if time_budget {
+                    // Sixty-four visibility changes on a large catalog exercise
+                    // the work-time budget, with far fewer than 128 events.
+                    entries.extend(
+                        (0..99_999).map(|i| serde_json::json!({"name":format!("Spare {i:05}")})),
+                    );
+                }
+                serde_json::json!({"configurations":entries}).to_string()
+            };
+            std::fs::write(&path, catalog(false)).unwrap();
+            let mut tui = Terminal::start(project.path(), &project.path().join("state.json"));
+            tui.until("Demo phone");
+            tui.send(b"\r");
+            tui.until_control("Run");
+            let mut burst = if toolbar {
+                tui.until_control("Reload");
+                let (_, cols) = tui.screen.screen().size();
+                let row = tui.screen.screen().rows(0, cols).nth(1).unwrap();
+                let byte = row.find("Reload").unwrap();
+                let column = row[..byte].chars().count();
+                format!("\x1b[<0;{};2M", column + 1).into_bytes()
+            } else {
+                b"r".to_vec()
+            };
+            if fail {
+                std::fs::write(&path, "{broken").unwrap();
+            } else {
+                std::fs::write(&path, catalog(true)).unwrap();
+            }
+            if time_budget {
+                burst.extend_from_slice(&[b'u'; 64]);
+            } else {
+                for _ in 0..256 {
+                    burst.extend_from_slice(b"\x1bOP"); // Inert F1 events.
+                }
+            }
+            burst.extend_from_slice(b"\r");
+            // One PTY write leaves the old Enter queued behind the work. Never
+            // send a new Run until the accepted catalog's ready frame appears.
+            tui.send(&burst);
+            tui.until(if fail {
+                "Reload failed:"
+            } else {
+                "Launch configurations reloaded."
+            });
+            tui.until_control("Run");
+            assert!(
+                !project.path().join("session.log").exists(),
+                "queued Enter launched: toolbar={toolbar}, fail={fail}, time_budget={time_budget}"
+            );
+            tui.send(b"\r");
+            tui.until("SESSION READY");
+            let log = std::fs::read_to_string(project.path().join("session.log")).unwrap();
+            assert_eq!(
+                log.lines().filter(|line| *line == "run").count(),
+                1,
+                "{log}"
+            );
+            assert!(
+                log.contains(if fail { "last-good" } else { "fresh-burst" }),
+                "{log}"
+            );
+            tui.quit();
+        }
+    }
+}
+
+#[test]
+fn initial_check_and_reload_share_the_bounded_safe_loader() {
+    let project = project();
+    let path = project.path().join("custom-launch.json");
+    let check = || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_flimru"))
+            .arg(project.path())
+            .args(["--check", "--launch", "custom-launch.json", "--flutter"])
+            .arg(project.path().join("fake-flutter"))
+            .output()
+            .unwrap()
+    };
+    std::fs::write(
+        &path,
+        vec![b' '; flimru::config_reload::MAX_LAUNCH_FILE_BYTES + 1],
+    )
+    .unwrap();
+    let oversized = check();
+    assert!(!oversized.status.success());
+    assert!(String::from_utf8_lossy(&oversized.stderr).contains("4 MiB input limit"));
+    std::fs::write(&path, "{PRIVATE_SECRET_FROM_INVALID_SOURCE").unwrap();
+    let invalid = check();
+    assert!(!invalid.status.success());
+    let message = String::from_utf8_lossy(&invalid.stderr);
+    assert!(message.contains("invalid JSONC"));
+    assert!(!message.contains("PRIVATE_SECRET"));
+    std::fs::write(&path, r#"{"configurations":[],"compounds":[{}]}"#).unwrap();
+    let empty = check();
+    assert!(empty.status.success());
+    let output = String::from_utf8_lossy(&empty.stdout);
+    assert!(output.contains("0 launch configurations"));
+    assert!(output.contains("Compound launch configurations"));
+    assert!(!project.path().join("session.log").exists());
+}
+
+#[test]
+fn quiet_picker_and_console_stop_redrawing_and_wake_for_input() {
+    let project = project();
+    let mut tui = Terminal::start_with_refresh_interval(
+        project.path(),
+        &project.path().join("state.json"),
+        false,
+        3600,
+    );
+    tui.until("Demo phone");
+    // Drain any frame already in flight, then observe more than the old
+    // one-second unconditional redraw interval.
+    let assert_quiet = |tui: &mut Terminal| {
+        thread::sleep(Duration::from_millis(150));
+        tui.read();
+        tui.raw_output.clear();
+        thread::sleep(Duration::from_millis(1200));
+        tui.read();
+        assert!(tui.raw_output.is_empty(), "Unchanged screen was redrawn");
+        assert!(tui.child.try_wait().unwrap().is_none());
+    };
+    assert_quiet(&mut tui);
+    tui.send(b"\r");
+    tui.until("Demo debug");
+    tui.until_control("Run");
+    tui.send(b"\r");
+    tui.until("SESSION READY");
+    assert_quiet(&mut tui);
+    tui.send(b"h");
+    tui.until("shortcut:h");
+    tui.quit();
+}
+
+#[test]
+fn hidden_console_output_is_drained_without_redrawing_the_visible_console() {
+    let project = multi_project();
+    let script_path = project.path().join("fake-flutter");
+    let script = std::fs::read_to_string(&script_path).unwrap().replace(
+        "while :; do\n  IFS= read",
+        "if [ \"$device\" = alpha ]; then\n\
+         (while [ ! -f \"$FAKE_SCRIPT\" ]; do sleep 0.02; done; \
+         printf 'BACKGROUND:alpha\\r\\n') &\nfi\nwhile :; do\n  IFS= read",
+    );
+    assert!(script.contains("BACKGROUND:alpha"));
+    std::fs::write(script_path, script).unwrap();
+    let mut tui = Terminal::start_with_refresh_interval(
+        project.path(),
+        &project.path().join("state.json"),
+        true,
+        3600,
+    );
+    tui.until("Alpha");
+    tui.send(b" \x1b[B ");
+    tui.until("Multi 2/8");
+    tui.send(b"\r");
+    tui.until("Demo debug");
+    tui.until_control("Run");
+    tui.send(b"\r");
+    tui.until("READY:alpha");
+    tui.send(b"\x06");
+    tui.until("READY:beta");
+    thread::sleep(Duration::from_millis(150));
+    tui.read();
+    tui.raw_output.clear();
+    std::fs::write(project.path().join("probe.dart"), "emit background output").unwrap();
+    thread::sleep(Duration::from_millis(500));
+    tui.read();
+    assert!(
+        tui.raw_output.is_empty(),
+        "Hidden output redrew the visible console"
+    );
+    tui.send(b"\x02");
+    tui.until("BACKGROUND:alpha");
+    tui.quit();
+    assert_multi_children_reaped(project.path());
+}
+
 fn assert_multi_children_reaped(project: &Path) {
     for device in ["alpha", "beta"] {
         let pid = std::fs::read_to_string(project.join(format!("child.pid.{device}")))
@@ -545,7 +1046,7 @@ fn sessions_can_be_added_and_replaced_without_interrupting_existing_consoles() {
             assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
         };
         tui.send(b"\r");
-        tui.until("Configurations (3)");
+        tui.until("Configs · 2 ready / 1 blocked");
         tui.send(b"\r");
         tui.until("READY:alpha");
         let alpha = pid_for("alpha");
@@ -554,7 +1055,7 @@ fn sessions_can_be_added_and_replaced_without_interrupting_existing_consoles() {
         tui.menu_click("Add session");
         tui.until("Add session");
         tui.send(b"\x1b[B\r"); // Beta, original configuration.
-        tui.until("Configurations (3)");
+        tui.until("Configs · 2 ready / 1 blocked");
         tui.send(b"\r");
         tui.until("READY:beta");
         let old_beta = pid_for("beta");
@@ -562,7 +1063,7 @@ fn sessions_can_be_added_and_replaced_without_interrupting_existing_consoles() {
         tui.send(b"\x0e"); // Ctrl+n, then Gamma with a different configuration.
         tui.until("Add session");
         tui.send(b"\x1b[B\r");
-        tui.until("Configurations (3)");
+        tui.until("Configs · 2 ready / 1 blocked");
         tui.send(b"\x1b[B\r");
         tui.until("READY:alternate");
         let alternate = pid_for("alternate");
@@ -578,7 +1079,7 @@ fn sessions_can_be_added_and_replaced_without_interrupting_existing_consoles() {
         tui.send(b"\x0e");
         tui.until("Add session");
         tui.send(b"\x1b[H\x1b[B\r"); // Beta again, choose original config instead of the saved Alternate.
-        tui.until("Configurations (3)");
+        tui.until("Configs · 2 ready / 1 blocked");
         tui.send(b"\x1b[H\r");
         tui.until("READY:beta");
         let beta = pid_for("beta");
@@ -592,12 +1093,14 @@ fn sessions_can_be_added_and_replaced_without_interrupting_existing_consoles() {
         tui.send(b"\x0e");
         tui.until("Add session");
         tui.send(b"\x1b[H\r"); // Alpha with Demo debug would be a duplicate.
-        tui.until("Configurations (3)");
+        tui.until("Configs · 2 ready / 1 blocked");
         tui.send(b"\x1b[H\r");
         tui.until("Already running");
         assert_eq!(pid_for("alpha"), alpha);
-        tui.send(b"\x1b[F\r"); // Invalid preLaunchTask must leave all three alone.
-        tui.until("Cannot start batch");
+        tui.send(b"u\x1b[F\r"); // Show and inspect the blocked preLaunchTask entry.
+        tui.until("Diagnostics");
+        tui.send(b"\x1b");
+        tui.until("Configs · 2 ready / 1 blocked");
         alive(alpha);
         alive(beta);
         alive(alternate);
@@ -673,7 +1176,8 @@ fn top_actions_support_keyboard_focus_without_leaking_navigation_to_flutter() {
         }
         tui.send(b"\x07"); // Ctrl+g focuses the bar in a live console.
         tui.until_control("›Stop");
-        tui.send(b"R\x1b[200~r\x1b[201~\x1b[C\x1b[C\x1b[C");
+        // Add, Speed, and the recovery button precede the Actions menu.
+        tui.send(b"R\x1b[200~r\x1b[201~\x1b[C\x1b[C\x1b[C\x1b[C");
         tui.until_control(if compact { "›Menu" } else { "›Actions" });
         tui.send(b"\x10"); // Ctrl+p opens the menu without losing the trigger focus.
         tui.until("Actions ·");
@@ -845,7 +1349,7 @@ fn multi_device_quit_and_terminal_loss_reap_every_instance() {
         tui.send(b" \x1b[B ");
         tui.until("Multi 2/8");
         tui.send(b"\r");
-        tui.until("Configurations (1)");
+        tui.until("Configs · 1 ready / 0 blocked");
         tui.send(b"\r");
         tui.until("READY:alpha");
         tui.send(b"\x06");
@@ -880,6 +1384,7 @@ fn colors_survive_pty_scrollback_and_saved_logs_despite_inherited_no_color() {
     tui.until("Saved phone");
     tui.send(b"\r");
     tui.until("Demo debug");
+    tui.until_control("Run");
     tui.send(b"\r");
     tui.until_color("SESSION READY", vt100::Color::Idx(2));
     tui.send(b"c");
@@ -996,6 +1501,7 @@ fn cached_favorite_runs_before_discovery_then_returns_and_runs_again() {
     let start = Instant::now();
     tui.send(b"\r");
     tui.until("Demo debug");
+    tui.until_control("Run");
     tui.send(b"\r");
     tui.until("SESSION READY");
     assert!(start.elapsed() < Duration::from_secs(2));
@@ -1019,6 +1525,7 @@ fn cached_favorite_runs_before_discovery_then_returns_and_runs_again() {
     tui.until("Devices (");
     tui.send(b"\r");
     tui.until("Demo debug");
+    tui.until_control("Run");
     tui.send(b"\r");
     tui.until("SESSION READY");
     tui.send(b"\x1b");
@@ -1040,7 +1547,7 @@ fn discovery_favorites_filter_and_resize_work_in_real_tui() {
     tui.send(b"/phone\r");
     tui.until("Esc clears filter");
     tui.send(b"\r");
-    tui.until("Configurations (1)");
+    tui.until("Configs · 1 ready / 0 blocked");
     tui.send(b"\r");
     tui.until("SESSION READY");
     tui.master
@@ -1070,7 +1577,7 @@ fn mouse_controls_scrollbar_and_quit_confirmation_in_real_tui() {
     tui.until("added to favorites.");
     // Next then Run toolbar buttons; no keyboard needed to start.
     tui.click_control("Next");
-    tui.until("Configurations (1)");
+    tui.until("Configs · 1 ready / 0 blocked");
     tui.click_control("Run");
     tui.until("SESSION READY");
     tui.send(b"o");
@@ -1107,7 +1614,7 @@ fn closing_terminal_exits_picker_and_active_run_without_orphans() {
         tui.until("Probe");
         let child_pid = if active {
             tui.send(b"\r");
-            tui.until("Configurations (1)");
+            tui.until("Configs · 1 ready / 0 blocked");
             tui.send(b"\r");
             tui.until("SESSION READY");
             Some(
@@ -1214,7 +1721,7 @@ exec "$FAKE_DART" --disable-dart-dev --enable-vm-service=0 "$FAKE_SCRIPT"
     let mut tui = Terminal::start(project.path(), &state);
     tui.until("Probe");
     tui.send(b"\r");
-    tui.until("Configurations (1)");
+    tui.until("Configs · 1 ready / 0 blocked");
     tui.send(b"\r");
     tui.until("PROBE READY");
     tui.until("Animations: normal");
@@ -1249,6 +1756,7 @@ fn mouse_drag_copies_live_and_saved_console_text_without_forwarding_events() {
     tui.until("Saved phone");
     tui.send(b"\r");
     tui.until("Demo debug");
+    tui.until_control("Run");
     tui.send(b"\r");
     tui.until("SESSION READY");
     for saved in [false, true] {
@@ -1281,6 +1789,11 @@ fn mouse_drag_copies_live_and_saved_console_text_without_forwarding_events() {
             tui.send(b"\x1b[C\x1b[C\x1b[C\x1b[1;2C\x1b[1;2C\r");
             tui.until_clipboard_request("SIO");
             tui.send(b"\x1b");
+            // The first S is outside the keyboard range (columns 3..5), so
+            // its color cannot acknowledge clearing that selection. Wait for
+            // the footer transition before sending h; ESC+h in one unread
+            // terminal packet is an Alt+h key rather than a separate Escape.
+            tui.until("r reload · R restart · Esc stop");
             tui.until_color("SESSION READY", vt100::Color::Idx(2));
             tui.send(b"h");
             tui.until("shortcut:h");
@@ -1296,3 +1809,465 @@ fn mouse_drag_copies_live_and_saved_console_text_without_forwarding_events() {
     tui.until("Closed saved console.");
     tui.quit();
 }
+
+#[test]
+fn dragging_at_console_edges_scrolls_and_copies_across_viewports() {
+    let project = project();
+    let state = project.path().join("state.json");
+    let mut tui = Terminal::start(project.path(), &state);
+    tui.until("Demo phone");
+    tui.send(b"\r");
+    tui.until("Demo debug");
+    tui.until_control("Run");
+    tui.send(b"\r");
+    tui.until("SESSION READY");
+    tui.send(b"o");
+    tui.until("history-line:099");
+    for saved in [false, true] {
+        tui.menu_click("Oldest output");
+        tui.until("history-line:000");
+        let (row, column) = tui
+            .screen
+            .screen()
+            .rows(0, 112)
+            .enumerate()
+            .find_map(|(row, line)| {
+                line.find("history-line:000")
+                    .map(|index| (row as u16, line[..index].chars().count() as u16))
+            })
+            .unwrap();
+        tui.mouse(0, column, row);
+        // A single edge event must keep scrolling after the pointer stops moving.
+        tui.mouse(32, column + 15, 26);
+        tui.until("history-line:030");
+        // Wheel input extends the same selection instead of clearing it.
+        for _ in 0..40 {
+            tui.mouse(65, column + 15, 26);
+        }
+        tui.until("history-line:099");
+        tui.raw_output.clear();
+        tui.send(format!("\x1b[<0;{};27m", column + 16).as_bytes());
+        tui.until("Copy requested.");
+        let mut expected = (0..100)
+            .map(|row| format!("history-line:{row:03}\n"))
+            .collect::<String>();
+        if saved {
+            expected.push_str("shortcut:q\n");
+        }
+        tui.until_clipboard_request(&expected);
+        tui.send(b"\x1b");
+        if !saved {
+            tui.until("r reload · R restart · Esc stop");
+            tui.send(b"q");
+            tui.until("ended (");
+            tui.click_text("1○ Demo debug");
+            tui.until("Last console ·");
+        }
+    }
+    tui.quit();
+}
+
+#[test]
+fn rejected_only_and_empty_catalogs_open_diagnostics_without_starting_children() {
+    for (raw, expected) in [
+        (
+            r#"{"configurations":[{"name":"Rejected startup","type":"PRIVATE_TYPE"}]}"#,
+            "Rejected startup",
+        ),
+        (r#"{"configurations":[]}"#, "Empty configurations array."),
+    ] {
+        let project = project();
+        std::fs::write(project.path().join(".vscode/launch.json"), raw).unwrap();
+        std::fs::write(project.path().join("fake-flutter"), "#!/bin/bash\nif [ \"$1\" = devices ]; then printf '[]\\n'; else printf 'UNEXPECTED RUN\\n' >> \"$FAKE_LOG\"; fi\n").unwrap();
+        let mut tui = Terminal::start(project.path(), &project.path().join("state.json"));
+        tui.until(expected);
+        tui.send(b"\r");
+        if !raw.contains("[]") {
+            tui.until("Diagnostics");
+            assert!(!tui.screen.screen().contents().contains("PRIVATE_TYPE"));
+            tui.send(b"\x1b");
+            tui.until("Why blocked?");
+            tui.click_control("Why blocked?");
+            tui.until("Diagnostics");
+            tui.send(b"\x1b");
+            tui.until("Why blocked?");
+        }
+        assert!(!project.path().join("session.log").exists());
+        tui.quit();
+    }
+}
+
+#[test]
+fn device_picker_opens_config_diagnostics_with_no_targets_at_minimum_size() {
+    let project = project();
+    std::fs::write(project.path().join("fake-flutter"), "#!/bin/bash\nif [ \"$1\" = devices ]; then printf '[]\\n'; else printf 'UNEXPECTED RUN\\n' >> \"$FAKE_LOG\"; fi\n").unwrap();
+    let mut tui = Terminal::start(project.path(), &project.path().join("state.json"));
+    tui.until("No devices yet.");
+    tui.master
+        .resize(PtySize {
+            rows: 12,
+            cols: 34,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    tui.screen.screen_mut().set_size(12, 34);
+    tui.send(b"d");
+    tui.until("Demo debug");
+    tui.send(b"i");
+    tui.until("Diagnostics");
+    tui.until("Select a target");
+    tui.send(b"\x1b[200~DO_NOT_SEND\x1b[201~");
+    tui.send(b"\r"); // dismisses the explanation; cannot launch.
+    tui.until("Demo debug");
+    assert!(!project.path().join("session.log").exists());
+    tui.quit();
+}
+
+#[test]
+fn displayed_blocked_enter_after_external_repair_explains_before_any_process_starts() {
+    let project = project();
+    let cwd = project.path().join("created-later");
+    std::fs::write(
+        project.path().join(".vscode/launch.json"),
+        serde_json::json!({"configurations":[
+            {"name":"External recovery","cwd":cwd}, {"name":"Ready sibling"}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("fake-flutter"),
+        r#"#!/bin/bash
+if [ "$1" = devices ]; then
+  printf '[{"id":"demo-device","name":"Demo phone","targetPlatform":"ios","isSupported":true}]\n'
+  exit 0
+fi
+printf 'spawn\n' >> "$FAKE_LOG"
+stty raw -echo
+printf 'SESSION READY\r\n'
+while :; do sleep 1; done
+"#,
+    )
+    .unwrap();
+    let mut tui = Terminal::start_with_refresh_interval(
+        project.path(),
+        &project.path().join("state.json"),
+        false,
+        3600,
+    );
+    tui.until("Demo phone");
+    tui.send(b"\r");
+    tui.until("Ready sibling");
+    tui.until_control("Run");
+    tui.send(b"u");
+    tui.until("blocked · cwd");
+    assert!(!tui.screen.screen().contents().contains("[Run]"));
+    std::fs::create_dir(&cwd).unwrap();
+    tui.send(b"\r");
+    tui.until("Diagnostics");
+    tui.until("Ready to run");
+    assert!(!project.path().join("session.log").exists());
+    tui.send(b"\r"); // explicit modal dismissal cannot launch
+    tui.until("External recovery");
+    assert!(!project.path().join("session.log").exists());
+    tui.send(b"\r"); // a later explicit Run uses fresh all-target preflight
+    tui.until("SESSION READY");
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("session.log")).unwrap(),
+        "spawn\n"
+    );
+    tui.quit();
+}
+
+#[test]
+fn diagnostics_reverse_immediately_after_keyboard_or_wheel_overscroll_and_resize() {
+    let project = project();
+    std::fs::write(project.path().join(".vscode/launch.json"), r#"{"configurations":[{"name":"Very long unsupported configuration 界 é","type":"unsupported"}],"compounds":[{}]}"#).unwrap();
+    std::fs::write(
+        project.path().join("fake-flutter"),
+        "#!/bin/bash\nprintf '[]\\n'\n",
+    )
+    .unwrap();
+    let mut tui = Terminal::start_with_refresh_interval(
+        project.path(),
+        &project.path().join("state.json"),
+        false,
+        3600,
+    );
+    tui.until("Very long unsupported");
+    tui.master
+        .resize(PtySize {
+            rows: 12,
+            cols: 34,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    tui.screen.screen_mut().set_size(12, 34);
+    tui.send(b"i");
+    tui.until("Diagnostics");
+    let settle = |tui: &mut Terminal| {
+        let deadline = Instant::now() + Duration::from_millis(150);
+        while Instant::now() < deadline {
+            tui.read();
+            thread::sleep(Duration::from_millis(5));
+        }
+    };
+    for wheel in [false, true] {
+        for _ in 0..50 {
+            if wheel {
+                tui.mouse(65, 2, 2);
+            } else {
+                tui.send(b"\x1b[B");
+            }
+        }
+        settle(&mut tui);
+        let bottom = tui.screen.screen().contents();
+        if wheel {
+            tui.mouse(64, 2, 2);
+        } else {
+            tui.send(b"\x1b[A");
+        }
+        settle(&mut tui);
+        assert_ne!(
+            tui.screen.screen().contents(),
+            bottom,
+            "one reverse event must immediately move the overlay"
+        );
+    }
+    tui.master
+        .resize(PtySize {
+            rows: 40,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    tui.screen.screen_mut().set_size(40, 120);
+    tui.until("Very long unsupported configuration");
+    settle(&mut tui);
+    let fitting = tui.screen.screen().contents();
+    tui.send(b"\x1b[B");
+    settle(&mut tui);
+    assert_eq!(
+        tui.screen.screen().contents(),
+        fitting,
+        "fitting content cannot overscroll"
+    );
+    tui.send(b"\x1b");
+    tui.until("Why blocked?");
+    tui.quit();
+}
+
+#[test]
+fn console_search_control_shortcut_is_delivered_and_review_isolates_input_from_explicit_process_actions()
+ {
+    let project = project();
+    let log_path = project.path().join("session.log");
+    let mut tui = Terminal::start_with_refresh_interval(
+        project.path(),
+        &project.path().join("state.json"),
+        false,
+        3600,
+    );
+    tui.until("Demo phone");
+    tui.send(b"\r");
+    tui.until_control("Run");
+    tui.send(b"\r");
+    tui.until("SESSION READY");
+    tui.send(&[0x13]); // Ctrl+s must survive real terminal flow control/raw-mode delivery.
+    tui.until("Snapshot");
+    tui.until("Search");
+    tui.send(b"SESSION");
+    tui.until("1/1");
+    tui.send(b"rR\x01\x05\x18\x1a");
+    tui.send(b"\x1b[200~q\x1b[201~");
+    tui.until("No matches");
+    tui.mouse(0, 5, 8);
+    tui.mouse(32, 30, 12);
+    tui.send(b"\x1b[<0;31;13m");
+    thread::sleep(Duration::from_millis(80));
+    tui.read();
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    assert!(!log.contains("key:"), "review input reached Flutter: {log}");
+    assert!(
+        !tui.raw_output.windows(5).any(|bytes| bytes == b"\x1b]52;"),
+        "review selection emitted a clipboard request"
+    );
+    tui.send(b"\x15SESSION\r");
+    tui.until("n/N matches");
+    tui.until("1/1");
+    tui.send(b"rR\x01\x05\x18");
+    thread::sleep(Duration::from_millis(80));
+    assert!(!std::fs::read_to_string(&log_path).unwrap().contains("key:"));
+    tui.menu_click("Hot reload");
+    tui.until("Hot reload requested");
+    tui.menu_click("Hot restart");
+    tui.until("Hot restart requested");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        if log.contains("key:r\n") && log.contains("key:R\n") {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(5));
+    }
+    tui.read();
+    assert!(tui.screen.screen().contents().contains("Snapshot"));
+    assert!(
+        !tui.screen.screen().contents().contains("shortcut:r"),
+        "process output replaced a frozen snapshot"
+    );
+    tui.menu_click("Refresh snapshot");
+    tui.until("1/1");
+    tui.menu_click("Snapshot source details");
+    tui.until("Frozen source details");
+    tui.send(b"\x1b");
+    tui.until("n/N matches");
+    tui.send(b"\x1b");
+    tui.until("Resumed live console");
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    assert_eq!(log.matches("key:r\n").count(), 1);
+    assert_eq!(log.matches("key:R\n").count(), 1);
+    assert!(!log.contains("key:q\n"));
+    tui.send(b"r");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while std::fs::read_to_string(&log_path)
+        .unwrap()
+        .matches("key:r\n")
+        .count()
+        != 2
+    {
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(5));
+    }
+    tui.send(&[0x13]);
+    tui.until("Snapshot");
+    tui.send(&[0x11]);
+    tui.until("Quit Flimru?");
+    tui.send(b"\r");
+    tui.until("Snapshot");
+    tui.quit();
+}
+
+#[test]
+fn console_search_frozen_output_is_quiet_during_real_child_flood_and_refresh_observes_new_history()
+{
+    let project = project();
+    std::fs::write(project.path().join("fake-flutter"),r#"#!/bin/bash
+if [ "$1" = devices ]; then printf '[{"id":"demo-device","name":"Demo phone","targetPlatform":"ios","isSupported":true}]\n'; exit 0; fi
+printf '%s' "$$" > "$FAKE_PID"
+stty raw -echo
+printf 'ERROR: FLOOD READY\r\n'
+( while :; do printf 'ERROR: flood heartbeat\r\n'; printf x >> "$FAKE_LOG"; sleep 0.002; done ) &
+while :; do IFS= read -rsn1 key || continue; [ "$key" = q ] && exit 0; done
+"#).unwrap();
+    let mut tui = Terminal::start_with_refresh_interval(
+        project.path(),
+        &project.path().join("state.json"),
+        false,
+        3600,
+    );
+    tui.until("Demo phone");
+    tui.send(b"\r");
+    tui.until_control("Run");
+    tui.send(b"\r");
+    tui.until("FLOOD READY");
+    tui.send(&[0x13]);
+    tui.until("Snapshot");
+    tui.until("rows · col");
+    tui.read();
+    let screen = tui.screen.screen().contents();
+    tui.raw_output.clear();
+    let before = std::fs::metadata(project.path().join("session.log"))
+        .unwrap()
+        .len();
+    thread::sleep(Duration::from_millis(220));
+    tui.read();
+    let after = std::fs::metadata(project.path().join("session.log"))
+        .unwrap()
+        .len();
+    assert!(after > before, "frozen UI stopped draining the owned child");
+    assert_eq!(tui.screen.screen().contents(), screen);
+    assert!(
+        tui.raw_output.len() < 128,
+        "frozen output generated redundant terminal draws: {} bytes",
+        tui.raw_output.len()
+    );
+    tui.send(b"\r");
+    tui.send(b"r");
+    tui.until("rows · col");
+    tui.send(b"/heartbeat");
+    tui.until("1/");
+    tui.send(b"\x1b");
+    tui.until("n/N matches");
+    tui.send(b"\x1b");
+    tui.until("Resumed live console");
+    tui.quit();
+}
+
+#[test]
+fn console_export_real_binary_saves_full_filtered_snapshot_and_isolates_modal_input() {
+    let project = project();
+    let log_path = project.path().join("session.log");
+    let saved_path = project.path().join("explicit-retained-log.txt");
+    let mut tui = Terminal::start_with_refresh_interval(
+        project.path(),
+        &project.path().join("state.json"),
+        false,
+        3600,
+    );
+    tui.until("Demo phone");
+    tui.send(b"\r");
+    tui.until_control("Run");
+    tui.send(b"\r");
+    tui.until("SESSION READY");
+    tui.send(b"c");
+    tui.until("INFO: connected");
+    tui.send(&[0x13]);
+    tui.until("Search");
+    tui.send(b"SESSION\r");
+    tui.until("1/1");
+    tui.menu_click("Console severity: Errors");
+    tui.until("No matches");
+    tui.menu_click("Export retained console log");
+    tui.until("Export retained console log");
+    tui.until("Ready");
+    assert!(!project.path().join("flimru-logs").exists());
+    assert!(!saved_path.exists());
+    tui.send(b"rRq\x05\x10"); // Plain text plus covered selection/menu shortcuts.
+    tui.mouse(0, 0, 0); // Background input belongs to the export modal.
+    tui.send(&[0x15]);
+    tui.send(format!("\x1b[200~{}\x1b[201~", saved_path.display()).as_bytes());
+    tui.send(b"\r");
+    tui.until("Saved console log");
+    let exported = std::fs::read_to_string(&saved_path).unwrap();
+    let (header, retained) = exported.split_once("\n\n").unwrap();
+    assert!(header.contains("Device: Demo phone"));
+    assert!(header.contains("Configuration: Demo debug"));
+    assert!(!header.contains("--dart-define"));
+    assert!(retained.contains("SESSION READY"));
+    assert!(
+        retained.contains("INFO: connected"),
+        "query/severity-hidden lines must be exported"
+    );
+    assert!(retained.contains("SEVERE: failed"));
+    assert!(!exported.contains('\x1b'));
+    let child_input = std::fs::read_to_string(&log_path).unwrap();
+    assert_eq!(child_input.matches("key:c\n").count(), 1);
+    for key in ["r", "R", "q"] {
+        assert!(!child_input.contains(&format!("key:{key}\n")));
+    }
+    tui.menu_click("Operation details");
+    tui.until("Latest operation outcome");
+    tui.until("explicit-retained-log");
+    tui.until("bytes).");
+    tui.send(b"\x1b");
+    tui.until("Snapshot");
+    tui.quit();
+}
+
+#[path = "support/productivity_workflow_pty.rs"]
+mod productivity_workflow_pty;

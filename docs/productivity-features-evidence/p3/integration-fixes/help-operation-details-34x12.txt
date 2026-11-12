@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+  ┌ Keyboard and mouse ────────┐t 
+ 1│Latest operation outcome    │ ×
+┌ │↑↓ PgUp/PgDn scroll         │─┐
+│L│Home / End: first / last    │ │
+│n│Esc / Enter / i: back       │ │
+│H│Live message; not snapshot  │;│
+│ │Ctrl+p menu · Esc back      │ │
+│ │Process controls: Actions   │ │
+│ │Ctrl+q quit · any key closes│ │
+│↑└────────────────────────────┘ │
+└────────────────────────────────┘

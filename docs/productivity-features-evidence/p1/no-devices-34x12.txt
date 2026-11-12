@@ -1,0 +1,12 @@
+ Flimru / Example        0 devices
+  Next      ›│ Menu   Help   Quit 
+ Devices  › Config  › Console     
+┌ Devices (0) ───────────────────┐
+│                                │
+│  No devices yet.               │
+│                                │
+└────────────────────────────────┘
+                        [Filter /]
+                                  
+ ↑↓ select · Enter next           
+ d diagnostics · Tab actions      

@@ -1,0 +1,12 @@
+ Flimru / Example        3 devices
+ ┌ Diagnostics ─────────────────┐ 
+ │                              │ 
+┌│Many warnings: unsupported    │┐
+││field 'unknown15' is ignored. ││
+││                              ││
+││24 more warnings; use --check ││
+└│for full output.              │┘
+ │                              │]
+ │↑↓ scroll · Esc close         │ 
+ └──────────────────────────────┘ 
+ u unavailable · / filter · r relo

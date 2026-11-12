@@ -2,8 +2,8 @@
 
 Run `make setup-tools` once to install the pinned dependency audit tool. Rust's
 `rustfmt` and `clippy` components must also be installed. Run `make check` before
-finishing a change: it checks formatting, all-target Clippy warnings, tests, and
-the current RustSec advisory database. Dependency warnings fail the check;
+finishing a change: it checks formatting, all-target Clippy warnings, Rust and
+packaging tests, and the current RustSec advisory database. Dependency warnings fail the check;
 investigate them rather than adding a blanket exception. Builds and tests use
 `Cargo.lock` without changing dependency resolution.
 
@@ -38,3 +38,6 @@ of runtime safety: review the change and fix findings before calling it done.
 The optional real Dart VM test requires `FLUTTER_TUI_TEST_DART`; it uses an
 isolated fixture and does not qualify a physical-device run of a Flutter app.
 All checks run locally; GitHub Actions is disabled for this repository.
+
+Release preparation also uses Python 3.9+ (standard library only). See
+[the release guide](docs/releasing.md); preparation does not publish anything.

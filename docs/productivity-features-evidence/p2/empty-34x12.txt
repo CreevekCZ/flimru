@@ -1,0 +1,12 @@
+ Flimru / Example        0 devices
+  Select a… ›│ Menu   Help   Quit 
+ Devices  › Config  › Console     
+┌ Configs · 0 ready / 0 blocked ─┐
+│                                │
+│  Empty configurations array.   │
+│                                │
+└────────────────────────────────┘
+  Unrelated session     [Filter /]
+status remains                    
+ Select a configuration to run    
+ ↑↓ choose · u unavailable · / fil

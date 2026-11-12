@@ -1,0 +1,12 @@
+ Flimru · Config error   3 devices
+  Run       ›│ Menu   Help   Quit 
+ Devices  › Config  › Console     
+┌ Configs · 2 ready / 0 blocked ─┐
+│›  Stable 界  é                  │
+│   ready                        │
+│                                │
+└────────────────────────────────┘
+  / Stable▏  Enter [Apply] [Clear]
+applies · Esc                     
+ Enter run · i explain · Esc back 
+ u unavailable · / filter · r relo

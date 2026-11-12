@@ -1,0 +1,40 @@
+ Flimru / T                                                                                                    1 running
+  Stop   Add session   Speed …   Reconnect                                                      │ Actions   Help   Quit 
+ 1● first · Launch-time debug             2○ android-device · Frozen original  ×  3○ android-device · Frozen original  ×
+┌ Launch-time debug · first ───────────────────────────────────────────────────────────────────────────────────────────┐
+│ready                                                                                                                █│
+│                                                                                                                     █│
+│                          ┌ Actions · Ctrl+p / Esc close ──────────────────────────────────┐                         █│
+│                          │  Add session                                           Ctrl+n  │                         █│
+│                          │  Device picker                                         Ctrl+d  │                         █│
+│                          │  Hot reload                                                 r  │                         █│
+│                          │  Hot restart                                                R  │                         █│
+│                          │  Flutter help                                               h  │                         █│
+│                          │  Open DevTools                                              v  │                         █│
+│                          │  Animation speed                                       Ctrl+a  │                         █│
+│                          │  Reconnect animation control                                   │                         █│
+│                          │  Oldest output                                           Home  │                         █│
+│                          │  Follow output                                            End  │                         █│
+│                          │  Stop session                                         q / Esc  │                         █│
+│                          │  Export retained console log                                   │                         █│
+│                          │  Search console                                        Ctrl+s  │                         █│
+│                          │  Select text                                           Ctrl+e  │                         █│
+│                          │  Reload all eligible (1)                                       │                         █│
+│                          │› Restart all eligible (1)                                      │                         █│
+│                          │  Previous console                                      Ctrl+b  │                         █│
+│                          │  Next console                                          Ctrl+f  │                         █│
+│                          │  Console 1: first · Launch-time debug (running)                │                         █│
+│                          │  Console 2: android-device · Frozen original (ended)           │                         █│
+│                          │  Console 3: android-device · Frozen original (ended)           │                         █│
+│                          │  Stop all sessions                                     Ctrl+x  │                         █│
+│                          │  Launcher help                                                 │                         █│
+│                          │  Quit launcher                                         Ctrl+q  │                         █│
+│                          │Hot restart · input requests                                    │                         █│
+│                          └────────────────────────────────────────────────────────────────┘                         █│
+│                                                                                                                     █│
+│                                                                                                                     █│
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+  Device discovery failed: Could not start Flutter device discovery: No such file or directory (os error 2). Press r to 
+retry. · Animations: waiting                                                                                            
+ r reload · R restart · Esc stop                                                                                        
+ Drag to copy · Ctrl+g actions                                                                                          

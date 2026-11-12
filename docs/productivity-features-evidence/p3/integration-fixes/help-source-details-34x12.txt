@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+  ┌ Keyboard and mouse ────────┐t 
+ 1│Frozen source details       │ ×
+┌ │↑↓ PgUp/PgDn scroll         │─┐
+│F│Home / End: first / last    │ │
+│L│Esc / Enter / i: back       │ │
+│D│Query and position preserved│ │
+│C│Ctrl+p menu · Ctrl+g top    │ │
+│O│Process controls: Actions   │ │
+│C│Ctrl+q quit · any key closes│ │
+│↑└────────────────────────────┘ │
+└────────────────────────────────┘

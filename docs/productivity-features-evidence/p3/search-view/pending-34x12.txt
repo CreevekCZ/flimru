@@ -1,0 +1,12 @@
+┌ Snapshot · Pixel 界  · developme┐
+│Search ▸ type to search         │
+│All · Capturing…                │
+│Capturing retained console…     │
+│                                │
+│                                │
+│                                │
+│                                │
+│                                │
+│Enter read · Esc stop editing   │
+│Snapshot · live output continues│
+└────────────────────────────────┘

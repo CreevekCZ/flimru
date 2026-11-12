@@ -1,0 +1,24 @@
+LIVE FLUTTER · active tabs keep emitting output                                 
+ ┌ Hot restart delivery report ───────────────────────────────────────────────┐ 
+ │ Requested/queued: 2                                                        │ 
+ │ Skipped: 4 · Failed: 2                                                     │ 
+ │ Flutter completion is unconfirmed.                                         │ 
+ │ Skipped: session is stopping                                               │ 
+ │                                                                            │ 
+ │ Device 4 界  é 🧑‍💻                                                            │ 
+ │ Skipped: profile runs are excluded from batch hot commands                 │ 
+ │                                                                            │ 
+ │ Device 5 界  é 🧑‍💻                                                            │ 
+ │ Failed: session could not queue the input request                          │ 
+ │                                                                            │ 
+ │ Device 6 界  é 🧑‍💻                                                            │ 
+ │ Failed: session is no longer available for input                           │ 
+ │                                                                            │ 
+ │ Device 7 界  é 🧑‍💻                                                            │ 
+ │ Skipped: custom runner hot-command support is unknown                      │ 
+ │                                                                            │ 
+ │ Device 8 界  é 🧑‍💻                                                            │ 
+ │ Requested/queued                                                           │ 
+ │ [Close] Enter/Esc · ↑↓ PgUp/PgDn · 10-25/25                                │ 
+ └────────────────────────────────────────────────────────────────────────────┘ 
+                                                                                

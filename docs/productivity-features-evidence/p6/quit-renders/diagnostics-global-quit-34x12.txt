@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+ ┌ Diagnostics ─────────────────┐ 
+ │┌ Quit Flimru? ──────────────┐│ 
+┌││ Close the launcher?        ││┐
+│││                            │││
+│││                            │││
+│││                            │││
+└││   [ Quit ]   [ Cancel ]    ││┘
+ ││ y quit · Enter/Esc cancel  ││]
+ │└────────────────────────────┘│ 
+ └──────────────────────────────┘ 
+ u unavailable · i details · / fil

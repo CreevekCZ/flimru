@@ -1,0 +1,621 @@
+--- a/src/console_search.rs
++++ b/src/console_search.rs
+@@ -150,6 +150,14 @@
+         )));
+         self.source_scroll = 0;
+     }
++    /// Deliberate page/tab actions leave the outcome without discarding a
++    /// same-source frozen review, query, filter or reading position.
++    pub fn dismiss_operation_details(&mut self) {
++        if self.showing_operation_details() {
++            self.details = None;
++            self.source_scroll = 0;
++        }
++    }
+     /// Explicit Actions entry points work in either editing or reading mode.
+     pub fn edit_query(&mut self) {
+         if self.is_active() {
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1308,6 +1308,20 @@
+         }
+     }
+ 
++    fn cycle_run(&mut self, previous: bool) {
++        if !self.runs.is_empty() {
++            let count = self.runs.len();
++            let index = if previous {
++                (self.active_run + count - 1) % count
++            } else if self.page == Page::Console {
++                (self.active_run + 1) % count
++            } else {
++                self.active_run
++            };
++            self.switch_run(index);
++        }
++    }
++
+     fn begin_add(&mut self) {
+         if self.running_count() == runs::MAX_RUNS {
+             self.status =
+@@ -2340,17 +2354,7 @@
+             shortcut,
+             Some(Shortcut::PreviousConsole | Shortcut::NextConsole)
+         ) {
+-            if !self.runs.is_empty() {
+-                let count = self.runs.len();
+-                let index = if shortcut == Some(Shortcut::PreviousConsole) {
+-                    (self.active_run + count - 1) % count
+-                } else if self.page == Page::Console {
+-                    (self.active_run + 1) % count
+-                } else {
+-                    self.active_run
+-                };
+-                self.switch_run(index);
+-            }
++            self.cycle_run(shortcut == Some(Shortcut::PreviousConsole));
+             return Ok(false);
+         }
+         if shortcut == Some(Shortcut::Devices) {
+@@ -3036,6 +3040,35 @@
+ 
+     fn dispatch(&mut self, action: ui::MouseAction, area: ratatui::layout::Rect) -> Result<bool> {
+         use ui::MouseAction;
++        if matches!(
++            action,
++            MouseAction::PreviousConsole
++                | MouseAction::NextConsole
++                | MouseAction::Devices
++                | MouseAction::AddSession
++                | MouseAction::SwitchConsole(_)
++                | MouseAction::CloseConsole(_)
++                | MouseAction::CloseLastLog
++                | MouseAction::LastLog
++                | MouseAction::SelectDevice(_)
++                | MouseAction::SelectConfig(_)
++                | MouseAction::ToggleDevice(_)
++                | MouseAction::ToggleFavorite(_)
++                | MouseAction::ToggleMulti
++                | MouseAction::NextOrRun
++                | MouseAction::Back
++                | MouseAction::Refresh
++                | MouseAction::ReloadConfigs
++                | MouseAction::ConfigurationDiagnostics
++                | MouseAction::ToggleUnavailable
++                | MouseAction::ExplainConfiguration
++                | MouseAction::Filter
++                | MouseAction::ApplyFilter
++                | MouseAction::ClearFilter
++        ) && let Some(view) = &mut self.review
++        {
++            view.dismiss_operation_details();
++        }
+         let key = match action {
+             MouseAction::FocusToolbar(index) => {
+                 ui::focus_toolbar_item(self, index);
+@@ -3048,16 +3081,21 @@
+                 return Ok(false);
+             }
+             MouseAction::PreviousConsole => {
+-                return self.key(Shortcut::PreviousConsole.key(), area.width, area.height);
++                self.cycle_run(true);
++                return Ok(false);
+             }
+             MouseAction::NextConsole => {
+-                return self.key(Shortcut::NextConsole.key(), area.width, area.height);
++                self.cycle_run(false);
++                return Ok(false);
+             }
+             MouseAction::Devices => {
+-                return self.key(Shortcut::Devices.key(), area.width, area.height);
++                self.retain_consoles |= !self.runs.is_empty();
++                self.back();
++                return Ok(false);
+             }
+             MouseAction::AddSession => {
+-                return self.key(Shortcut::AddSession.key(), area.width, area.height);
++                self.begin_add();
++                return Ok(false);
+             }
+             MouseAction::StopAll => {
+                 self.stop_all();
+--- a/src/selection.rs
++++ b/src/selection.rs
+@@ -48,7 +48,7 @@
+             })
+             .collect();
+         let wrapped = (start_row..start_row + area.height)
+-            .map(|row| area.width == cols && screen.row_wrapped(row))
++            .map(|row| Self::row_wraps(screen, row, area.width))
+             .collect();
+         let mut selection = Self {
+             area,
+@@ -100,7 +100,12 @@
+             .x
+             .saturating_sub(self.area.x)
+             .min(self.area.width.saturating_sub(1));
+-        if self.rows[usize::from(row)][usize::from(col)].is_wide_continuation() {
++        // Retained rows keep their original width after a terminal resize.
++        // Missing historical tail cells are blank, not indexable cells.
++        if self.rows[usize::from(row)]
++            .get(usize::from(col))
++            .is_some_and(vt100::Cell::is_wide_continuation)
++        {
+             col = col.saturating_sub(1);
+         }
+         (self.top + usize::from(row), col)
+@@ -157,9 +162,7 @@
+             })
+             .collect();
+         self.wrapped = (start..start + self.area.height)
+-            .map(|row| {
+-                self.area.width == history.screen.size().1 && history.screen.row_wrapped(row)
+-            })
++            .map(|row| Self::row_wraps(&history.screen, row, self.area.width))
+             .collect();
+         self.update(self.pointer);
+         true
+@@ -191,6 +194,7 @@
+         let row = self
+             .end
+             .0
++            .saturating_sub(self.top)
+             .saturating_add_signed(isize::from(dy))
+             .min(usize::from(self.area.height - 1));
+         let col = self
+@@ -198,7 +202,11 @@
+             .1
+             .saturating_add_signed(dx)
+             .min(self.area.width - 1);
+-        let col = if dx > 0 && self.rows[row][usize::from(col)].is_wide_continuation() {
++        let col = if dx > 0
++            && self.rows[row]
++                .get(usize::from(col))
++                .is_some_and(vt100::Cell::is_wide_continuation)
++        {
+             col.saturating_add(1).min(self.area.width - 1)
+         } else {
+             col
+@@ -239,6 +247,12 @@
+         let (start, end) = (self.anchor.min(self.end), self.anchor.max(self.end));
+         let point = (self.top + usize::from(row), col);
+         point >= start && point <= end
++    }
++
++    fn row_wraps(screen: &vt100::Screen, row: u16, width: u16) -> bool {
++        // A historic wrap joins only if the captured width includes the whole
++        // original row. Shrinking a wider retained row must not join its cut tail.
++        screen.row_wrapped(row) && screen.cell(row, width).is_none()
+     }
+ 
+     fn text(&mut self) -> String {
+@@ -256,7 +270,7 @@
+                     (0..self.area.width)
+                         .filter_map(|col| screen.cell(local, col))
+                         .collect::<Vec<_>>(),
+-                    self.area.width == screen.size().1 && screen.row_wrapped(local),
++                    Self::row_wraps(screen, local, self.area.width),
+                 )
+             } else {
+                 (self.rows[row].iter().collect(), self.wrapped[row])
+@@ -271,7 +285,13 @@
+                 self.area.width - 1
+             };
+             let mut line = String::new();
+-            for cell in &cells[usize::from(first)..=usize::from(last)] {
++            // Do not materialize virtual padding after a short historic row:
++            // it would insert spaces in old soft-wrapped lines after growth.
++            for cell in cells
++                .iter()
++                .skip(usize::from(first))
++                .take(usize::from(last - first) + 1)
++            {
+                 if cell.is_wide_continuation() {
+                     continue;
+                 }
+@@ -321,6 +341,108 @@
+         parser
+     }
+ 
++    fn resized_history(old_width: u16, new_width: u16) -> vt100::Parser {
++        let mut parser = vt100::Parser::new(4, old_width, 100);
++        for row in 0..20 {
++            parser.process(format!("row:{row:02}\r\n").as_bytes());
++        }
++        parser.screen_mut().set_size(4, new_width);
++        parser.screen_mut().set_scrollback(usize::MAX);
++        parser
++    }
++
++    #[test]
++    fn grown_history_tail_supports_mouse_keyboard_scroll_and_copy_without_padding() {
++        // Exact review reproduction: retained rows have 40 cells at an 80-column size.
++        let parser = resized_history(40, 80);
++        assert!(parser.screen().cell(0, 60).is_none());
++        let area = Rect::new(0, 0, 80, 4);
++        let mut selection =
++            Selection::capture_history(parser.screen(), 0, area, (60, 0).into()).unwrap();
++        assert_eq!(
++            selection.finish((79, 1).into()).as_deref(),
++            Some("\nrow:01")
++        );
++        assert!(selection.contains(0, 60) && selection.contains(0, 79));
++        assert!(selection.scroll(10));
++        let copied = selection.selected_text().unwrap();
++        assert!(copied.starts_with("\nrow:01\n"), "{copied:?}");
++        assert!(copied.ends_with("row:11"), "{copied:?}");
++        assert!(!copied.contains("  "));
++        selection.enable_keyboard();
++        // The endpoint is absolute history row 11, but keyboard movement is
++        // relative to the current viewport (history rows 10..13).
++        selection.move_end(-19, 0, false);
++        assert_eq!(selection.end, (11, 60));
++        assert!(selection.selected_text().is_none());
++        selection.move_end(i16::MIN, 0, true);
++        assert_eq!(selection.selected_text().as_deref(), Some("row:11"));
++        selection.move_end(i16::MAX, 1, true);
++        assert_eq!(selection.selected_text().as_deref(), Some("\nrow:12"));
++        assert!(selection.scroll(isize::MIN));
++        assert!(selection.scroll(isize::MAX));
++        selection.update((79, 3).into());
++        let _ = selection.selected_text();
++        // Non-history capture has the same short cached rows and safe tail rules.
++        let mut plain = Selection::capture(parser.screen(), 0, area, (60, 0).into()).unwrap();
++        plain.enable_keyboard();
++        plain.move_end(19, 0, true);
++        assert!(plain.selected_text().is_none());
++        assert_eq!(plain.finish((5, 1).into()).as_deref(), Some("\nrow:01"));
++    }
++
++    #[test]
++    fn grown_history_preserves_old_soft_wrap_spaces_wide_and_combining_cells() {
++        let original = format!("{}界e\u{301}cd  ef", "a".repeat(35));
++        let mut parser = vt100::Parser::new(4, 40, 100);
++        parser.process(original.as_bytes());
++        for _ in 0..8 {
++            parser.process(b"\r\nnext");
++        }
++        parser.screen_mut().set_size(4, 80);
++        parser.screen_mut().set_scrollback(usize::MAX);
++        assert!(parser.screen().row_wrapped(0));
++        assert!(parser.screen().cell(0, 60).is_none());
++        let mut selection =
++            Selection::capture_history(parser.screen(), 0, Rect::new(0, 0, 80, 4), (0, 0).into())
++                .unwrap();
++        assert_eq!(
++            selection.finish((3, 1).into()).as_deref(),
++            Some(original.as_str())
++        );
++        // Starting on a wide continuation still includes the complete scalar
++        // and the following combining mark after the historical resize.
++        let mut wide =
++            Selection::capture_history(parser.screen(), 0, Rect::new(0, 0, 80, 4), (36, 0).into())
++                .unwrap();
++        assert_eq!(wide.finish((37, 0).into()).as_deref(), Some("界e\u{301}"));
++    }
++
++    #[test]
++    fn shrunk_history_clips_rows_without_joining_truncated_soft_wraps() {
++        let mut parser = vt100::Parser::new(4, 80, 100);
++        parser.process(format!("{}{}", "a".repeat(80), "b".repeat(80)).as_bytes());
++        for _ in 0..8 {
++            parser.process(b"\r\nnext");
++        }
++        parser.screen_mut().set_size(4, 40);
++        parser.screen_mut().set_scrollback(usize::MAX);
++        assert!(parser.screen().cell(0, 60).is_some());
++        let mut selection =
++            Selection::capture_history(parser.screen(), 0, Rect::new(0, 0, 40, 4), (0, 0).into())
++                .unwrap();
++        assert_eq!(
++            selection.finish((39, 1).into()).unwrap(),
++            format!("{}\n{}", "a".repeat(40), "b".repeat(40))
++        );
++        assert!(selection.scroll(3));
++        selection.enable_keyboard();
++        selection.move_end(i16::MAX, 0, true);
++        selection.move_end(i16::MIN, -1, true);
++        let _ = selection.selected_text();
++        assert!(selection.rows().all(|row| row.len() <= 40));
++    }
++
+     #[test]
+     fn selection_crosses_history_in_both_directions_without_losing_its_anchor() {
+         let mut parser = history_fixture();
+--- a/tests/console_search_ui.rs
++++ b/tests/console_search_ui.rs
+@@ -1134,3 +1134,37 @@
+         .unwrap();
+     assert!(terminal.backend().cursor_visible());
+ }
++
++#[test]
++fn dismissing_operation_details_preserves_review_and_leaves_source_details_alone() {
++    let lines = (0..80)
++        .map(|index| format!("ERROR needle {index:02}\r\n"))
++        .collect::<String>();
++    let mut view = view(&lines);
++    view.set_query("needle");
++    view.set_filter(SeverityFilter::Errors);
++    wait(&mut view);
++    view.handle_event(&key(KeyCode::Enter));
++    draw(&mut view, 80, 24, Rect::new(0, 3, 80, 21));
++    view.handle_event(&key(KeyCode::End));
++    let snapshot = view.snapshot().unwrap();
++    let offsets = view.offsets();
++    let current = view.current_match();
++    view.show_operation_details("retained operation outcome");
++    view.dismiss_operation_details();
++    assert!(!view.showing_operation_details());
++    assert!(view.is_active());
++    assert_eq!(view.query(), "needle");
++    assert_eq!(view.filter(), SeverityFilter::Errors);
++    assert_eq!(view.offsets(), offsets);
++    assert_eq!(view.current_match(), current);
++    assert!(Arc::ptr_eq(&snapshot, &view.snapshot().unwrap()));
++    view.show_source_details();
++    view.dismiss_operation_details();
++    assert!(view.showing_source_details());
++    view.close();
++    view.show_operation_details("after resume");
++    view.dismiss_operation_details();
++    assert!(!view.showing_operation_details() && !view.is_active());
++    assert!(view.source().is_none());
++}
+--- a/tests/support/productivity_workflow_app.rs
++++ b/tests/support/productivity_workflow_app.rs
+@@ -320,3 +320,254 @@
+     svg.push_str("</svg>");
+     std::fs::write(directory.join(format!("{stem}.svg")), svg).unwrap();
+ }
++
++const NAV_AREA: Rect = Rect::new(0, 0, 80, 24);
++
++fn settle_review(app: &mut App) {
++    let deadline = Instant::now() + Duration::from_secs(5);
++    while app.review.as_ref().is_some_and(|view| view.is_pending()) {
++        app.tick().unwrap();
++        assert!(Instant::now() < deadline);
++        std::thread::sleep(Duration::from_millis(1));
++    }
++    assert!(app.review.as_ref().unwrap().error().is_none());
++}
++
++fn navigation_fixture(reviewed: bool) -> App {
++    let mut app = crate::tests::app();
++    app.page = Page::Console;
++    for name in ["Original", "Destination"] {
++        let mut run =
++            runs::Run::failed(app.devices[0].clone(), name.into(), "ended".into(), 24, 80);
++        let mut parser = vt100::Parser::new(24, 80, 100);
++        for index in 0..80 {
++            parser.process(format!("ERROR: needle {name} {index:02}\r\n").as_bytes());
++        }
++        parser.screen_mut().set_scrollback(usize::MAX);
++        run.scrollback_len = parser.screen().scrollback();
++        parser.screen_mut().set_scrollback(0);
++        run.history_capacity = 100;
++        run.console = Some(parser);
++        app.runs.push(run);
++    }
++    if reviewed {
++        app.search_console();
++        settle_review(&mut app);
++        app.review.as_mut().unwrap().set_query("needle");
++        app.review
++            .as_mut()
++            .unwrap()
++            .set_filter(flimru::console_review::SeverityFilter::Errors);
++        settle_review(&mut app);
++        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 80, 24)
++            .unwrap();
++        render(&mut app, NAV_AREA);
++        app.key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE), 80, 24)
++            .unwrap();
++        assert!(app.review.as_ref().unwrap().offsets().0 > 0);
++    }
++    app.report_operation("Retained operation result".into());
++    app.activate(ui::MouseAction::OperationDetails, NAV_AREA)
++        .unwrap();
++    assert!(app.showing_operation_details());
++    app
++}
++
++fn menu_action(app: &mut App, action: ui::MouseAction) {
++    assert!(!app.key(Shortcut::Actions.key(), 80, 24).unwrap());
++    assert!(app.actions_open);
++    app.action_index = ui::available_actions(app)
++        .iter()
++        .position(|item| item.action == action)
++        .unwrap();
++    render(app, NAV_AREA);
++    assert!(
++        !app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 80, 24)
++            .unwrap()
++    );
++    assert!(!app.actions_open);
++}
++
++#[test]
++fn explicit_actions_navigate_from_details_only_and_details_over_review() {
++    for reviewed in [false, true] {
++        for action in [
++            ui::MouseAction::Devices,
++            ui::MouseAction::AddSession,
++            ui::MouseAction::PreviousConsole,
++            ui::MouseAction::NextConsole,
++            ui::MouseAction::SwitchConsole(1),
++            ui::MouseAction::CloseConsole(0),
++        ] {
++            let mut app = navigation_fixture(reviewed);
++            let initial = render(&mut app, NAV_AREA);
++            let destination_id = app.runs[1].id;
++            menu_action(&mut app, action);
++            assert!(!app.showing_operation_details(), "{action:?}");
++            assert!(
++                !app.reviewing(),
++                "departed source retained review: {action:?}"
++            );
++            match action {
++                ui::MouseAction::Devices | ui::MouseAction::AddSession => {
++                    assert_eq!(app.page, Page::Devices);
++                    assert_eq!(app.runs.len(), 2);
++                    if action == ui::MouseAction::AddSession {
++                        assert!(app.status.starts_with("Add session"));
++                    }
++                }
++                _ => {
++                    assert_eq!(app.page, Page::Console);
++                    assert_eq!(app.runs[app.active_run].id, destination_id);
++                    assert_eq!(
++                        app.runs.len(),
++                        if action == ui::MouseAction::CloseConsole(0) {
++                            1
++                        } else {
++                            2
++                        }
++                    );
++                }
++            }
++            assert_ne!(render(&mut app, NAV_AREA), initial, "{action:?}");
++        }
++    }
++}
++
++#[test]
++fn same_source_explicit_navigation_dismisses_only_details_and_preserves_frozen_review() {
++    for close_other in [false, true] {
++        let mut app = navigation_fixture(true);
++        let view = app.review.as_ref().unwrap();
++        let snapshot = view.snapshot().unwrap();
++        let offsets = view.offsets();
++        let current = view.current_match();
++        if close_other {
++            app.activate(ui::MouseAction::CloseConsole(1), NAV_AREA)
++                .unwrap();
++            assert_eq!(app.runs.len(), 1);
++        } else {
++            menu_action(&mut app, ui::MouseAction::SwitchConsole(0));
++        }
++        assert!(app.reviewing() && !app.showing_operation_details());
++        let view = app.review.as_ref().unwrap();
++        assert_eq!(view.query(), "needle");
++        assert_eq!(
++            view.filter(),
++            flimru::console_review::SeverityFilter::Errors
++        );
++        assert_eq!(view.offsets(), offsets);
++        assert_eq!(view.current_match(), current);
++        assert!(Arc::ptr_eq(&snapshot, &view.snapshot().unwrap()));
++        let screen = text(&render(&mut app, NAV_AREA));
++        assert!(!screen.contains("Latest operation outcome"));
++        assert!(screen.contains("needle Original"));
++    }
++}
++
++#[test]
++fn ordinary_navigation_keys_and_overlay_cancellation_keep_operation_details_owned() {
++    for reviewed in [false, true] {
++        let mut app = navigation_fixture(reviewed);
++        let initial = render(&mut app, NAV_AREA);
++        for shortcut in [
++            Shortcut::Devices,
++            Shortcut::AddSession,
++            Shortcut::PreviousConsole,
++            Shortcut::NextConsole,
++            Shortcut::CloseSession,
++        ] {
++            app.key(shortcut.key(), 80, 24).unwrap();
++            assert!(app.showing_operation_details());
++            assert_eq!(app.page, Page::Console);
++            assert_eq!(app.active_run, 0);
++            assert_eq!(app.runs.len(), 2);
++        }
++        app.key(Shortcut::Actions.key(), 80, 24).unwrap();
++        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 80, 24)
++            .unwrap();
++        assert!(app.showing_operation_details() && !app.actions_open);
++        menu_action(&mut app, ui::MouseAction::Help);
++        assert!(app.showing_operation_details() && app.help);
++        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 80, 24)
++            .unwrap();
++        assert!(app.showing_operation_details() && !app.help);
++        menu_action(&mut app, ui::MouseAction::Quit);
++        assert!(app.showing_operation_details() && app.quit_confirmation);
++        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 80, 24)
++            .unwrap();
++        assert!(app.showing_operation_details() && !app.quit_confirmation);
++        assert_eq!(render(&mut app, NAV_AREA), initial);
++    }
++}
++
++#[test]
++fn explicit_picker_actions_leave_details_and_execute_their_visible_command() {
++    for action in [
++        ui::MouseAction::ToggleMulti,
++        ui::MouseAction::ToggleFavorite(0),
++        ui::MouseAction::NextOrRun,
++        ui::MouseAction::Refresh,
++    ] {
++        let mut app = crate::tests::app();
++        if action == ui::MouseAction::Refresh {
++            while !matches!(
++                app.discovery
++                    .events
++                    .recv_timeout(Duration::from_secs(2))
++                    .unwrap(),
++                DiscoveryEvent::Finished(_)
++            ) {}
++        }
++        app.report_operation("Earlier operation on a different page".into());
++        app.activate(ui::MouseAction::OperationDetails, NAV_AREA)
++            .unwrap();
++        menu_action(&mut app, action);
++        assert!(!app.showing_operation_details());
++        match action {
++            ui::MouseAction::ToggleMulti => assert!(app.multi),
++            ui::MouseAction::ToggleFavorite(_) => assert!(app.status.contains("favorites.")),
++            ui::MouseAction::NextOrRun => assert_eq!(app.page, Page::Configs),
++            ui::MouseAction::Refresh => {
++                assert!(matches!(
++                    app.discovery
++                        .events
++                        .recv_timeout(Duration::from_secs(2))
++                        .unwrap(),
++                    DiscoveryEvent::Started
++                ));
++                assert!(matches!(
++                    app.discovery
++                        .events
++                        .recv_timeout(Duration::from_secs(2))
++                        .unwrap(),
++                    DiscoveryEvent::Finished(_)
++                ));
++            }
++            _ => unreachable!(),
++        }
++        assert!(!text(&render(&mut app, NAV_AREA)).contains("Latest operation outcome"));
++    }
++    for action in [
++        ui::MouseAction::ToggleUnavailable,
++        ui::MouseAction::ExplainConfiguration,
++        ui::MouseAction::Back,
++    ] {
++        let mut app = crate::tests::app();
++        app.page = Page::Configs;
++        app.selected_device = Some(app.devices[0].clone());
++        app.settle_availability();
++        app.report_operation("Earlier operation on a different page".into());
++        app.activate(ui::MouseAction::OperationDetails, NAV_AREA)
++            .unwrap();
++        menu_action(&mut app, action);
++        assert!(!app.showing_operation_details());
++        match action {
++            ui::MouseAction::ToggleUnavailable => assert!(app.show_unavailable),
++            ui::MouseAction::ExplainConfiguration => assert!(app.diagnostics_open),
++            ui::MouseAction::Back => assert_eq!(app.page, Page::Devices),
++            _ => unreachable!(),
++        }
++        assert!(!text(&render(&mut app, NAV_AREA)).contains("Latest operation outcome"));
++    }
++}

@@ -1,0 +1,152 @@
+--- p3-built/src/main.rs
++++ p3-simplified/src/main.rs
+@@ -128,6 +128,7 @@
+     shown
+ }
+ 
++// Keep one extra character so SearchView can detect and mark shortened metadata.
+ fn source_label(text: &str, limit: usize) -> String {
+     text.chars()
+         .filter(|ch| !ch.is_control())
+@@ -678,40 +679,20 @@
+             ),
+             std::time::SystemTime::now(),
+         );
+-        source.device = Some(
+-            run.device
+-                .name
+-                .chars()
+-                .filter(|ch| !ch.is_control())
+-                .take(129)
+-                .collect(),
+-        );
+-        source.configuration = Some(
+-            run.config
+-                .chars()
+-                .filter(|ch| !ch.is_control())
+-                .take(129)
+-                .collect(),
+-        );
+-        source.outcome = Some(
+-            run.outcome
+-                .as_deref()
+-                .unwrap_or(
+-                    if run
+-                        .session
+-                        .as_ref()
+-                        .is_some_and(|session| session.stop_requested.is_some())
+-                    {
+-                        "stopping"
+-                    } else {
+-                        "running"
+-                    },
+-                )
+-                .chars()
+-                .filter(|ch| !ch.is_control())
+-                .take(129)
+-                .collect(),
+-        );
++        source.device = Some(source_label(&run.device.name, 128));
++        source.configuration = Some(source_label(&run.config, 128));
++        let outcome = run.outcome.as_deref().unwrap_or(
++            if run
++                .session
++                .as_ref()
++                .is_some_and(|session| session.stop_requested.is_some())
++            {
++                "stopping"
++            } else {
++                "running"
++            },
++        );
++        source.outcome = Some(source_label(outcome, 128));
+         source
+     }
+ 
+@@ -725,13 +706,7 @@
+                         source_label(&self.active_config, 96),
+                         std::time::SystemTime::now(),
+                     );
+-                    source.configuration = Some(
+-                        self.active_config
+-                            .chars()
+-                            .filter(|ch| !ch.is_control())
+-                            .take(129)
+-                            .collect(),
+-                    );
++                    source.configuration = Some(source_label(&self.active_config, 128));
+                     source
+                 });
+                 let mut source = source.clone();
+@@ -795,9 +770,7 @@
+                 }
+             }
+         }
+-        self.selection = None;
+         self.review_notice = None;
+-        self.dragging_scrollbar = None;
+         self.top_focus = None;
+         self.actions_open = false;
+         self.help = false;
+--- p3-built/src/ui.rs
++++ p3-simplified/src/ui.rs
+@@ -204,26 +204,18 @@
+                 MouseAction::Devices,
+             );
+             if app.active_session().is_some() {
+-                add(
+-                    "Hot reload",
+-                    if reviewing { "" } else { "r" },
+-                    MouseAction::FlutterKey('r'),
+-                );
+-                add(
+-                    "Hot restart",
+-                    if reviewing { "" } else { "R" },
+-                    MouseAction::FlutterKey('R'),
+-                );
+-                add(
+-                    "Flutter help",
+-                    if reviewing { "" } else { "h" },
+-                    MouseAction::FlutterKey('h'),
+-                );
+-                add(
+-                    "Open DevTools",
+-                    if reviewing { "" } else { "v" },
+-                    MouseAction::FlutterKey('v'),
+-                );
++                for (label, shortcut, key) in [
++                    ("Hot reload", "r", 'r'),
++                    ("Hot restart", "R", 'R'),
++                    ("Flutter help", "h", 'h'),
++                    ("Open DevTools", "v", 'v'),
++                ] {
++                    add(
++                        label,
++                        if reviewing { "" } else { shortcut },
++                        MouseAction::FlutterKey(key),
++                    );
++                }
+                 add(
+                     "Animation speed",
+                     if reviewing {
+@@ -340,14 +332,12 @@
+                 Shortcut::SearchConsole.label(),
+                 MouseAction::SearchConsole,
+             );
+-        }
+-    }
+-    if matches!(app.page, Page::Console | Page::LastLog) && !reviewing {
+-        add(
+-            "Select text",
+-            Shortcut::SelectText.label(),
+-            MouseAction::SelectText,
+-        );
++            add(
++                "Select text",
++                Shortcut::SelectText.label(),
++                MouseAction::SelectText,
++            );
++        }
+     }
+     if !app.runs.is_empty() {
+         add(

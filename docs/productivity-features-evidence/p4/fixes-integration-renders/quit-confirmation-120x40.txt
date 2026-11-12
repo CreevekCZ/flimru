@@ -1,0 +1,40 @@
+ Flimru / .tmpJ7lw78                                                                                           3 devices
+  Close   Add session                                                                           │ Actions   Help   Quit 
+ 1○ android-device · frozen config     ×                                                                                
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                    ┌ Export retained console log ─────────────────────────────────────────────────┐                    
+                    │ Source: android-device · frozen config                                       │                    
+                    │ Full snapsh┌ Quit Flimru? ──────────────────────────────────────┐            │                    
+                    │ query/filte│ Close the launcher?                                │            │                    
+                    │ Destination│                                                    │            │                    
+                    │ ‹78/flimru-│                                                    │173-14.txt  │                    
+                    │ Ready · 13 │                                                    │            │                    
+                    │ May contain│               [ Quit ]   [ Cancel ]                │            │                    
+                    │ [ Export ] │ y quit · Enter/Esc cancel                          │            │                    
+                    │ Enter Expor└────────────────────────────────────────────────────┘            │                    
+                    │ ←→ Home End edit · Tab focus                                                 │                    
+                    └──────────────────────────────────────────────────────────────────────────────┘                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

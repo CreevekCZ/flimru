@@ -1,0 +1,40 @@
+ Flimru / .tmp8K3LAf                                                                                           3 devices
+  Close   Add session                                                                           │ Actions   Help   Quit 
+ 1○ android-device · frozen config     ×                                                                                
+┌ Snapshot · android-device · frozen config ───────────────────────────────────────────────────────────────────────────┐
+│Search ▸ type to search                                                                                               │
+│Errors · 0 rows · col 1 ↔                                                                                             │
+│No lines in this filter.                                                                                              │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                   ┌ Export retained console log ─────────────────────────────────────────────────┐                   │
+│                   │ Source: android-device · frozen config                                       │                   │
+│                   │ Full snapshot, including                                                     │                   │
+│                   │ query/filter-hidden lines.                                                   │                   │
+│                   │ Destination (no overwrite)                                                   │                   │
+│                   │ ‹LAf/flimru-logs/flimru-1793999891-android-device-frozen-config-53318-8.txt  │                   │
+│                   │ Ready · 48 B retained text                                                   │                   │
+│                   │ May contain secrets. UTF-8.                                                  │                   │
+│                   │ [ Export ]  [ Cancel ]                                                       │                   │
+│                   │ Enter Export; Esc Cancel                                                     │                   │
+│                   │ ←→ Home End edit · Tab focus                                                 │                   │
+│                   └──────────────────────────────────────────────────────────────────────────────┘                   │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│Enter read · Esc stop editing                                                                                         │
+│Snapshot · live output continues                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

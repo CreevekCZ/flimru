@@ -1,0 +1,165 @@
+{
+  "date": "2026-10-19",
+  "platform": "macOS arm64",
+  "profile": "release",
+  "terminal": {
+    "rows": 50,
+    "columns": 180
+  },
+  "measurement_seconds": 8,
+  "cpu_percent_convention": "100% is one CPU core; Mach CPU ticks converted with mach_timebase_info",
+  "fixture": "tools/profile_performance.py",
+  "limitations": [
+    "Simulated Flutter sessions; no real VM Service traffic or repeated SDK discovery in measurement window.",
+    "Short samples are indicative, not a long-running leak proof.",
+    "Separate Flutter and Dart process CPU is excluded.",
+    "History mode prints 12000 lines then idles; the app retains at most 10000 scrollback rows."
+  ],
+  "before": [
+    {
+      "binary": "flimru-before",
+      "sessions": 0,
+      "mode": "idle",
+      "cpu_percent": 0.531,
+      "idle_wakeups": 0,
+      "interrupt_wakeups": 1320,
+      "rss_mib": 8.91,
+      "footprint_mib": 3.61,
+      "rss_growth_mib": 0.19,
+      "terminal_bytes": 200
+    },
+    {
+      "binary": "flimru-before",
+      "sessions": 1,
+      "mode": "idle",
+      "cpu_percent": 0.738,
+      "idle_wakeups": 0,
+      "interrupt_wakeups": 2635,
+      "rss_mib": 10.28,
+      "footprint_mib": 4.86,
+      "rss_growth_mib": 0.09,
+      "terminal_bytes": 248
+    },
+    {
+      "binary": "flimru-before",
+      "sessions": 8,
+      "mode": "idle",
+      "cpu_percent": 1.989,
+      "idle_wakeups": 0,
+      "interrupt_wakeups": 11958,
+      "rss_mib": 12.48,
+      "footprint_mib": 7.05,
+      "rss_growth_mib": 0.06,
+      "terminal_bytes": 248
+    },
+    {
+      "binary": "flimru-before",
+      "sessions": 1,
+      "mode": "history",
+      "cpu_percent": 0.903,
+      "idle_wakeups": 0,
+      "interrupt_wakeups": 2654,
+      "rss_mib": 70.86,
+      "footprint_mib": 65.47,
+      "rss_growth_mib": 0.0,
+      "terminal_bytes": 256
+    },
+    {
+      "binary": "flimru-before",
+      "sessions": 1,
+      "mode": "stream",
+      "cpu_percent": 3.839,
+      "interrupt_wakeups": 2652,
+      "rss_mib": 11.75,
+      "rss_growth_mib": 1.28,
+      "terminal_bytes": 7524,
+      "footprint_mib": 6.31,
+      "idle_wakeups": 0
+    }
+  ],
+  "after": [
+    {
+      "binary": "flimru",
+      "sessions": 0,
+      "mode": "idle",
+      "cpu_percent": 0.122,
+      "idle_wakeups": 0,
+      "interrupt_wakeups": 390,
+      "rss_mib": 8.69,
+      "footprint_mib": 3.41,
+      "rss_growth_mib": 0.0,
+      "terminal_bytes": 0
+    },
+    {
+      "binary": "flimru",
+      "sessions": 1,
+      "mode": "idle",
+      "cpu_percent": 0.201,
+      "idle_wakeups": 0,
+      "interrupt_wakeups": 470,
+      "rss_mib": 9.84,
+      "footprint_mib": 4.44,
+      "rss_growth_mib": 0.0,
+      "terminal_bytes": 0
+    },
+    {
+      "binary": "flimru",
+      "sessions": 8,
+      "mode": "idle",
+      "cpu_percent": 0.331,
+      "idle_wakeups": 0,
+      "interrupt_wakeups": 1020,
+      "rss_mib": 12.14,
+      "footprint_mib": 6.72,
+      "rss_growth_mib": 0.0,
+      "terminal_bytes": 0
+    },
+    {
+      "binary": "flimru",
+      "sessions": 1,
+      "mode": "history",
+      "cpu_percent": 0.185,
+      "idle_wakeups": 0,
+      "interrupt_wakeups": 469,
+      "rss_mib": 70.64,
+      "footprint_mib": 65.27,
+      "rss_growth_mib": 0.0,
+      "terminal_bytes": 0
+    },
+    {
+      "binary": "flimru",
+      "sessions": 1,
+      "mode": "stream",
+      "cpu_percent": 2.572,
+      "idle_wakeups": 0,
+      "interrupt_wakeups": 965,
+      "rss_mib": 11.52,
+      "footprint_mib": 6.09,
+      "rss_growth_mib": 1.23,
+      "terminal_bytes": 6532
+    }
+  ],
+  "validation": {
+    "rust_tests_passed": 111,
+    "rust_tests_ignored": 1,
+    "ignored_test": "Requires FLUTTER_TUI_TEST_DART for real Dart VM integration",
+    "packaging_tests_passed": 8,
+    "formatting": "passed",
+    "clippy": "passed with warnings denied",
+    "rustsec_audit": "passed with warnings denied, cargo-audit 0.22.2, 1338 advisories, 264 dependencies",
+    "release_build": "passed"
+  },
+  "memory_review": {
+    "observed_idle_rss_growth_mib": 0.0,
+    "history_rows_per_console": 10000,
+    "maximum_runs": 8,
+    "history_cost": "A full console at this terminal width consumes about 71 MiB RSS for the process. Multiple full consoles can cost hundreds of MiB. This is retained, bounded history, not proof of a leak.",
+    "lifecycle_checks": "Repeated sessions and eight-session batches release descriptors; exited-wrapper descendants are killed; output queues backpressure and history stays bounded."
+  },
+  "fixes": [
+    "Wait for PTY readiness instead of sleeping and reading every 5ms on Unix.",
+    "Use a 100ms background check while quiet; terminal input interrupts the wait.",
+    "Redraw only when visible state changes; keep draining busy hidden sessions at the normal frame rate.",
+    "Borrow VT100 cell strings when rendering, eliminating per-cell owned text allocations."
+  ]
+}

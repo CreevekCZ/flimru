@@ -1,0 +1,40 @@
+ Flimru / Example                                                                                              3 devices
+  Checking…   Show unavailable   Back   Reload                                                  │ Actions   Help   Quit 
+ Devices   › Configuration   › Console                                                                                  
+┌ Configs · 1 checking / 1 ready ──────────────────────────────┐┌ Details ─────────────────────────────────────────────┐
+│ Ready first                                                  ││Selected second                                       │
+│ ready                                                        ││Checking availability. Please wait, then choose Run   │
+│                                                              ││explicitly.                                           │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────┘
+                                                                                                              [Filter /]
+                                                                                                                        
+ Checking selected availability                                                                                         
+ ↑↓ choose · u unavailable · / filter                                                                                   

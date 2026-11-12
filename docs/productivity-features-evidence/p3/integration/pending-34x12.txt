@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+  Close     ›│ Menu   Help   Quit 
+ 1○ Physical Pixel 界  long device×
+┌ Snapshot · Physical Pixel 界  l…┐
+│Search ▸ type to search         │
+│All · Capturing…                │
+│Capturing retained console…     │
+│                                │
+│                                │
+│Enter read · Esc stop editing   │
+│Snapshot · live output continues│
+└────────────────────────────────┘

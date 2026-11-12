@@ -1,0 +1,12 @@
+Toolbar · sessions continue       
+                                  
+[Pixel] [Other live]              
+┌ Frozen source details ─────────┐
+│Frozen source ID: 93            │
+│Shortened: label 96; fields 128.│
+│… marks omitted characters.     │
+│Label: Physical Pixel 界  · long │
+│configuration segment long confi│
+│guration segment long configurat│
+│↑↓ PgUp/PgDn · Esc back         │
+└────────────────────────────────┘

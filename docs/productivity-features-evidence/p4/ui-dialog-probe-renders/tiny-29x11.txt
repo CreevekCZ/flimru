@@ -1,0 +1,11 @@
+Export console log           
+Enlarge terminal to edit.    
+Esc cancels.                 
+                             
+                             
+                             
+                             
+                             
+                             
+                             
+                             

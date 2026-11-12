@@ -1,0 +1,40 @@
+ Flimru · Config error / Example                                                                               3 devices
+  Run   Show unavailable   Back   Reload                                                        │ Actions   Help   Quit 
+ Devices   › Configuration   › Console                                                                                  
+┌ Configs · 2 ready / 0 blocked ───────────────────────────────┐┌ Details ─────────────────────────────────────────────┐
+│›  Stable 界  é                                                ││Configuration reload error: Launch configuration file │
+│   ready                                                      ││contains invalid JSONC or an invalid catalog          │
+│   Other                                                      ││structure.                                            │
+│   ready                                                      ││Using the last good catalog. Correct the file; reload │
+│                                                              ││retries automatically.                                │
+│                                                              ││                                                      │
+│                                                              ││Stable 界  é                                           │
+│                                                              ││Ready to run on the selected target(s).               │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────┘
+  Unrelated session status remains available.                                                                 [Filter /]
+                                                                                                                        
+ Enter run · i explain · Esc back                                                                                       
+ u unavailable · / filter · r reload                                                                                    

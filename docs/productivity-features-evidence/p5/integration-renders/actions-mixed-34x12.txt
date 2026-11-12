@@ -1,0 +1,12 @@
+ Flimru / T              1 running
+ ┌ Actions · Ctrl+p / Esc close ┐ 
+ │  Follow output          End ║│×
+┌│  Stop session       q / Esc ║│┐
+││  Export retained console    ║││
+││  Search console      Ctrl+s ║││
+││  Select text         Ctrl+e █││
+└│  Reload all eligible (1)    █│┘
+ │› Restart all eligible (1)   ║│ 
+n│Hot restart · input requests  │ 
+ └──────────────────────────────┘ 
+ Drag to copy · Ctrl+g actions    

@@ -1,0 +1,14 @@
+{
+  "installed_at_utc": "2026-11-06T22:25:09.213187+00:00",
+  "destination": "/Users/jankoznarek/.local/bin/flimru",
+  "source": "/Users/jankoznarek/Documents/Development/Rust/flutter-run-tui/target/release/flimru",
+  "sha256": "0270dda044d032f50c43bf7f52dcf4f2569dd06069acb0e3b425b69029a40a65",
+  "previous_sha256": "e4f3cb847624937910a0be0f3c65212da64b3b854efd76e763caa99777965585",
+  "version": "flimru 0.1.0",
+  "mode": "0o755",
+  "atomic_replace": true,
+  "staging_startup_verified": true,
+  "installed_startup_verified": true,
+  "source_manifest_verified": true,
+  "running_instances": "preserved"
+}

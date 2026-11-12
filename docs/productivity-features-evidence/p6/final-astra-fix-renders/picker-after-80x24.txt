@@ -1,0 +1,24 @@
+ Flimru / T                                                            3 devices
+  Next   Multi: off   Refresh   Configs                 │ Actions   Help   Quit 
+ 1○ android-device · Original          ×  2○ android-device · Destination      ×
+┌ Devices (3) ─────────────────────────────────────────────────────────────────┐
+│›  ☆ android-device                                                           │
+│     custom · configured · try now                                            │
+│   ☆ Flutter tests (no device)                                                │
+│     tester · configured · try now                                            │
+│   ☆ My Mac (Designed for iPad)                                               │
+│     ios · configured · try now                                               │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                                                      [Filter /]
+                                                                                
+ ↑↓ select · Enter next · f favorite                                            
+ Tab actions · / filter · m multi                                               

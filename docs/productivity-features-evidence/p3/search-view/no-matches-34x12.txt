@@ -1,0 +1,12 @@
+┌ Snapshot · Pixel 界  · developme┐
+│Search: missing                 │
+│All · No matches                │
+│ERROR request failed 界  é       │
+│WARN retry scheduled            │
+│  stack continuation            │
+│INFO connected                  │
+│ERROR request failed again      │
+│                                │
+│n/N matches · f filter · / edit │
+│r refresh · Esc resume live     │
+└────────────────────────────────┘

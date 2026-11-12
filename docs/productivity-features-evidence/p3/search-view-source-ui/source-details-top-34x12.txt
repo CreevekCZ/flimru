@@ -1,0 +1,12 @@
+┌ Frozen source details ─────────┐
+│Frozen source ID: 93            │
+│Shortened: label 96; fields 128.│
+│… marks omitted characters.     │
+│Label: Physical Pixel 界  · long │
+│configuration segment long confi│
+│guration segment long configurat│
+│ion seg…                        │
+│Device: Physical Pixel 界  é · de│
+│velopment device identity suffix│
+│↑↓ PgUp/PgDn · Esc back         │
+└────────────────────────────────┘

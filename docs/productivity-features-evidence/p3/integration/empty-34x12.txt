@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+  Close     ›│ Menu   Help   Quit 
+ 1○ Physical Pixel 界  long device×
+┌ Snapshot · Physical Pixel 界  l…┐
+│Search: (empty)                 │
+│All · 1 row · col 1 ↔           │
+│Snapshot is empty.              │
+│                                │
+│                                │
+│n/N matches · f filter · / edit │
+│r refresh · Esc resume live     │
+└ i source ──────────────────────┘

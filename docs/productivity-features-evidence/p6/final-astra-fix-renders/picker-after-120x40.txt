@@ -1,0 +1,40 @@
+ Flimru / T                                                                                                    3 devices
+  Next   Multi: off   Refresh   Configs                                                         │ Actions   Help   Quit 
+ 1○ android-device · Original          ×  2○ android-device · Destination       ×                                       
+┌ Devices (3) ─────────────────────────────────────────────────┐┌ Details ─────────────────────────────────────────────┐
+│›  ☆ android-device                                           ││android-device                                        │
+│     custom · configured · try now                            ││                                                      │
+│   ☆ Flutter tests (no device)                                ││ID  android-device                                    │
+│     tester · configured · try now                            ││Platform  custom                                      │
+│   ☆ My Mac (Designed for iPad)                               ││                                                      │
+│     ios · configured · try now                               ││This target is cached. You can launch it while        │
+│                                                              ││discovery is still running.                           │
+│                                                              ││                                                      │
+│                                                              ││Click ☆ or press f to save as a favorite.             │
+│                                                              ││                                                      │
+│                                                              ││Enter → choose configuration                          │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────┘
+                                                                                                              [Filter /]
+                                                                                                                        
+ ↑↓ select · Enter next · f favorite                                                                                    
+ Tab actions · / filter · m multi                                                                                       

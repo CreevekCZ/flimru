@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+  ┌ Keyboard and mouse ────────┐t 
+ 1│Ctrl+g top · Ctrl+p menu    │ ×
+┌ │Ctrl+b/f tabs · Ctrl+d pick │…┐
+│S│Ctrl+n add · Ctrl+w close   │ │
+│A│Ctrl+s edit · n/N matches   │ │
+│E│f filter · i source         │ │
+│ │r refresh · Esc resume      │ │
+│ │Process controls: Actions   │ │
+│E│Ctrl+q quit · any key closes│ │
+│S└────────────────────────────┘s│
+└────────────────────────────────┘

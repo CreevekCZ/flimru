@@ -1,0 +1,24 @@
+ Flimru / T                                                            1 running
+ ┌ Hot reload delivery report ────────────────────────────────────────────────┐ 
+ │ Requested/queued: 1                                                        │m
+┌│ Skipped: 2 · Failed: 0                                                     │┐
+││ Flutter completion is unconfirmed.                                         ││
+││ android-device                                                             ││
+││ Skipped: session has ended                                                 ││
+││                                                                            ││
+││ android-device                                                             ││
+││ Skipped: session has ended                                                 ││
+││                                                                            ││
+││ report-80                                                                  ││
+││ Requested/queued                                                           ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││ [Close] Enter/Esc · ↑↓ PgUp/PgDn · 1-8/8                                   ││
+│└────────────────────────────────────────────────────────────────────────────┘│
+└──────────────────────────────────────────────────────────────────────────────┘

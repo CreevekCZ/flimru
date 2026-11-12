@@ -1,0 +1,12 @@
+L┌ Export retained console log ─┐ 
+ │ Source: Phone 界  · Debug · … │ 
+ │ Full snapshot, including     │ 
+ │ query/filter-hidden lines.   │ 
+ │ Destination (no overwrite)   │ 
+ │                              │ 
+ │ Ready · 35 B retained text   │ 
+ │ May contain secrets. UTF-8.  │ 
+ │ [ Export ]  [ Cancel ]       │ 
+ │ Enter Export · Esc Cancel    │ 
+ │ ←→ Home End edit · Tab focus │ 
+ └──────────────────────────────┘ 

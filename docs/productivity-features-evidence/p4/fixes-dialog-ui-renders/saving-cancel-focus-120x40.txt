@@ -1,0 +1,40 @@
+LIVE FLUTTER CONSOLE · other tabs keep running                                                                          
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                    ┌ Export retained console log ─────────────────────────────────────────────────┐                    
+                    │ Source: Phone 界  · Debug · running                                           │                    
+                    │ Full snapshot, including                                                     │                    
+                    │ query/filter-hidden lines.                                                   │                    
+                    │ Destination (no overwrite)                                                   │                    
+                    │ /workspace/flimru-logs/phone-debug.txt                                       │                    
+                    │ Saving frozen snapshot…                                                      │                    
+                    │ Esc cancels pending work.                                                    │                    
+                    │ [ Export ]  [ Cancel ]                                                       │                    
+                    │ Enter Cancel; Esc Cancel                                                     │                    
+                    │ Tab focus                                                                    │                    
+                    └──────────────────────────────────────────────────────────────────────────────┘                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

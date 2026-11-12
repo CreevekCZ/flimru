@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+  Close     ›│ Menu   Help   Quit 
+ 1┌ Quit Flimru? ──────────────┐e×
+┌ │ Close the launcher?        │…┐
+│S│                            │ │
+│A│                            │ │
+│l│                            │t│
+│a│   [ Quit ]   [ Cancel ]    │ │
+│t│ y quit · Enter/Esc cancel  │ │
+│n└────────────────────────────┘ │
+│r refresh · Esc resume live     │
+└ i source ──────────────────────┘

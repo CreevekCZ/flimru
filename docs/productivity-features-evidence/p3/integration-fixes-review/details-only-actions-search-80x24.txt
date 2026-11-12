@@ -1,0 +1,24 @@
+ Flimru / T                                                            3 devices
+  Close   Add session                                   │ Actions   Help   Quit 
+ 1○ Pixel 界  · development             ×                                        
+┌ Lates┌ Actions · Ctrl+p / Esc close ──────────────────────────────────┐──────┐
+│Latest│› Add session                                           Ctrl+n  │      │
+│Hot re│  Operation details                                             │      │
+│      │  Device picker                                         Ctrl+d  │      │
+│      │  Close ended session                                   Ctrl+w  │      │
+│      │  Oldest output                                           Home  │      │
+│      │  Follow output                                            End  │      │
+│      │  Back to devices                                      q / Esc  │      │
+│      │  Search console                                        Ctrl+s  │      │
+│      │  Select text                                           Ctrl+e  │      │
+│      │  Previous console                                      Ctrl+b  │      │
+│      │  Next console                                          Ctrl+f  │      │
+│      │  Console 1: Pixel 界  · development (ended)                     │      │
+│      │  Launcher help                                                 │      │
+│      │  Quit launcher                                         Ctrl+q  │      │
+│      │↑↓ / wheel · Enter / click                                      │      │
+│      └────────────────────────────────────────────────────────────────┘      │
+│                                                                              │
+│                                                                              │
+│↑↓ PgUp/PgDn · Esc back                                                       │
+└──────────────────────────────────────────────────────────────────────────────┘

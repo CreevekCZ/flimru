@@ -1,0 +1,40 @@
+ Flimru / T                                                                                                    3 devices
+  Close   Add session                                                                           │ Actions   Help   Quit 
+ 1○ Physical Pixel 界  long device label×                                                                                
+┌ Snapshot · Physical Pixel 界  long device label long device label long device label long device label long d… ────────┐
+│Search: (empty)                                                                                                       │
+│All · Review unavailable                                                                                              │
+│retained console screen exceeds the 128 MiB capture estimate limit                                                    │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│n/N matches · f filter · / edit                                                                                       │
+│r refresh · Esc resume live                                                                                           │
+└ i source ────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

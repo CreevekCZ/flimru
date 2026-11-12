@@ -1,0 +1,24 @@
+ Flimru / T                                                            3 devices
+  Close   Add session                                   │ Actions   Help   Quit 
+ 1○ Physical Pixel 界  long device label×                                        
+┌ Snapshot · Physical Pixel 界  long device label long device label long device…┐
+│Search ▸ request                                                              │
+│All · 1/2 · col 1 ↔                                                           │
+│I/flutter: [Orders] SEVERE: request failed 界 é                                │
+│W/Tag: retry scheduled                                                        │
+│  stack continuation                                                          │
+│INFO connected                                                                │
+│ERROR: request failed again                                                   │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│Enter read · Esc stop editing                                                 │
+│Snapshot · live output continues                                              │
+└──────────────────────────────────────────────────────────────────────────────┘

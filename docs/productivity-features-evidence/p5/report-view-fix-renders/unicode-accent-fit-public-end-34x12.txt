@@ -1,0 +1,12 @@
+LIVE FLUTTER · active tabs keep em
+ ┌ Hot reload delivery report ──┐ 
+ │ Requested/queued: 1          │ 
+ │ Skipped: 0 · Failed: 0       │ 
+ │ Flutter completion is        │ 
+ │ unconfirmed.                 │ 
+ │ xxxxxxxxxxxxxxxxxxxxxxxxxxxx │ 
+ │ xxxxxxé                      │ 
+ │ Requested/queued             │ 
+ │ [Close] Esc ↑↓ Pg 4-6/6      │ 
+ └──────────────────────────────┘ 
+                                  

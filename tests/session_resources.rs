@@ -11,6 +11,8 @@ use std::{
 
 fn command(directory: &Path, script: &str) -> RunCommand {
     RunCommand {
+        capture_vm_service: false,
+        hot_capabilities: flimru::batch_commands::HotCapabilities::Supported,
         executable: "/bin/sh".into(),
         args: vec!["-c".into(), script.into()],
         cwd: directory.into(),
@@ -111,5 +113,25 @@ fn repeated_sessions_release_descriptors_and_exited_wrapper_descendants() {
         stopped_size,
         "A descendant kept running after its session was dropped"
     );
+    assert_eq!(open_descriptors(), baseline);
+
+    // A producer larger than the channel must backpressure rather than grow
+    // memory while the UI is not consuming. Resuming ticks must recover all
+    // queued data, reach EOF, and keep only the bounded terminal history.
+    let script = "i=0; while [ $i -lt 14000 ]; do \
+        printf '%080d\\r\\n' $i; i=$((i+1)); done; printf 'OUTPUT COMPLETE\\r\\n'";
+    let mut session = Session::start(&command(directory.path(), script), 10, 80).unwrap();
+    thread::sleep(Duration::from_millis(300));
+    assert!(session.parser.screen().contents().is_empty());
+    until(|| session.tick().unwrap().is_some());
+    assert!(
+        session
+            .parser
+            .screen()
+            .contents()
+            .contains("OUTPUT COMPLETE")
+    );
+    assert_eq!(session.scrollback_len, 10_000);
+    drop(session);
     assert_eq!(open_descriptors(), baseline);
 }

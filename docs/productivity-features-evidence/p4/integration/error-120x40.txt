@@ -1,0 +1,40 @@
+ Flimru / .tmp8K3LAf                                                                                           3 devices
+  Close   Add session                                                                           │ Actions   Help   Quit 
+ 1○ android-device · frozen config     ×                                                                                
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                    ┌ Export retained console log ─────────────────────────────────────────────────┐                    
+                    │ Source: android-device · frozen config                                       │                    
+                    │ Full snapshot, including                                                     │                    
+                    │ query/filter-hidden lines.                                                   │                    
+                    │ Destination (no overwrite)                                                   │                    
+                    │ ‹LAf/flimru-logs/flimru-1793999891-android-device-frozen-config-53318-7.txt  │                    
+                    │ Error: Destination exists. Choose another filename; existing logs are never  │                    
+                    │ overwritten.                                                                 │                    
+                    │ [ Export ]  [ Cancel ]                                                       │                    
+                    │ Enter Export; Esc Cancel                                                     │                    
+                    │ ←→ Home End edit · Tab focus                                                 │                    
+                    └──────────────────────────────────────────────────────────────────────────────┘                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

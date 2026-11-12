@@ -1,0 +1,40 @@
+ Flimru / Example                                                                                              3 devices
+ ┌ Diagnostics ───────────────────────────────────────────────────────────────────────────────────────────────────────┐ 
+ │                                                                                                                    │ 
+┌│Many warnings: unsupported field 'unknown00' is ignored.                                                            │┐
+││                                                                                                                    ││
+││Many warnings: unsupported field 'unknown01' is ignored.                                                            ││
+││                                                                                                                    ││
+││Many warnings: unsupported field 'unknown02' is ignored.                                                            ││
+││                                                                                                                    ││
+││Many warnings: unsupported field 'unknown03' is ignored.                                                            ││
+││                                                                                                                    ││
+││Many warnings: unsupported field 'unknown04' is ignored.                                                            ││
+││                                                                                                                    ││
+││Many warnings: unsupported field 'unknown05' is ignored.                                                            ││
+││                                                                                                                    ││
+││Many warnings: unsupported field 'unknown06' is ignored.                                                            ││
+││                                                                                                                    ││
+││Many warnings: unsupported field 'unknown07' is ignored.                                                            ││
+││                                                                                                                    ││
+││Many warnings: unsupported field 'unknown08' is ignored.                                                            ││
+││                                                                                                                    ││
+││Many warnings: unsupported field 'unknown09' is ignored.                                                            ││
+││                                                                                                                    ││
+││Many warnings: unsupported field 'unknown10' is ignored.                                                            ││
+││                                                                                                                    ││
+││Many warnings: unsupported field 'unknown11' is ignored.                                                            ││
+││                                                                                                                    ││
+││Many warnings: unsupported field 'unknown12' is ignored.                                                            ││
+││                                                                                                                    ││
+││Many warnings: unsupported field 'unknown13' is ignored.                                                            ││
+││                                                                                                                    ││
+││Many warnings: unsupported field 'unknown14' is ignored.                                                            ││
+││                                                                                                                    ││
+││Many warnings: unsupported field 'unknown15' is ignored.                                                            ││
+││                                                                                                                    ││
+└│24 more warnings; use --check for full output.                                                                      │┘
+ │                                                                                                                    │]
+ │↑↓ scroll · Esc close                                                                                               │ 
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ 
+ u unavailable · / filter · r reload                                                                                    

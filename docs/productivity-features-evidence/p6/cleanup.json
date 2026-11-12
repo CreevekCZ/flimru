@@ -1,0 +1,11 @@
+{
+  "task_scratch": "/private/tmp/flimru-productivity-p4tfofri",
+  "removed": true,
+  "task_scratch_kib_before": 689704,
+  "active_task_processes": 0,
+  "retained_build_cache": "/Users/jankoznarek/Documents/Development/Rust/flutter-run-tui/target",
+  "retained_build_cache_kib": 3686256,
+  "retained_build_cache_purpose": "normal reusable project build and test cache; contains reviewed release artifact",
+  "durable_evidence": "docs/productivity-features-evidence",
+  "shared_cache_cleanup_incident": "Prior UI probe removed shared Cargo outputs; no source or installed executable was removed. All required checks and release artifacts were rebuilt and passed afterward."
+}

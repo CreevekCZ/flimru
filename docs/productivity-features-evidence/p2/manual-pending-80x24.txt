@@ -1,0 +1,24 @@
+ Flimru · Reloading / Example                                          3 devices
+  Reloading…   Show unavailable   Back   Reload         │ Actions   Help   Quit 
+ Devices   › Configuration   › Console                                          
+┌ Configs · 2 ready / 0 blocked ───────────────────────────────────────────────┐
+│›  Stable 界  é                                                                │
+│   ready                                                                      │
+│   Other                                                                      │
+│   ready                                                                      │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+  Unrelated session status remains available.                         [Filter /]
+                                                                                
+ Reloading configurations…                                                      
+ Wait, then choose Run explicitly                                               

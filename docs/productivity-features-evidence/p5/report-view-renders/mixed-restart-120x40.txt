@@ -1,0 +1,40 @@
+LIVE FLUTTER · active tabs keep emitting output                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                ┌ Hot restart delivery report ─────────────────────────────────────────────────────────┐                
+                │ Requested/queued: 2                                                                  │                
+                │ Skipped: 4 · Failed: 2                                                               │                
+                │ Flutter completion is unconfirmed.                                                   │                
+                │ Device 1 界  é 🧑‍💻                                                                      │                
+                │ Requested/queued                                                                     │                
+                │                                                                                      │                
+                │ Device 2 界  é 🧑‍💻                                                                      │                
+                │ Skipped: session has ended                                                           │                
+                │                                                                                      │                
+                │ Device 3 界  é 🧑‍💻                                                                      │                
+                │ Skipped: session is stopping                                                         │                
+                │                                                                                      │                
+                │ Device 4 界  é 🧑‍💻                                                                      │                
+                │ Skipped: profile runs are excluded from batch hot commands                           │                
+                │                                                                                      │                
+                │ Device 5 界  é 🧑‍💻                                                                      │                
+                │ Failed: session could not queue the input request                                    │                
+                │                                                                                      │                
+                │ Device 6 界  é 🧑‍💻                                                                      │                
+                │ Failed: session is no longer available for input                                     │                
+                │                                                                                      │                
+                │ [Close] Enter/Esc · ↑↓ PgUp/PgDn · 1-18/23                                           │                
+                └──────────────────────────────────────────────────────────────────────────────────────┘                
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

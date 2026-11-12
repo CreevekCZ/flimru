@@ -1,0 +1,40 @@
+ Flimru / Example                                                                                              3 devices
+ ┌ Diagnostics ───────────────────────────────────────────────────────────────────────────────────────────────────────┐ 
+ │Very long pinned configuration 界  é                                                                                 │ 
+┌│                                                                                                                    │┐
+││Select a target to assess device compatibility and enable Run.                                                      ││
+││                                                                                                                    ││
+││File warnings:                                                                                                      ││
+││                                                                                                                    ││
+││Compound launch configurations are not supported.                                                                   ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+││                                                                                                                    ││
+└│                                                                                                                    │┘
+ │                                                                                                                    │]
+ │↑↓ scroll · Esc close                                                                                               │ 
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ 
+ u unavailable · i details · / filter                                                                                   

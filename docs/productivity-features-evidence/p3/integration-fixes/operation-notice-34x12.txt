@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+  Close     ›│ Menu   Help   Quit 
+ 1○ Pixel 界  · development       ×
+┌ Snapshot · Pixel 界  · developm…┐
+│Search: needle                  │
+│All · 1/1 · col 1 ↔             │
+│ERROR needle                    │
+│                                │
+│n/N matches · f filter · / edit │
+│r refresh · Esc resume live     │
+└ i source ──────────────────────┘
+Ctrl+p details: Hot reload: Input…

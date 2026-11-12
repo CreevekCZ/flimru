@@ -1,0 +1,12 @@
+ Flimru / Example        3 devices
+  Select a… ›│ Menu   Help   Quit 
+ Devices  › Config  › Console     
+┌ Configs · 0 ready / 0 blocked ─┐
+│                                │
+│  Empty configurations array.   │
+│                                │
+└────────────────────────────────┘
+                        [Filter /]
+                                  
+ Enter explains · Esc back        
+ u unavailable · i details · / fil

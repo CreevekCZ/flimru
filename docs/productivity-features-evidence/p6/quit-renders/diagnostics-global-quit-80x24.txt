@@ -1,0 +1,24 @@
+ Flimru / T                                                            3 devices
+ ┌ Diagnostics ───────────────────────────────────────────────────────────────┐ 
+ │                                                                            │ 
+┌│Configuration warnings:                                                     │┐
+││                                                                            ││
+││Blocked diagnostic source: unsupported field 'unknown00' is ignored.        ││
+││                                                                            ││
+││Blocked diagnostic source: unsupported field 'unknown01' is ignored.        ││
+││           ┌ Quit Flimru? ──────────────────────────────────────┐           ││
+││Blocked dia│ Close the launcher?                                │ed.        ││
+││           │                                                    │           ││
+││Blocked dia│                                                    │ed.        ││
+││           │                                                    │           ││
+││Blocked dia│               [ Quit ]   [ Cancel ]                │ed.        ││
+││           │ y quit · Enter/Esc cancel                          │           ││
+││Blocked dia└────────────────────────────────────────────────────┘ed.        ││
+││                                                                            ││
+││Blocked diagnostic source: unsupported field 'unknown06' is ignored.        ││
+││                                                                            ││
+└│Blocked diagnostic source: unsupported field 'unknown07' is ignored.        │┘
+ │                                                                            │]
+ │↑↓ scroll · Esc close                                                       │ 
+ └────────────────────────────────────────────────────────────────────────────┘ 
+ u unavailable · i details · / filter                                           

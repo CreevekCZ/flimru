@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+  ┌ Keyboard and mouse ────────┐t 
+ 1│Query editing               │ ×
+┌ │Type / paste: query text    │…┐
+│S│Enter: read matches         │ │
+│A│Esc: stop editing           │ │
+│E│Ctrl+s: edit query          │ │
+│ │Ctrl+p menu · Ctrl+g top    │ │
+│ │Process controls: Actions   │ │
+│E│Ctrl+q quit · any key closes│ │
+│S└────────────────────────────┘s│
+└────────────────────────────────┘

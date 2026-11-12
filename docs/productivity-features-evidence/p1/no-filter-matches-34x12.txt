@@ -1,0 +1,12 @@
+ Flimru / Example        3 devices
+  Select a… ›│ Menu   Help   Quit 
+ Devices  › Config  › Console     
+┌ Configs · 1 ready / 1 blocked ─┐
+│                                │
+│  No text-filter matches.       │
+│                                │
+└────────────────────────────────┘
+  / missing text   [Apply] [Clear]
+Esc clears filter                 
+ Enter explains · Esc back        
+ u unavailable · i details · / fil

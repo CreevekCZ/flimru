@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+  Close     ›│ Menu   Help   Quit 
+ 1○ Physical Pixel 界  long device×
+┌ Frozen source details ─────────┐
+│Frozen source ID: 10            │
+│Shortened: label 96; fields 128.│
+│… marks omitted characters.     │
+│Label: Physical Pixel 界  long de│
+│vice label long device label lon│
+│g device label long device label│
+│↑↓ PgUp/PgDn · Esc back         │
+└────────────────────────────────┘

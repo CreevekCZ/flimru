@@ -48,6 +48,19 @@ fn level(value: &str) -> Option<Severity> {
 /// Color recognized severity prefixes, never words buried in a message.
 /// Incoming ANSI colors take precedence at the call site.
 pub fn fallback_color(text: &str) -> Option<Color> {
+    classify(text).map(Severity::color)
+}
+
+/// Semantic search filters use exactly the same recognized prefixes as colors.
+pub fn review_severity(text: &str) -> Option<flimru::console_review::Severity> {
+    match classify(text) {
+        Some(Severity::Error) => Some(flimru::console_review::Severity::Error),
+        Some(Severity::Warning) => Some(flimru::console_review::Severity::Warning),
+        _ => None,
+    }
+}
+
+fn classify(text: &str) -> Option<Severity> {
     let mut message = text.trim_start();
     let mut transport = None;
     if let Some(rest) = message.strip_prefix("flutter:") {
@@ -76,7 +89,7 @@ pub fn fallback_color(text: &str) -> Option<Color> {
             && let Some((label, rest)) = rest.split_once(']')
         {
             if let Some(severity) = level(label.trim()) {
-                return Some(severity.color());
+                return Some(severity);
             }
             message = rest.trim_start();
         } else {
@@ -86,16 +99,16 @@ pub fn fallback_color(text: &str) -> Option<Color> {
     if let Some((label, _)) = message.split_once(':')
         && let Some(severity) = level(label.trim())
     {
-        return Some(severity.color());
+        return Some(severity);
     }
     if message
         .trim_start_matches('═')
         .strip_prefix('╡')
         .is_some_and(|rest| rest.trim_start().starts_with("EXCEPTION CAUGHT BY"))
     {
-        return Some(Severity::Error.color());
+        return Some(Severity::Error);
     }
-    transport.map(Severity::color)
+    transport
 }
 
 #[cfg(test)]
@@ -137,6 +150,27 @@ mod tests {
             "Connected to the VM Service.",
         ] {
             assert_eq!(fallback_color(message), None);
+        }
+    }
+    #[test]
+    fn review_filters_share_prefix_precedence_and_leave_stack_lines_unclassified() {
+        use flimru::console_review::Severity as ReviewSeverity;
+        for (line, expected) in [
+            ("\u{1b}[31m", None),
+            (
+                "I/flutter: [Orders] SEVERE: failed",
+                Some(ReviewSeverity::Error),
+            ),
+            ("W/Tag: native warning", Some(ReviewSeverity::Warning)),
+            (
+                "[time] [Logger] WARNING: retry",
+                Some(ReviewSeverity::Warning),
+            ),
+            ("INFO: useful context", None),
+            ("  stack error at source.dart", None),
+            ("WARN buried without recognized delimiter", None),
+        ] {
+            assert_eq!(review_severity(line), expected, "{line}");
         }
     }
 }

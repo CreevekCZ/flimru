@@ -1,0 +1,40 @@
+ Flimru / T                                                                                                    1 running
+  Close   Add session                                                                           │ Actions   Help   Quit 
+ 1○ android-device · Frozen original   ×  2○ android-device · Frozen original  ×  3● report-120 · Launch-time debug     
+┌ Snapshot · android-device · Frozen original ─────────────────────────────────────────────────────────────────────────┐
+│Search ▸ needle                                                                                                       │
+│All · 1/100 · col 1 ↔                                                                                                 │
+│ERROR: needle 000 界 é                                                                                                 │
+│ERROR: needle 001 界 é                                                                                                 │
+│ERROR: needle 0┌ Hot reload delivery report ──────────────────────────────────────────────────────────┐               │
+│ERROR: needle 0│ Requested/queued: 1                                                                  │               │
+│ERROR: needle 0│ Skipped: 2 · Failed: 0                                                               │               │
+│ERROR: needle 0│ Flutter completion is unconfirmed.                                                   │               │
+│ERROR: needle 0│ android-device                                                                       │               │
+│ERROR: needle 0│ Skipped: session has ended                                                           │               │
+│ERROR: needle 0│                                                                                      │               │
+│ERROR: needle 0│ android-device                                                                       │               │
+│ERROR: needle 0│ Skipped: session has ended                                                           │               │
+│ERROR: needle 0│                                                                                      │               │
+│ERROR: needle 0│ report-120                                                                           │               │
+│ERROR: needle 0│ Requested/queued                                                                     │               │
+│ERROR: needle 0│                                                                                      │               │
+│ERROR: needle 0│                                                                                      │               │
+│ERROR: needle 0│                                                                                      │               │
+│ERROR: needle 0│                                                                                      │               │
+│ERROR: needle 0│                                                                                      │               │
+│ERROR: needle 0│                                                                                      │               │
+│ERROR: needle 0│                                                                                      │               │
+│ERROR: needle 0│                                                                                      │               │
+│ERROR: needle 0│                                                                                      │               │
+│ERROR: needle 0│                                                                                      │               │
+│ERROR: needle 0│ [Close] Enter/Esc · ↑↓ PgUp/PgDn · 1-8/8                                             │               │
+│ERROR: needle 0└──────────────────────────────────────────────────────────────────────────────────────┘               │
+│ERROR: needle 026 界 é                                                                                                 │
+│ERROR: needle 027 界 é                                                                                                 │
+│ERROR: needle 028 界 é                                                                                                 │
+│ERROR: needle 029 界 é                                                                                                 │
+│ERROR: needle 030 界 é                                                                                                 │
+│Enter read · Esc stop editing                                                                                         │
+│Snapshot · live output continues                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

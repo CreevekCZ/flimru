@@ -1,11 +1,27 @@
 //! A bounded batch owns each child and console independently.
-use flimru::{device::Device, session::Session};
+use flimru::{
+    batch_commands::{BatchTarget, HotCapabilities, HotExclusion},
+    device::Device,
+    session::Session,
+};
 
 pub const MAX_RUNS: usize = 8;
+pub type RunId = u64;
+static NEXT_RUN_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Console identities survive vector removal and live-to-ended transfer. At a
+/// million launches per second the u64 space lasts more than half a million years.
+pub fn next_id() -> RunId {
+    NEXT_RUN_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 
 pub struct Run {
+    pub id: RunId,
+    pub max_columns: u16,
+    pub history_capacity: usize,
     pub device: Device,
     pub config: String,
+    pub hot_capabilities: HotCapabilities,
     pub session: Option<Session>,
     pub console: Option<vt100::Parser>,
     pub scrollback_len: usize,
@@ -15,10 +31,19 @@ pub struct Run {
 }
 
 impl Run {
-    pub fn running(device: Device, config: String, session: Session) -> Self {
+    pub fn running(
+        device: Device,
+        config: String,
+        session: Session,
+        hot_capabilities: HotCapabilities,
+    ) -> Self {
         Self {
+            id: next_id(),
+            max_columns: session.max_columns,
+            history_capacity: Session::SCROLLBACK_CAPACITY,
             device,
             config,
+            hot_capabilities,
             session: Some(session),
             console: None,
             scrollback_len: 0,
@@ -34,8 +59,12 @@ impl Run {
         let message: String = error.chars().filter(|c| !c.is_control()).collect();
         console.process(format!("Cannot start: {message}").as_bytes());
         Self {
+            id: next_id(),
+            max_columns: cols.max(1),
+            history_capacity: 0,
             device,
             config,
+            hot_capabilities: HotCapabilities::Unsupported(HotExclusion::CustomRunner),
             session: None,
             console: Some(console),
             scrollback_len: 0,
@@ -45,11 +74,32 @@ impl Run {
         }
     }
 
+    pub fn batch_target(&self) -> BatchTarget {
+        BatchTarget {
+            id: self.id,
+            device: flimru::batch_commands::bounded_device_label(&self.device.name),
+            capabilities: self.hot_capabilities,
+            live: self.session.is_some(),
+            stopping: self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.stop_requested.is_some()),
+        }
+    }
+
     pub fn screen(&self) -> Option<&vt100::Screen> {
         self.session
             .as_ref()
             .map(|s| s.parser.screen())
             .or_else(|| self.console.as_ref().map(vt100::Parser::screen))
+    }
+
+    pub fn historical_columns(&self) -> u16 {
+        self.max_columns.max(
+            self.session
+                .as_ref()
+                .map_or(0, |session| session.max_columns),
+        )
     }
 
     pub fn scrollback(&self) -> usize {
@@ -116,6 +166,7 @@ impl Run {
         if let Some(outcome) = outcome {
             self.offset = session.parser.screen().scrollback();
             self.scrollback_len = session.scrollback_len;
+            self.max_columns = self.max_columns.max(session.max_columns);
             self.console = Some(session.take_console());
             self.outcome = Some(outcome);
             self.session.take();

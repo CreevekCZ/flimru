@@ -1,0 +1,24 @@
+ Flimru / T                                                            1 running
+  Stop ┌ Actions · Ctrl+p / Esc close ──────────────────────────────────┐  Quit 
+ 1● fir│  Add session                                           Ctrl+n ║│· Froz×
+┌ Launc│  Device picker                                         Ctrl+d ║│──────┐
+│ready │  Hot reload                                                 r ║│     █│
+│      │  Hot restart                                                R ║│     █│
+│      │  Flutter help                                               h ║│     █│
+│      │  Open DevTools                                              v ║│     █│
+│      │  Animation speed                                       Ctrl+a ║│     █│
+│      │  Reconnect animation control                                  █│     █│
+│      │  Oldest output                                           Home █│     █│
+│      │  Follow output                                            End █│     █│
+│      │  Stop session                                         q / Esc █│     █│
+│      │  Export retained console log                                  █│     █│
+│      │  Search console                                        Ctrl+s █│     █│
+│      │  Select text                                           Ctrl+e █│     █│
+│      │  Reload all eligible (1)                                      █│     █│
+│      │› Restart all eligible (1)                                     █│     █│
+│      │  Previous console                                      Ctrl+b ║│     █│
+└──────│  Next console                                          Ctrl+f ║│──────┘
+  Devic│  Console 1: first · Launch-time debug (running)               ║│uch    
+file or│Hot restart · input requests                                    │       
+ r relo└────────────────────────────────────────────────────────────────┘       
+ Drag to copy · Ctrl+g actions                                                  

@@ -1,0 +1,24 @@
+ Flimru · Config error / Example                                       3 devices
+  Finishing reload…   Show unavailable   Back   Reload  │ Actions   Help   Quit 
+ Devices   › Configuration   › Console                                          
+┌ Configs · 2 ready / 0 blocked ───────────────────────────────────────────────┐
+│›  Stable 界  é                                                                │
+│   ready                                                                      │
+│   Other                                                                      │
+│   ready                                                                      │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+  Reload failed: Launch configuration file contains invalid JSONC or  [Filter /]
+an invalid catalog structure.                                                   
+ Finishing reload…                                                              
+ Choose Run when it appears                                                     

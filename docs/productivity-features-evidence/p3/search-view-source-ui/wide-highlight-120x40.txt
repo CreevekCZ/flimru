@@ -1,0 +1,40 @@
+┌ Snapshot · Pixel 界  · development ───────────────────────────────────────────────────────────────────────────────────┐
+│Search: ◌́                                                                                                             │
+│All · 1/1 · col 1 ↔                                                                                                   │
+│ERROR aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa界 é needle        │
+│live                                                                                                                  │
+│end                                                                                                                   │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│n/N matches · f filter · / edit                                                                                       │
+│r refresh · Esc resume live                                                                                           │
+└ i source ────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

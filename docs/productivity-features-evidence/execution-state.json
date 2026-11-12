@@ -1,0 +1,75 @@
+{
+  "task_directory": "/private/tmp/flimru-productivity-p4tfofri",
+  "baseline_head": "c644bf0d41055f7a300889a9ddffc0c88ef36f7b",
+  "phases": {
+    "P1": "COMPLETE: independent correctness/performance and UI gates pass; all findings closed.",
+    "P2": "COMPLETE: independent correctness/performance and final UI gates passed, queued-input and wording findings closed.",
+    "P3": "COMPLETE: full independent correctness/performance and integrated UI gates approved; all findings closed.",
+    "P4": "COMPLETE: full independent correctness/performance and UI gates passed; all four findings closed.",
+    "P5": "COMPLETE: independent full correctness and UI gates passed; tiny global quit finding closed across batch/export/details.",
+    "P6": "COMPLETE: refreshed full checks and real VM Service passed; final Astra APPROVED; exact reviewed binary atomically installed and verified; task scratch removed."
+  },
+  "branch": "codex/productivity-features",
+  "agents": {
+    "P1": {
+      "builder": "p1_builder",
+      "simplifier": "p1_simplifier",
+      "reviewer": "p1_correctness_review",
+      "fixer": "p1_fixer",
+      "ui": "p1_ui_review"
+    },
+    "P2": {
+      "builder": "p2_reload_builder",
+      "simplifier": "p2_simplifier",
+      "reviewer": "p2_correctness_review",
+      "fixer": "p2_fixer"
+    },
+    "P3": {
+      "builder": "p3_snapshot_builder",
+      "simplifier": "p3_simplifier",
+      "reviewer": "p3_correctness_review",
+      "fixer": "p3_fixer",
+      "ui": "p3_ui_review"
+    },
+    "P4": {
+      "builder": "p4_export_builder",
+      "simplifier": "p4_simplifier",
+      "reviewer": "p4_correctness_review",
+      "fixer": "p4_fixer"
+    },
+    "P5": {
+      "builder": "p5_batch_builder",
+      "simplifier": "p5_simplifier",
+      "reviewer": "p5_correctness_review"
+    },
+    "P6": {
+      "docs": "p6_docs (gpt-6.1-terra, medium; mechanical README/usage only)",
+      "cross_flow_builder": "p6_flow_builder (gpt-6.1-sol, high; new unregistered PTY test only)",
+      "fixer": "p6_fixer"
+    }
+  },
+  "audit_tool": "/private/tmp/flimru-productivity-p4tfofri/audit-install/bin/cargo-audit",
+  "final_reviewer": {
+    "model": "gpt-6-astra",
+    "fresh_agent_required": true,
+    "status": "APPROVED after F1/F2 independent closure; final source and release hashes verified",
+    "agent": "final_astra_review",
+    "release_sha256": "0270dda044d032f50c43bf7f52dcf4f2569dd06069acb0e3b425b69029a40a65"
+  },
+  "phase_baselines": {
+    "P1": "/private/tmp/flimru-productivity-p4tfofri/baseline",
+    "P2": "/private/tmp/flimru-productivity-p4tfofri/p1-complete",
+    "P3": "/private/tmp/flimru-productivity-p4tfofri/p2-complete",
+    "P4": "/private/tmp/flimru-productivity-p4tfofri/p3-complete",
+    "P5": "/private/tmp/flimru-productivity-p4tfofri/p4-complete",
+    "P6": "/private/tmp/flimru-productivity-p4tfofri/p5-complete"
+  },
+  "resource_incident": {
+    "phase": "P5 UI review",
+    "effect": "Probe cargo clean removed shared Cargo build output; source and installed regular executable preserved. Further shared-cache cleanup prohibited; required outputs will be rebuilt by final checks.",
+    "observed_target_size_after": "3.2 GiB"
+  },
+  "task_directory_removed": true,
+  "installation": "docs/productivity-features-evidence/p6/installation.json",
+  "cleanup": "docs/productivity-features-evidence/p6/cleanup.json"
+}

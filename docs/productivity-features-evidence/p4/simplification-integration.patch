@@ -1,0 +1,62 @@
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -970,20 +970,18 @@
+ 
+     /// Modal routing consumes every event, before selection/review/PTY fallback.
+     fn export_event(&mut self, event: &Event) -> bool {
+-        if !self.export_dialog_open() {
+-            return false;
+-        }
+-        let Some(mut pending) = self.pending_export.take() else {
++        let Some(pending) = &mut self.pending_export else {
+             return false;
+         };
+-        let effect = pending
+-            .dialog
+-            .as_mut()
+-            .map(|dialog| dialog.handle_event(event));
+-        match effect {
+-            Some(export_dialog::DialogAction::Submit(destination)) => {
+-                let request = pending.dialog.as_ref().and_then(|dialog| {
+-                    dialog.snapshot().map(|snapshot| {
++        let Some(dialog) = &mut pending.dialog else {
++            return false;
++        };
++        match dialog.handle_event(event) {
++            export_dialog::DialogAction::Submit(destination) => {
++                let result = dialog
++                    .snapshot()
++                    .ok_or(ExportError::InvalidInput("snapshot is not ready"))
++                    .and_then(|snapshot| {
+                         ExportRequest::new(
+                             &pending.workspace,
+                             &destination,
+@@ -991,24 +989,15 @@
+                             dialog.metadata().clone(),
+                         )
+                     })
+-                });
+-                let result = request
+-                    .unwrap_or(Err(ExportError::InvalidInput("snapshot is not ready")))
+                     .and_then(|request| pending.writer.start(request));
+                 if let Err(error) = result {
+                     let message = error.to_string();
+-                    if let Some(dialog) = &mut pending.dialog {
+-                        dialog.set_error(&message);
+-                    }
++                    dialog.set_error(&message);
+                     self.report_operation(message);
+                 }
+-                self.pending_export = Some(pending);
+-            }
+-            Some(export_dialog::DialogAction::Cancel) => {
+-                self.pending_export = Some(pending);
+-                self.cancel_export();
+-            }
+-            _ => self.pending_export = Some(pending),
++            }
++            export_dialog::DialogAction::Cancel => self.cancel_export(),
++            export_dialog::DialogAction::Consumed => {}
+         }
+         true
+     }

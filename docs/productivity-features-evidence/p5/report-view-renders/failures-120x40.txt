@@ -1,0 +1,40 @@
+LIVE FLUTTER · active tabs keep emitting output                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                ┌ Hot restart delivery report ─────────────────────────────────────────────────────────┐                
+                │ Requested/queued: 0                                                                  │                
+                │ Skipped: 0 · Failed: 2                                                               │                
+                │ Flutter completion is unconfirmed.                                                   │                
+                │ Device 5 界  é 🧑‍💻                                                                      │                
+                │ Failed: session could not queue the input request                                    │                
+                │                                                                                      │                
+                │ Device 6 界  é 🧑‍💻                                                                      │                
+                │ Failed: session is no longer available for input                                     │                
+                │                                                                                      │                
+                │                                                                                      │                
+                │                                                                                      │                
+                │                                                                                      │                
+                │                                                                                      │                
+                │                                                                                      │                
+                │                                                                                      │                
+                │                                                                                      │                
+                │                                                                                      │                
+                │                                                                                      │                
+                │                                                                                      │                
+                │                                                                                      │                
+                │                                                                                      │                
+                │ [Close] Enter/Esc · ↑↓ PgUp/PgDn · 1-5/5                                             │                
+                └──────────────────────────────────────────────────────────────────────────────────────┘                
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

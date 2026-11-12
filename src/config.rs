@@ -10,7 +10,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use jsonc_parser::{ParseOptions, parse_to_serde_value};
 use serde_json::{Map, Value};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaunchConfig {
     pub name: String,
     pub cwd: PathBuf,
@@ -24,12 +24,51 @@ pub struct LaunchConfig {
     pub run_tests_on_device: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceEntry {
+    /// Stable source order, including entries that could not be parsed.
+    pub source_index: usize,
+    pub name: String,
+    pub configuration: Option<usize>,
+    pub diagnostics: Vec<Diagnostic>,
+    /// Warnings originating in this exact source entry, including duplicate names.
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub code: &'static str,
+    pub message: String,
+    pub target: Option<String>,
+}
+
+impl Diagnostic {
+    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            target: None,
+        }
+    }
+
+    pub fn display(&self) -> String {
+        match &self.target {
+            Some(target) => format!("{target}: {}", self.message),
+            None => self.message.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaunchFile {
     pub path: PathBuf,
     pub workspace: PathBuf,
     pub configurations: Vec<LaunchConfig>,
+    pub entries: Vec<SourceEntry>,
+    /// Legacy complete warning stream for CLI compatibility.
     pub warnings: Vec<String>,
+    /// Whole-file warnings, never warnings from sibling entries.
+    pub file_warnings: Vec<String>,
 }
 
 impl LaunchFile {
@@ -67,7 +106,9 @@ impl LaunchFile {
             path: absolute_path(path)?,
             workspace,
             configurations: Vec::new(),
+            entries: Vec::new(),
             warnings: Vec::new(),
+            file_warnings: Vec::new(),
         };
 
         for (index, entry) in entries.iter().enumerate() {
@@ -76,17 +117,37 @@ impl LaunchFile {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("Configuration {}", index + 1));
-            match parse_configuration(entry, &file.workspace, &mut file.warnings, &label) {
-                Ok(config) => file.configurations.push(config),
-                Err(error) => file.warnings.push(format!("Skipped {label}: {error:#}")),
+            let mut source = SourceEntry {
+                source_index: index,
+                name: label.clone(),
+                configuration: None,
+                diagnostics: Vec::new(),
+                warnings: Vec::new(),
+            };
+            let parsed = parse_configuration(entry, &file.workspace, &mut source.warnings, &label);
+            file.warnings.extend(source.warnings.iter().cloned());
+            match parsed {
+                Ok(config) => {
+                    source.configuration = Some(file.configurations.len());
+                    file.configurations.push(config);
+                }
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    source
+                        .diagnostics
+                        .push(Diagnostic::new("configuration", &message));
+                    file.warnings.push(format!("Skipped {label}: {message}"));
+                }
             }
+            file.entries.push(source);
         }
         if root
             .get("compounds")
             .is_some_and(|value| value.as_array().is_none_or(|entries| !entries.is_empty()))
         {
-            file.warnings
-                .push("Compound launch configurations are not supported.".into());
+            let warning = "Compound launch configurations are not supported.".to_owned();
+            file.file_warnings.push(warning.clone());
+            file.warnings.push(warning);
         }
         Ok(file)
     }
@@ -115,10 +176,9 @@ impl LaunchConfig {
     }
 
     pub fn flutter_args(&self, selected_device: &str) -> Result<Vec<String>> {
-        if let Some(task) = &self.pre_launch_task {
+        if self.pre_launch_task.is_some() {
             bail!(
-                "{} requires preLaunchTask '{task}', which this launcher cannot execute. Run the task yourself and remove preLaunchTask from a dedicated launch configuration.",
-                self.name
+                "preLaunchTask is not supported. Run the task yourself and remove preLaunchTask from a dedicated launch configuration."
             );
         }
         ensure!(
@@ -137,15 +197,13 @@ impl LaunchConfig {
         if let Some(mode) = &self.flutter_mode {
             ensure!(
                 matches!(mode.as_str(), "debug" | "profile" | "release"),
-                "Unsupported flutterMode '{mode}'"
+                "Unsupported flutterMode; use debug, profile, or release"
             );
             modes.insert(mode.clone());
         }
         ensure!(
             modes.len() <= 1,
-            "Conflicting Flutter modes in {}: {}",
-            self.name,
-            modes.into_iter().collect::<Vec<_>>().join(", ")
+            "Conflicting Flutter modes; select only one of debug, profile, or release"
         );
 
         let is_test = self.is_test();
@@ -192,9 +250,15 @@ fn parse_configuration(
 ) -> Result<LaunchConfig> {
     let object = value.as_object().context("entry must be an object")?;
     let kind = optional_string(object, "type")?.unwrap_or_else(|| "dart".into());
-    ensure!(kind == "dart", "unsupported debugger type '{kind}'");
+    ensure!(
+        kind == "dart",
+        "unsupported debugger type; type must be dart"
+    );
     let request = optional_string(object, "request")?.unwrap_or_else(|| "launch".into());
-    ensure!(request == "launch", "unsupported request '{request}'");
+    ensure!(
+        request == "launch",
+        "unsupported request; request must be launch"
+    );
 
     for field in [
         "customTool",
@@ -264,7 +328,7 @@ fn parse_configuration(
     if let Some(mode) = &flutter_mode {
         ensure!(
             matches!(mode.as_str(), "debug" | "profile" | "release"),
-            "unsupported flutterMode '{mode}'"
+            "unsupported flutterMode; use debug, profile, or release"
         );
     }
     let device_id = optional_string(object, "deviceId")?
@@ -425,7 +489,7 @@ fn strip_device_arguments(arguments: &[String]) -> Result<Vec<String>> {
             .strip_prefix("--device-id=")
             .or_else(|| arg.strip_prefix("-d="))
         {
-            ensure!(!device.is_empty(), "{arg} requires a device ID");
+            ensure!(!device.is_empty(), "--device-id requires a device ID");
             index += 1;
         } else {
             result.push(arg.clone());
@@ -666,5 +730,39 @@ mod tests {
         let file = parse(r#"{"configurations":[{"name":"null env", "env":{"SECRET":null}}]}"#);
         assert!(file.configurations.is_empty());
         assert!(file.warnings[0].contains("removing inherited environment variables"));
+    }
+
+    #[test]
+    fn warning_scope_is_structural_and_legacy_aggregate_order_is_preserved() {
+        let file = parse(
+            r#"{"configurations":[
+            {"name":"Duplicate","firstUnknown":true},
+            {"name":"Duplicate","secondUnknown":true},
+            {"name":"Rejected","thirdUnknown":true,"args":["${input:missing}"]}
+        ],"compounds":[{}]}"#,
+        );
+        assert_eq!(
+            file.entries[0].warnings,
+            ["Duplicate: unsupported field 'firstUnknown' is ignored."]
+        );
+        assert_eq!(
+            file.entries[1].warnings,
+            ["Duplicate: unsupported field 'secondUnknown' is ignored."]
+        );
+        assert_eq!(
+            file.entries[2].warnings,
+            ["Rejected: unsupported field 'thirdUnknown' is ignored."]
+        );
+        assert_eq!(
+            file.file_warnings,
+            ["Compound launch configurations are not supported."]
+        );
+        assert_eq!(file.warnings.len(), 5);
+        assert_eq!(file.warnings[0], file.entries[0].warnings[0]);
+        assert_eq!(file.warnings[1], file.entries[1].warnings[0]);
+        assert_eq!(file.warnings[2], file.entries[2].warnings[0]);
+        assert!(file.warnings[3].starts_with("Skipped Rejected:"));
+        assert_eq!(file.warnings[4], file.file_warnings[0]);
+        assert!(!file.entries[2].diagnostics.is_empty());
     }
 }

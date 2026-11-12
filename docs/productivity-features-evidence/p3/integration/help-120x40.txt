@@ -1,0 +1,40 @@
+ Flimru / T                                                                                                    3 devices
+  Close   Add session                                                                           │ Actions   Help   Quit 
+ 1○ Physical Pixel 界  long device label×                                                                                
+┌ Snapshot · Physical Pixel 界  long device label long device label long device label long device label long d… ────────┐
+│Search: request                                                                                                       │
+│All · 1/2 · col 1 ↔                                                                                                   │
+│I/flutter: [Orders] SEVERE: request failed 界 é                                                                        │
+│W/Tag: retry scheduled                                                                                                │
+│  stack continuation                                                                                                  │
+│INFO connected                                                                                                        │
+│ERROR: request failed again                                                                                           │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                     ┌ Keyboard and mouse ──────────────────────────────────────────────────────┐                     │
+│                     │Ctrl+g top · Ctrl+p menu                                                  │                     │
+│                     │Ctrl+b/f tabs · Ctrl+d pick                                               │                     │
+│                     │Ctrl+n add · Ctrl+w close                                                 │                     │
+│                     │Ctrl+s edit · n/N matches                                                 │                     │
+│                     │f filter · i source                                                       │                     │
+│                     │r refresh · Esc resume                                                    │                     │
+│                     │Process controls: Actions                                                 │                     │
+│                     │Ctrl+q quit · any key closes                                              │                     │
+│                     └──────────────────────────────────────────────────────────────────────────┘                     │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│n/N matches · f filter · / edit                                                                                       │
+│r refresh · Esc resume live                                                                                           │
+└ i source ────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

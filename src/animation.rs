@@ -4,6 +4,8 @@
 use anyhow::{Result, bail};
 use serde_json::Value;
 use std::{
+    io::Read,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
@@ -46,6 +48,7 @@ enum Command {
     Toggle,
     Restarting,
     Restarted,
+    Reconnect,
     Shutdown,
 }
 
@@ -67,6 +70,7 @@ enum Escape {
 
 pub struct AnimationControl {
     state: Arc<Mutex<AnimationState>>,
+    connection_error: Arc<Mutex<Option<String>>>,
     commands: SyncSender<Command>,
     cancelled: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
@@ -79,16 +83,26 @@ pub struct AnimationControl {
 
 impl AnimationControl {
     pub fn new(enabled: bool) -> Self {
+        Self::start(enabled, None)
+    }
+
+    pub fn with_service_file(path: PathBuf) -> Self {
+        Self::start(true, Some(path))
+    }
+
+    fn start(enabled: bool, service_file: Option<PathBuf>) -> Self {
         let state = Arc::new(Mutex::new(if enabled {
             AnimationState::Waiting
         } else {
             AnimationState::Unavailable
         }));
+        let connection_error = Arc::new(Mutex::new(None));
         let (commands, rx) = mpsc::sync_channel(16);
         let cancelled = Arc::new(AtomicBool::new(false));
         let pending_toggle = Arc::new(AtomicBool::new(false));
         let worker = if enabled {
             let state = state.clone();
+            let connection_error = connection_error.clone();
             let cancelled = cancelled.clone();
             let pending_toggle = pending_toggle.clone();
             Some(thread::spawn(move || {
@@ -100,6 +114,7 @@ impl AnimationControl {
                         .build(),
                 );
                 let mut endpoint = None;
+                let mut last_file_endpoint = None;
                 let mut preference = Preference::default();
                 let mut fast_until = None;
                 while !cancelled.load(Ordering::Relaxed) {
@@ -111,6 +126,8 @@ impl AnimationControl {
                         Duration::from_millis(100)
                     } else if endpoint.is_some() {
                         Duration::from_secs(1)
+                    } else if service_file.is_some() {
+                        Duration::from_millis(250)
                     } else {
                         Duration::from_secs(3600)
                     });
@@ -138,19 +155,37 @@ impl AnimationControl {
                             fast_until = Some(Instant::now() + Duration::from_secs(2));
                             false
                         }
+                        Ok(Command::Reconnect) => {
+                            fast_until = Some(Instant::now() + Duration::from_secs(5));
+                            *lock_state(&state) = if endpoint.is_some() {
+                                AnimationState::Checking
+                            } else {
+                                AnimationState::Waiting
+                            };
+                            false
+                        }
                         Err(mpsc::RecvTimeoutError::Timeout) => false,
                     };
                     if cancelled.load(Ordering::Relaxed) {
                         break;
                     }
+                    if let Some(url) = service_file.as_deref().and_then(read_service_file)
+                        && last_file_endpoint.as_ref() != Some(&url)
+                    {
+                        last_file_endpoint = Some(url.clone());
+                        if endpoint.as_ref() != Some(&url) {
+                            endpoint = Some(url);
+                            preference.isolate = None;
+                            preference.restore = preference.factor.is_some();
+                        }
+                    }
                     if let Some(endpoint) = &endpoint {
-                        let status = match read_factor(
-                            &agent,
-                            endpoint,
-                            toggle,
-                            &mut preference,
-                            &cancelled,
-                        ) {
+                        let result =
+                            read_factor(&agent, endpoint, toggle, &mut preference, &cancelled);
+                        if let Ok(mut detail) = connection_error.lock() {
+                            *detail = result.as_ref().err().map(ToString::to_string);
+                        }
+                        let status = match result {
                             Ok(Some(factor)) => AnimationState::Confirmed(factor),
                             Ok(None) if preference.restore || preference.restarting => preference
                                 .factor
@@ -173,6 +208,7 @@ impl AnimationControl {
         };
         Self {
             state,
+            connection_error,
             commands,
             cancelled,
             worker,
@@ -190,6 +226,14 @@ impl AnimationControl {
         } else {
             lock_state(&self.state).clone()
         }
+    }
+
+    /// Transport diagnostics never include the authenticated service URL.
+    pub fn connection_error(&self) -> Option<String> {
+        if self.state() != AnimationState::Disconnected {
+            return None;
+        }
+        self.connection_error.lock().ok()?.clone()
     }
 
     pub fn label(&self) -> String {
@@ -226,13 +270,17 @@ impl AnimationControl {
         match &*state {
             AnimationState::Confirmed(_) => {}
             AnimationState::Waiting | AnimationState::Checking | AnimationState::Restoring(_) => {
-                bail!("Animation control is waiting for Flutter's VM Service.")
+                bail!(
+                    "Animation control is waiting for Flutter's VM Service. Try Actions → Reconnect animation control."
+                )
             }
             AnimationState::Unavailable => bail!(
                 "Animation control needs a Flutter debug/profile app with the timeDilation service extension."
             ),
             AnimationState::Disconnected => {
-                bail!("Animation control is reconnecting to Flutter's VM Service.")
+                bail!(
+                    "Cannot reach Flutter's VM Service. Try Actions → Reconnect animation control."
+                )
             }
         }
         self.pending_toggle.store(true, Ordering::Release);
@@ -241,6 +289,15 @@ impl AnimationControl {
             bail!("Animation control is busy; try again shortly.");
         }
         Ok(())
+    }
+
+    pub fn reconnect(&self) -> Result<()> {
+        if !self.enabled {
+            bail!("Animation control needs a Flutter debug/profile app.");
+        }
+        self.commands
+            .try_send(Command::Reconnect)
+            .map_err(|_| anyhow::anyhow!("Animation control is busy; try again shortly."))
     }
 
     /// Wake the worker before forwarding `R`; output markers also cover
@@ -284,7 +341,7 @@ impl AnimationControl {
                 }
                 Escape::Text => match byte {
                     0x1b => self.escape = Escape::Start,
-                    b'\n' => {
+                    b'\n' | b'\r' => {
                         self.finish_line();
                         self.line.clear();
                     }
@@ -371,6 +428,20 @@ fn service_url(candidate: &str) -> Option<Url> {
     Some(url)
 }
 
+fn read_service_file(path: &Path) -> Option<Url> {
+    let file = std::fs::File::open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > 16_384 {
+        return None;
+    }
+    let mut value = String::new();
+    file.take(16_385).read_to_string(&mut value).ok()?;
+    if value.len() > 16_384 {
+        return None;
+    }
+    service_url(value.trim())
+}
+
 fn rpc(
     agent: &ureq::Agent,
     endpoint: &Url,
@@ -385,11 +456,17 @@ fn rpc(
     url.query_pairs_mut().extend_pairs(params.iter().copied());
     let response: Value = agent
         .get(url.as_str())
-        .call()?
+        .call()
+        .map_err(|error| match error {
+            ureq::Error::Timeout(_) => anyhow::anyhow!("VM Service request timed out"),
+            ureq::Error::StatusCode(code) => anyhow::anyhow!("VM Service returned HTTP {code}"),
+            _ => anyhow::anyhow!("Could not connect to VM Service"),
+        })?
         .body_mut()
         .with_config()
         .limit(1024 * 1024)
-        .read_json()?;
+        .read_json()
+        .map_err(|_| anyhow::anyhow!("Invalid VM Service response"))?;
     if response.get("error").is_some() {
         bail!("VM Service rejected the request");
     }
@@ -556,6 +633,33 @@ mod tests {
         assert_eq!(control.endpoint.as_ref().unwrap().path(), "/code=/");
     }
     #[test]
+    fn service_file_rejects_oversized_non_local_and_invalid_addresses() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("service-uri");
+        assert!(read_service_file(&path).is_none());
+        for value in [
+            "http://example.com:8181/token/".into(),
+            "x".repeat(16_385),
+            "ws://".into(),
+        ] {
+            std::fs::write(&path, value).unwrap();
+            assert!(read_service_file(&path).is_none());
+        }
+        std::fs::write(&path, "ws://127.0.0.1:8181/token=/ws\r\n").unwrap();
+        assert_eq!(
+            read_service_file(&path).unwrap().as_str(),
+            "http://127.0.0.1:8181/token=/"
+        );
+    }
+
+    #[test]
+    fn carriage_return_terminated_service_line_is_detected() {
+        let mut control = AnimationControl::new(true);
+        control.feed(b"Connecting to VM Service at ws://127.0.0.1:8181/token=/ws\r");
+        assert_eq!(control.endpoint.as_ref().unwrap().path(), "/token=/");
+    }
+
+    #[test]
     fn invalid_factors_and_release_control_never_claim_to_be_enabled() {
         for value in [
             serde_json::json!({"timeDilation":"NaN"}),
@@ -567,5 +671,6 @@ mod tests {
         let control = AnimationControl::new(false);
         assert_eq!(control.label(), "Animations: unavailable");
         assert!(control.toggle().is_err());
+        assert!(control.reconnect().is_err());
     }
 }

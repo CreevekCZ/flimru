@@ -1,4 +1,4 @@
-use crate::config::LaunchConfig;
+use crate::{batch_commands::HotCapabilities, config::LaunchConfig};
 use anyhow::{Context, Result, bail};
 use std::{
     ffi::OsStr,
@@ -19,6 +19,8 @@ pub struct RunCommand {
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub env: std::collections::BTreeMap<String, String>,
+    pub capture_vm_service: bool,
+    pub hot_capabilities: HotCapabilities,
 }
 
 fn on_path(name: &str) -> Option<PathBuf> {
@@ -102,11 +104,17 @@ impl FlutterTool {
             bail!("Working directory does not exist: {}", config.cwd.display());
         }
         let flutter_args = config.flutter_args(device)?;
+        let custom_runner = ownit_compat && device == "mac-designed-for-ipad";
+        let capture_vm_service = !config.is_test()
+            && !flutter_args
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "--release" | "--release=true"))
+            && !custom_runner;
         let mut executable = self.executable.clone();
         let mut args = self.prefix.clone();
         args.extend(flutter_args);
 
-        if ownit_compat && device == "mac-designed-for-ipad" {
+        if custom_runner {
             let helper = self.workspace.join("scripts/run_mac_designed_for_ipad.sh");
             if !helper.is_file() {
                 bail!("Designed for iPad runner is missing: {}", helper.display());
@@ -168,6 +176,8 @@ impl FlutterTool {
             args,
             cwd: config.cwd.clone(),
             env: config.env.clone(),
+            capture_vm_service,
+            hot_capabilities: HotCapabilities::from_launch(config, custom_runner),
         })
     }
 }
@@ -210,8 +220,55 @@ mod tests {
     use crate::config::LaunchFile;
 
     #[test]
+    fn vm_service_capture_is_only_enabled_for_supported_app_runs() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        let launch = LaunchFile::parse(
+            r#"{"configurations":[
+            {"name":"Debug"},
+            {"name":"Profile","flutterMode":"profile"},
+            {"name":"Release","args":["--release"]},
+            {"name":"Explicit release","args":["--release=true"]},
+            {"name":"Tests","program":"test"}
+        ]}"#,
+            &workspace.join("launch.json"),
+            workspace,
+        )
+        .unwrap();
+        let tool = FlutterTool {
+            executable: "/bin/echo".into(),
+            prefix: vec![],
+            workspace: workspace.into(),
+        };
+        for (config, expected) in launch
+            .configurations
+            .iter()
+            .zip([true, true, false, false, false])
+        {
+            assert_eq!(
+                tool.plan(config, "device", false)
+                    .unwrap()
+                    .capture_vm_service,
+                expected,
+                "{}",
+                config.name
+            );
+        }
+        std::fs::create_dir(workspace.join("scripts")).unwrap();
+        std::fs::write(workspace.join("scripts/run_mac_designed_for_ipad.sh"), "").unwrap();
+        assert!(
+            !tool
+                .plan(&launch.configurations[0], "mac-designed-for-ipad", true)
+                .unwrap()
+                .capture_vm_service
+        );
+    }
+
+    #[test]
     fn display_redacts_split_and_joined_defines() {
         let command = RunCommand {
+            capture_vm_service: false,
+            hot_capabilities: crate::batch_commands::HotCapabilities::Supported,
             executable: "flutter".into(),
             args: vec![
                 "run".into(),
@@ -226,6 +283,60 @@ mod tests {
         assert!(!display.contains("one"));
         assert!(!display.contains("two"));
         assert!(display.contains("redacted"));
+    }
+
+    #[test]
+    fn hot_capabilities_follow_launch_options_and_actual_adapter_not_tool_names_or_guards() {
+        use crate::batch_commands::{HotCapabilities::*, HotExclusion};
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        std::fs::create_dir(workspace.join("scripts")).unwrap();
+        for script in ["run_mac_designed_for_ipad.sh", "check_secrets.sh"] {
+            std::fs::write(workspace.join("scripts").join(script), "").unwrap();
+        }
+        let launch = LaunchFile::parse(
+            r#"{"configurations":[
+            {"name":"Release test profile custom label"},
+            {"name":"Guarded","args":["--dart-define-from-file=secret.env"]},
+            {"name":"Profile","flutterMode":"profile"},
+            {"name":"Tests","program":"test"}
+        ]}"#,
+            &workspace.join("launch.json"),
+            workspace,
+        )
+        .unwrap();
+        for prefix in [vec![], vec!["flutter".into()]] {
+            let tool = FlutterTool {
+                executable: workspace.join("custom-compatible-cli"),
+                prefix,
+                workspace: workspace.into(),
+            };
+            for (index, expected) in [
+                (0, Supported),
+                (1, Supported),
+                (2, Unsupported(HotExclusion::Profile)),
+                (3, Unsupported(HotExclusion::Test)),
+            ] {
+                assert_eq!(
+                    tool.plan(&launch.configurations[index], "normal-device", true)
+                        .unwrap()
+                        .hot_capabilities,
+                    expected
+                );
+            }
+            assert_eq!(
+                tool.plan(&launch.configurations[0], "mac-designed-for-ipad", true)
+                    .unwrap()
+                    .hot_capabilities,
+                Unsupported(HotExclusion::CustomRunner)
+            );
+            assert_eq!(
+                tool.plan(&launch.configurations[0], "mac-designed-for-ipad", false)
+                    .unwrap()
+                    .hot_capabilities,
+                Supported
+            );
+        }
     }
 
     #[cfg(unix)]

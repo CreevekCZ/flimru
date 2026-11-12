@@ -1,0 +1,12 @@
+LIVE FLUTTER · active tabs keep em
+ ┌ Hot restart delivery report ─┐ 
+ │ Requested/queued: 2          │ 
+ │ Skipped: 4 · Failed: 2       │ 
+ │ Flutter completion is        │ 
+ │ unconfirmed.                 │ 
+ │ 研 究 用 長 い デ バ イ ス  é 🧑‍💻       │ 
+ │ 研 究 用 長 い デ バ イ ス  é 🧑‍💻       │ 
+ │ 研 究 用 長 い デ バ イ ス  é 🧑‍💻       │ 
+ │ [Close] Esc ↑↓ Pg 1-3/35     │ 
+ └──────────────────────────────┘ 
+                                  

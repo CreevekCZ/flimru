@@ -1,0 +1,24 @@
+┌ Snapshot · Physical Pixel 界  · long configuration segment long configuration ┐
+│Search: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa│
+│All · No matches                                                              │
+│ERROR first request                                                           │
+│WARN second request                                                           │
+│INFO third request                                                            │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│n/N matches · f filter · / edit                                               │
+│r refresh · Esc resume live                                                   │
+└──────────────────────────────────────────────────────────────────────────────┘

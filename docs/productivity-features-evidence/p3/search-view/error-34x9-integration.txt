@@ -1,0 +1,12 @@
+Toolbar · sessions continue       
+                                  
+[Pixel] [Other live]              
+┌ Snapshot · Pixel 界  · developme┐
+│Search: (empty)                 │
+│All · Review unavailable        │
+│Retained screen exceeds the 128 │
+│MiB capture estimate. Refresh   │
+│after reducing retained history.│
+│n/N matches · f filter · / edit │
+│r refresh · Esc resume live     │
+└────────────────────────────────┘

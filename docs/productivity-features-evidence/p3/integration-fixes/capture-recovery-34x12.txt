@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+  Close     ›│ Menu   Help   Quit 
+ 1○ Pixel 界  · development       ×
+┌ Snapshot · Pixel 界  · developm…┐
+│Search: (empty)                 │
+│All · Review unavailable        │
+│128 MiB capture limit. Start a  │
+│new session in a narrower       │
+│terminal; history stays wide.   │
+│n/N matches · f filter · / edit │
+│r refresh · Esc resume live     │
+└ i source ──────────────────────┘

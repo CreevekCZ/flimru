@@ -1,0 +1,12 @@
+┌ Snapshot · Pixel 界  · developm…┐
+│Search: (empty)                 │
+│All · 1 row · col 1 ↔           │
+│Snapshot is empty.              │
+│                                │
+│                                │
+│                                │
+│                                │
+│                                │
+│n/N matches · f filter · / edit │
+│r refresh · Esc resume live     │
+└ i source ──────────────────────┘

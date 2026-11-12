@@ -20,10 +20,67 @@ enum Output {
     Error(String),
 }
 
+// Some device log transports render ESC as \^[ (sometimes with an extra
+// backslash). Decode only SGR sequences, leaving other escaped text untouched.
+#[derive(Default)]
+struct EscapedSgr {
+    pending: Vec<u8>,
+}
+
+impl EscapedSgr {
+    fn feed(&mut self, bytes: &[u8], end: bool) -> Vec<u8> {
+        self.pending.extend_from_slice(bytes);
+        let mut output = Vec::with_capacity(self.pending.len());
+        let mut i = 0;
+        while i < self.pending.len() {
+            if self.pending[i] != b'\\' {
+                output.push(self.pending[i]);
+                i += 1;
+                continue;
+            }
+            let start = i;
+            let mut j = i + 1;
+            if self.pending.get(j) == Some(&b'\\') {
+                j += 1;
+            }
+            let prefix = b"^[[";
+            let available = &self.pending[j..];
+            if available.len() < prefix.len() && prefix.starts_with(available) && !end {
+                break;
+            }
+            if available.starts_with(prefix) {
+                j += prefix.len();
+                let parameters = j;
+                while j < self.pending.len()
+                    && (self.pending[j].is_ascii_digit() || self.pending[j] == b';')
+                    && j - start < 64
+                {
+                    j += 1;
+                }
+                if j == self.pending.len() && j - start < 64 && !end {
+                    break;
+                }
+                if self.pending.get(j) == Some(&b'm') {
+                    output.extend_from_slice(b"\x1b[");
+                    output.extend_from_slice(&self.pending[parameters..=j]);
+                    i = j + 1;
+                    continue;
+                }
+            }
+            output.push(self.pending[i]);
+            i += 1;
+        }
+        self.pending.drain(..i);
+        output
+    }
+}
+
 pub struct Session {
     pub parser: vt100::Parser,
     pub animations: AnimationControl,
     pub scrollback_len: usize,
+    /// Lifetime width bound: vt100 retains old scrollback rows across resize.
+    pub max_columns: u16,
     pub visual_revision: u64,
     child: Box<dyn Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
@@ -32,11 +89,14 @@ pub struct Session {
     reader: Option<JoinHandle<()>>,
     cancelled: Arc<AtomicBool>,
     pending: Vec<u8>,
+    escaped_sgr: EscapedSgr,
     pub stop_requested: Option<Instant>,
     pub read_error: Option<String>,
     closed: bool,
     exited: Option<(portable_pty::ExitStatus, Instant)>,
     interrupt_sent: bool,
+    // Dropped after the animation worker and after the child has exited.
+    _service_directory: Option<tempfile::TempDir>,
 }
 
 fn size(rows: u16, cols: u16) -> PtySize {
@@ -48,16 +108,76 @@ fn size(rows: u16, cols: u16) -> PtySize {
     }
 }
 
+#[cfg(unix)]
+fn wait_for_output(fd: Option<std::os::fd::RawFd>) -> std::io::Result<()> {
+    let Some(fd) = fd else {
+        thread::sleep(Duration::from_millis(5));
+        return Ok(());
+    };
+    let mut descriptor = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: descriptor is writable for one pollfd. The caller keeps master
+    // alive until the reader is joined, so fd is valid throughout this call.
+    // The deadline bounds cancellation when a descendant retains an idle slave.
+    let ready = unsafe { libc::poll(&mut descriptor, 1, 100) };
+    if ready < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+    if descriptor.revents & libc::POLLNVAL != 0 {
+        return Err(std::io::Error::from_raw_os_error(libc::EBADF));
+    }
+    Ok(())
+}
+
 impl Session {
+    pub const SCROLLBACK_CAPACITY: usize = 10_000;
     /// Request colored child output while honoring explicit launch.json env overrides.
     pub fn start(plan: &RunCommand, rows: u16, cols: u16) -> Result<Self> {
+        let mut args = plan.args.clone();
+        // Preserve an explicitly configured output file. Custom runners, tests,
+        // and release builds continue to use console detection only.
+        let service_directory = if plan.capture_vm_service
+            && !args.iter().any(|arg| {
+                arg == "--vmservice-out-file" || arg.starts_with("--vmservice-out-file=")
+            }) {
+            let mut directory = tempfile::Builder::new();
+            directory.prefix("flimru-vm-service-");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                directory.permissions(std::fs::Permissions::from_mode(0o700));
+            }
+            let directory = directory.tempdir()?;
+            let position = args
+                .iter()
+                .position(|arg| arg == "--")
+                .unwrap_or(args.len());
+            args.insert(
+                position,
+                format!(
+                    "--vmservice-out-file={}",
+                    directory.path().join("service-uri").display()
+                ),
+            );
+            Some(directory)
+        } else {
+            None
+        };
         let pair = native_pty_system()
             .openpty(size(rows, cols))
             .context("Could not open a pseudo-terminal")?;
         let mut reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
         #[cfg(unix)]
-        if let Some(fd) = pair.master.as_raw_fd() {
+        let reader_fd = pair.master.as_raw_fd();
+        #[cfg(unix)]
+        if let Some(fd) = reader_fd {
             // The cloned reader and writer share this file description. Both are
             // nonblocking, so neither a full output channel nor pasted input can
             // hold up shutdown or the UI.
@@ -74,7 +194,7 @@ impl Session {
             }
         }
         let mut command = CommandBuilder::new(&plan.executable);
-        command.args(&plan.args);
+        command.args(&args);
         command.cwd(&plan.cwd);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
@@ -100,8 +220,16 @@ impl Session {
                     Ok(0) => Output::Closed,
                     Ok(count) => Output::Bytes(buffer[..count].to_vec()),
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(5));
-                        continue;
+                        #[cfg(unix)]
+                        match wait_for_output(reader_fd) {
+                            Ok(()) => continue,
+                            Err(error) => Output::Error(error.to_string()),
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            thread::sleep(Duration::from_millis(5));
+                            continue;
+                        }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                     // Linux PTYs return EIO when their last slave closes.
@@ -130,9 +258,20 @@ impl Session {
             }
         });
         Ok(Self {
-            parser: vt100::Parser::new(rows.max(1), cols.max(1), 10_000),
-            animations: AnimationControl::new(!plan.args.iter().any(|arg| arg == "--release")),
+            parser: vt100::Parser::new(rows.max(1), cols.max(1), Self::SCROLLBACK_CAPACITY),
+            animations: match &service_directory {
+                Some(directory) => {
+                    AnimationControl::with_service_file(directory.path().join("service-uri"))
+                }
+                None => AnimationControl::new(
+                    !plan
+                        .args
+                        .iter()
+                        .any(|arg| matches!(arg.as_str(), "--release" | "--release=true")),
+                ),
+            },
             scrollback_len: 0,
+            max_columns: cols.max(1),
             visual_revision: 0,
             child,
             master: pair.master,
@@ -141,12 +280,21 @@ impl Session {
             reader: Some(reader_thread),
             cancelled,
             pending: vec![],
+            escaped_sgr: EscapedSgr::default(),
             stop_requested: None,
             read_error: None,
             closed: false,
             exited: None,
             interrupt_sent: false,
+            _service_directory: service_directory,
         })
+    }
+
+    pub fn reconnect_animations(&mut self) -> Result<()> {
+        self.animations.reconnect()?;
+        // Flutter's help command reprints debugger addresses without restarting
+        // the app. This also recovers custom runners without a service file.
+        self.send(b"h")
     }
 
     pub fn send(&mut self, bytes: &[u8]) -> Result<()> {
@@ -224,12 +372,16 @@ impl Session {
                 Ok(Output::Bytes(bytes)) => {
                     had_output = true;
                     self.animations.feed(&bytes);
-                    self.parser.process(&bytes);
+                    self.parser.process(&self.escaped_sgr.feed(&bytes, false));
                     self.visual_revision = self.visual_revision.wrapping_add(1);
                 }
-                Ok(Output::Closed) => self.closed = true,
+                Ok(Output::Closed) => {
+                    self.parser.process(&self.escaped_sgr.feed(&[], true));
+                    self.closed = true;
+                }
                 Ok(Output::Error(error)) => {
                     self.read_error = Some(error);
+                    self.parser.process(&self.escaped_sgr.feed(&[], true));
                     self.closed = true;
                 }
                 Err(_) => break,
@@ -282,6 +434,7 @@ impl Session {
         if self.parser.screen().size() != (rows.max(1), cols.max(1)) {
             self.master.resize(size(rows, cols))?;
             self.parser.screen_mut().set_size(rows.max(1), cols.max(1));
+            self.max_columns = self.max_columns.max(cols.max(1));
             self.update_scroll_bounds();
             self.visual_revision = self.visual_revision.wrapping_add(1);
         }
@@ -335,14 +488,119 @@ impl Drop for Session {
 
 #[cfg(all(test, unix))]
 mod tests {
+
+    #[test]
+    fn escaped_device_colors_survive_chunk_boundaries_and_preserve_other_text() {
+        let input = br"flutter: \^[[2m[AutoRoute]\^[[0m \\^[[90mFINEST:\\^[[0m Popped \^[[2J";
+        for split in 0..=input.len() {
+            let mut decoder = super::EscapedSgr::default();
+            let mut output = decoder.feed(&input[..split], false);
+            output.extend(decoder.feed(&input[split..], false));
+            output.extend(decoder.feed(&[], true));
+            assert_eq!(
+                output,
+                b"flutter: \x1b[2m[AutoRoute]\x1b[0m \x1b[90mFINEST:\x1b[0m Popped \\^[[2J"
+            );
+            let mut parser = vt100::Parser::new(2, 100, 0);
+            parser.process(&output);
+            assert!(
+                parser
+                    .screen()
+                    .contents()
+                    .contains("[AutoRoute] FINEST: Popped")
+            );
+            assert_eq!(
+                parser.screen().cell(0, 21).unwrap().fgcolor(),
+                vt100::Color::Idx(8)
+            );
+        }
+    }
     use super::*;
     fn command(script: &str) -> RunCommand {
         RunCommand {
+            capture_vm_service: false,
+            hot_capabilities: crate::batch_commands::HotCapabilities::Supported,
             executable: "/bin/sh".into(),
             args: vec!["-c".into(), script.into()],
             cwd: std::env::temp_dir(),
             env: Default::default(),
         }
+    }
+
+    #[test]
+    fn service_files_are_private_per_session_and_cleaned_after_children_exit() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut plan = command(
+            "printf '%s' \"$1\" > \"$URI_LOG\"; printf 'CAPTURE READY\\r\\n'; exec sleep 30",
+        );
+        plan.capture_vm_service = true;
+        plan.args.push("fixture".into());
+        // Capture must be a Flutter option, before the application separator.
+        plan.args
+            .extend(["--".into(), "application argument".into()]);
+        plan.env.insert(
+            "URI_LOG".into(),
+            directory
+                .path()
+                .join("uri.log")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let mut first = Session::start(&plan, 10, 80).unwrap();
+        let first_path = first
+            ._service_directory
+            .as_ref()
+            .unwrap()
+            .path()
+            .to_path_buf();
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&first_path).unwrap().permissions().mode() & 0o077,
+            0
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !first.parser.screen().contents().contains("CAPTURE READY") {
+            assert!(Instant::now() < deadline);
+            first.tick().unwrap();
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("uri.log")).unwrap(),
+            format!(
+                "--vmservice-out-file={}",
+                first_path.join("service-uri").display()
+            )
+        );
+        let second = Session::start(&plan, 10, 80).unwrap();
+        let second_path = second
+            ._service_directory
+            .as_ref()
+            .unwrap()
+            .path()
+            .to_path_buf();
+        assert_ne!(first_path, second_path);
+        drop(first);
+        assert!(!first_path.exists());
+        assert!(second_path.exists());
+        drop(second);
+        assert!(!second_path.exists());
+    }
+
+    #[test]
+    fn explicit_service_output_is_not_overridden_or_deleted() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("user-service-uri");
+        std::fs::write(&path, "user data").unwrap();
+        let mut plan = command("exec sleep 30");
+        plan.capture_vm_service = true;
+        plan.args.extend([
+            "fixture".into(),
+            format!("--vmservice-out-file={}", path.display()),
+        ]);
+        let session = Session::start(&plan, 10, 80).unwrap();
+        assert!(session._service_directory.is_none());
+        drop(session);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "user data");
     }
 
     #[test]
@@ -354,8 +612,11 @@ mod tests {
             session.tick().unwrap();
             thread::sleep(Duration::from_millis(10));
         }
+        assert_eq!(session.max_columns, 90);
+        session.resize(15, 120).unwrap();
         session.resize(15, 60).unwrap();
         assert_eq!(session.parser.screen().size(), (15, 60));
+        assert_eq!(session.max_columns, 120);
         session.send(b"h").unwrap();
         session.send(b"v").unwrap();
         session.request_stop().unwrap();

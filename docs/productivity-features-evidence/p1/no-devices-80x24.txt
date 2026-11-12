@@ -1,0 +1,24 @@
+ Flimru / Example                                                      0 devices
+  Next   Multi: off   Refresh   Configs                 │ Actions   Help   Quit 
+ Devices   › Configuration   › Console                                          
+┌ Devices (0) ─────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│  No devices yet.                                                             │
+│  Connect a device or start an emulator.                                      │
+│  d · configuration diagnostics                                               │
+│  r · refresh                                                                 │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                                                      [Filter /]
+                                                                                
+ ↑↓ select · Enter next · f favorite                                            
+ Tab actions · / filter · m multi                                               

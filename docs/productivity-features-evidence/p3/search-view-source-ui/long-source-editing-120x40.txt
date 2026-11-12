@@ -1,0 +1,40 @@
+┌ Snapshot · Physical Pixel 界  · long configuration segment long configuration segment long configuration seg… ────────┐
+│Search ▸ request                                                                                                      │
+│All · 1/3 · col 1 ↔                                                                                                   │
+│ERROR first request                                                                                                   │
+│WARN second request                                                                                                   │
+│INFO third request                                                                                                    │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│Enter read · Esc stop editing                                                                                         │
+│Snapshot · live output continues                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

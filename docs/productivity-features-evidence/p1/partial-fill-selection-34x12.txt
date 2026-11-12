@@ -1,0 +1,12 @@
+ Flimru / Example        3 devices
+  Checking… ›│ Menu   Help   Quit 
+ Devices  › Config  › Console     
+┌ Configs · 1 checking / 1 ready ┐
+│ Ready first                    │
+│ ready                          │
+│                                │
+└────────────────────────────────┘
+                        [Filter /]
+                                  
+ Checking selected availability   
+ ↑↓ choose · u unavailable · / fil

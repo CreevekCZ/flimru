@@ -1,0 +1,12 @@
+┌ Snapshot · Physical Pixel 界  · ┐
+│Search ▸ aaaaaaaaaaaaaaaaneedle │
+│All · No matches                │
+│ERROR first request             │
+│WARN second request             │
+│INFO third request              │
+│                                │
+│                                │
+│                                │
+│Enter read · Esc stop editing   │
+│Snapshot · live output continues│
+└────────────────────────────────┘

@@ -1,0 +1,40 @@
+LIVE FLUTTER CONSOLE · other tabs keep running                                                                          
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                    ┌ Export retained console log ─────────────────────────────────────────────────┐                    
+                    │ Source: Phone 界  · Debug · running                                           │                    
+                    │ Full snapshot, including                                                     │                    
+                    │ query/filter-hidden lines.                                                   │                    
+                    │ Destination (no overwrite)                                                   │                    
+                    │                                                                              │                    
+                    │ Enter a destination.                                                         │                    
+                    │                                                                              │                    
+                    │ [ Export ]  [ Cancel ]                                                       │                    
+                    │ Edit path · Esc Cancel                                                       │                    
+                    │ ←→ Home End edit · Tab focus                                                 │                    
+                    └──────────────────────────────────────────────────────────────────────────────┘                    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        

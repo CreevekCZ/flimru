@@ -1,0 +1,24 @@
+ Flimru / Example                                                      0 devices
+  Select a row   Show unavailable   Back   Reload       │ Actions   Help   Quit 
+ Devices   › Configuration   › Console                                          
+┌ Configs · 0 ready / 0 blocked ───────────────────────────────────────────────┐
+│                                                                              │
+│  Empty configurations array.                                                 │
+│  Add a configuration, then r reload.                                         │
+│  i · file warnings                                                           │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+  Unrelated session status remains available.                         [Filter /]
+                                                                                
+ Select a configuration to run                                                  
+ ↑↓ choose · u unavailable · / filter                                           

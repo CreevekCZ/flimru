@@ -1,0 +1,12 @@
+ Flimru / Example        0 devices
+  Checking… ›│ Menu   Help   Quit 
+ Devices  › Config  › Console     
+┌ Configs · 1 checking / 1 ready ┐
+│ Stable 界  é                    │
+│ ready                          │
+│                                │
+└────────────────────────────────┘
+  Unrelated session     [Filter /]
+status remains                    
+ Checking selected availability   
+ ↑↓ choose · u unavailable · / fil

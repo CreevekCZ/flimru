@@ -1,0 +1,24 @@
+ Flimru / Example                                                      3 devices
+  Select a row   Hide unavailable   Back   Reload       │ Actions   Help   Quit 
+ Devices   › Configuration   › Console                                          
+┌ Configs · 0 ready / 0 blocked ───────────────────────────────────────────────┐
+│                                                                              │
+│  Empty configurations array.                                                 │
+│  Add a configuration, then r reload.                                         │
+│  i · file warnings                                                           │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                                                      [Filter /]
+                                                                                
+ Enter explains · Esc back                                                      
+ u unavailable · i details · / filter                                           

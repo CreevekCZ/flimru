@@ -1,0 +1,24 @@
+ Flimru / T                                                            3 devices
+  Close   Add session                                   │ Actions   Help   Quit 
+ 1○ android-device · Original          ×  2○ android-device · Destination      ×
+┌ Lates┌ Actions · Ctrl+p / Esc close ──────────────────────────────────┐──────┐
+│Latest│  Add session                                                   │      │
+│Retain│  Operation details                                             │      │
+│      │› Device picker                                                 │      │
+│      │  Close ended session                                           │      │
+│      │  Back to devices                                               │      │
+│      │  Export retained console log                                   │      │
+│      │  Search console                                                │      │
+│      │  Reload all eligible (0)                                       │      │
+│      │  Restart all eligible (0)                                      │      │
+│      │  Previous console                                              │      │
+│      │  Next console                                                  │      │
+│      │  Console 1: android-device · Original (ended)                  │      │
+│      │  Console 2: android-device · Destination (ended)               │      │
+│      │  Launcher help                                                 │      │
+│      │  Quit launcher                                         Ctrl+q  │      │
+│      │↑↓ / wheel · Enter / click                                      │      │
+│      └────────────────────────────────────────────────────────────────┘      │
+│                                                                              │
+│↑↓ PgUp/PgDn · Esc back                                                       │
+└──────────────────────────────────────────────────────────────────────────────┘

@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+ ┌ Actions · Ctrl+p / Esc close ┐ 
+ │  Add session                ║│×
+┌│  Operation details          █│┐
+││› Device picker              █││
+││  Close ended session        ║││
+││  Back to devices            ║││
+││  Export retained console    ║││
+││  Search console             ║││
+││↑↓ / wheel · Enter / click    ││
+│└──────────────────────────────┘│
+└────────────────────────────────┘

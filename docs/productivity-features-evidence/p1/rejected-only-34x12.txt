@@ -1,0 +1,12 @@
+ Flimru / Example        3 devices
+  Why bloc… ›│ Menu   Help   Quit 
+ Devices  › Config  › Console     
+┌ Configs · 0 ready / 1 blocked ─┐
+│›  ⊘ Unsupported debugger 界     │
+│   blocked · configuration · i e│
+│                                │
+└────────────────────────────────┘
+                        [Filter /]
+                                  
+ Enter explains · Esc back        
+ u unavailable · i details · / fil

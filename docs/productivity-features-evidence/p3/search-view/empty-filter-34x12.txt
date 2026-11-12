@@ -1,0 +1,12 @@
+┌ Snapshot · Pixel 界  · developme┐
+│Search: missing                 │
+│Errors · No matches             │
+│No lines in this filter.        │
+│                                │
+│                                │
+│                                │
+│                                │
+│                                │
+│n/N matches · f filter · / edit │
+│r refresh · Esc resume live     │
+└────────────────────────────────┘

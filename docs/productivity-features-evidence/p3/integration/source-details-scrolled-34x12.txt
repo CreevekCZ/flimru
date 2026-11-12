@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+  Close     ›│ Menu   Help   Quit 
+ 1○ Physical Pixel 界  long device×
+┌ Frozen source details ─────────┐
+│nfiguration label configuration │
+│label configuration label config│
+│uration label configuration labe│
+│l configuration…                │
+│Outcome: exited successfully    │
+│Captured: Unix UTC 1793997444 s │
+│↑↓ PgUp/PgDn · Esc back         │
+└────────────────────────────────┘

@@ -38,6 +38,20 @@ saved immediately and cached devices remain selectable while discovery runs.
 `r` requests a refresh, `c` reloads `launch.json`, `/` filters, and `l` opens
 the last console. Click a row to select it, click its star to toggle favorites,
 and use the buttons to proceed. The wheel moves through picker items.
+On the configuration screen, `r` or `c` reloads `launch.json`; the Reload button
+and Actions menu offer the same command. Flimru also checks the selected launch
+file every 500 ms and applies changes after two matching observations, typically
+0.5–1 second after the final write. A file read, JSONC, or schema error keeps the
+last good configurations and shows a persistent Config error until corrected.
+If the selected configuration is removed or cannot be identified unambiguously,
+select a configuration again before running. Existing sessions keep their
+launch-time settings.
+
+The configuration picker shows runnable entries by default. Press `u` to show
+or hide unavailable entries, and `i` to explain the selected entry; Enter on an
+unavailable entry also opens its explanation. Unavailable entries cannot run.
+Press `d` on the device screen for **Configuration diagnostics**, even when no
+device is selected; some compatibility reasons need a target selection.
 `Esc` goes back or requests exit from the device screen. `Ctrl+q` and the Quit
 button open a confirmation: `y` or clicking Quit confirms; `Enter`, `n`, or
 `Esc` cancels. Confirming also stops an active session. `?` opens help in pickers;
@@ -45,10 +59,13 @@ the Help button and Actions menu work everywhere.
 Drag across console text and release to automatically copy the highlighted range.
 This works in live output, scrollback, and saved consoles. New logs continue to be
 processed while the selected viewport stays stable. Esc clears selection without
-stopping Flutter; a click, scrolling, switching consoles, or resizing also clears it.
+stopping Flutter; a click, scrolling after release, switching consoles, or resizing
+also clears it.
 A click without dragging does not copy anything. Borders and the scrollbar are
-excluded. Selection is limited to the visible viewport; scroll first to select older
-output. ANSI formatting is omitted, Unicode is preserved, and soft-wrapped rows
+excluded. While dragging, hold at the top or bottom text edge to scroll through
+older or newer output, or use the mouse wheel without releasing the button. The
+range stays anchored in a snapshot of the available history when the drag began.
+ANSI formatting is omitted, Unicode is preserved, and soft-wrapped rows
 are joined when copying. Clipboard text is limited to 128 KiB.
 
 For keyboard selection, press **Ctrl+e** or choose **Actions → Select text**.
@@ -112,7 +129,7 @@ For multiple devices, press **m** in the device picker or use **Actions →
 Multi-device**. `--multi` enables this mode at startup. Check devices with
 **Space**, their `[ ]` checkbox, or the menu, then press Enter and choose one
 launch configuration. Only configurations compatible with **every** checked
-device are offered; an explicit `deviceId` remains a constraint. Tests that do
+device can run; an explicit `deviceId` remains a constraint. Tests that do
 not need a device cannot be duplicated across several devices. Selection uses
 device IDs and survives filtering and discovery, including cached devices.
 
@@ -126,8 +143,12 @@ ended. The selected console has a highlighted tab. All eight tabs fit in the
 minimum terminal width; labels shorten to their number and state as needed.
 The console title shows the full device and configuration names. Use Ctrl+g,
 Left/Right and Enter to select tabs from the keyboard.
-Reload, restart, DevTools, animation changes, typing and paste affect only the
-displayed instance.
+Ordinary reload, restart, DevTools, animation changes, typing and paste affect only
+the displayed instance. For an explicit batch request, choose **Reload all eligible** or
+**Restart all eligible** in Actions. The number in each action shows the current
+eligible count. These target eligible launch-time debug app sessions; unsupported,
+ended, and stopping sessions are skipped. The result reports requests queued, skipped, and failed,
+not whether Flutter completed the operation.
 
 **q/Esc** stops the displayed instance; pressing it again forces that instance.
 Completed consoles remain available for review. **Ctrl+w**, the tab's **×**, or
@@ -163,6 +184,32 @@ in that device's console, and other instances can continue. Each addition uses
 its selected configuration's arguments and environment; fixed application/server
 ports in your configuration must support simultaneous runs.
 
+## Search and export console output
+
+Press **Ctrl+s** or choose **Actions → Search console** on a live, ended, or saved
+console. This freezes a snapshot of retained output while live sessions continue
+running. Search is literal and case-insensitive, with highlighted matches and a
+current/total count. Queries are limited to 512 characters.
+
+Type or paste a query, then press Enter to read. In reading mode, `/` or Ctrl+s
+edits the query; `n` and `N` move to the next and previous match; `f` cycles All,
+Errors, Warnings, and Errors + warnings; `r` refreshes the snapshot; and `i`
+shows source details. Arrow keys and Page Up/Down scroll. Severity filters use
+recognized line prefixes; unclassified continuation lines are not inferred to
+belong to an error or warning. While editing, these letters are query text. Esc
+first leaves editing and then resumes the live console; **Actions → Resume live
+console** also leaves review. Review input does not reach Flutter; use Actions
+for process controls while reviewing. **Actions → Operation details** shows the
+latest operation message and the full saved path and byte count, including after
+resuming live output. Exceptionally long messages are marked as shortened.
+
+Choose **Actions → Export retained console log** to save UTF-8 text. The editable
+destination defaults to a generated name in the project's `flimru-logs/`
+directory; an existing file is never overwritten. In review, export uses the
+frozen snapshot; otherwise it captures retained output when invoked. It includes
+all retained content regardless of the query or severity filter, but not output
+already evicted from history. The log text may contain sensitive information.
+
 Console ANSI colors (including 256-color and RGB), backgrounds, and emphasis are
 preserved in live output and saved history. Plain recognized severity prefixes
 receive fallback colors: errors red, warnings amber, info cyan, and debug gray.
@@ -187,6 +234,22 @@ Service and registers the extension. Release apps and standard Flutter tests
 show it as unavailable; connection failures show disconnected rather than
 claiming a speed change succeeded.
 
+For normal debug/profile runs, Flimru asks Flutter to write its VM Service
+address into a private file owned by that session. This allows animation control
+to connect even when the startup URL was missed in console output. The file is
+monitored for address changes and removed after the session closes. Addresses
+are not reused across sessions or saved in favorites. An explicitly configured
+`--vmservice-out-file` is preserved; custom runners and those configurations
+continue to discover addresses from console output.
+
+If animation control is waiting or disconnected, click **Reconnect**, or choose
+**Actions → Reconnect animation control**. This retries the connection and sends
+Flutter's help command to print its current debugger addresses without restarting
+the app. Once the speed is available, use **Ctrl+a** to toggle it. Connection
+failures show a short diagnostic without exposing the authenticated URL. A
+reachable service without the Flutter animation extension remains unavailable;
+reconnecting cannot enable that extension in release apps or ordinary tests.
+
 Restoration uses Flutter's VM Service extension and happens when that extension
 becomes callable. It cannot guarantee slowdown before the first frame or before
 `main()` runs. Testing those earliest animations at a guaranteed slow speed
@@ -208,7 +271,8 @@ Test configurations use a `program` such as `test` and run `flutter test`.
 
 The supported variables are `${workspaceFolder}` (also
 `${workspaceRoot}`), `${workspaceFolderBasename}`, and `${env:NAME}`.
-Configurations containing unsupported variables are skipped with a warning.
+Configurations containing unsupported variables are unavailable and their
+explanations identify the unsupported variable.
 Debugger breakpoints are not
 implemented. A non-empty `preLaunchTask` blocks that configuration because the
 launcher cannot execute the task. `customTool`, `customToolReplacesArgs`,

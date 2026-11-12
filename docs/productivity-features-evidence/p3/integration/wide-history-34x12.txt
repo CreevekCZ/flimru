@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+  Close     ›│ Menu   Help   Quit 
+ 1○ Pixel 界  · development       ×
+┌ Snapshot · Pixel 界  · developm…┐
+│Search: ◌́                       │
+│All · 1/1 · col 109 ↔           │
+│aaaaaaaaaaaaaaaaaaaaaaaaaaaaa界 é│
+│                                │
+│                                │
+│n/N matches · f filter · / edit │
+│r refresh · Esc resume live     │
+└ i source ──────────────────────┘

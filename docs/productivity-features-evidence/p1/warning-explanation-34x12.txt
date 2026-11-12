@@ -1,0 +1,12 @@
+ Flimru / Example        3 devices
+ ┌ Diagnostics ─────────────────┐ 
+ │Selected config               │ 
+┌│                              │┐
+││Invalid Flutter arguments.    ││
+││Check device flag values and  ││
+││conflicting                   ││
+└│debug/profile/release modes.  │┘
+ │                              │]
+ │↑↓ scroll · Esc close         │ 
+ └──────────────────────────────┘ 
+ u unavailable · i details · / fil

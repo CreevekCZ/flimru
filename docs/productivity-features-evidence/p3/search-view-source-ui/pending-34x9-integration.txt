@@ -1,0 +1,12 @@
+Toolbar · sessions continue       
+                                  
+[Pixel] [Other live]              
+┌ Snapshot · Pixel 界  · developm…┐
+│Search ▸ type to search         │
+│All · Capturing…                │
+│Capturing retained console…     │
+│                                │
+│                                │
+│Enter read · Esc stop editing   │
+│Snapshot · live output continues│
+└────────────────────────────────┘

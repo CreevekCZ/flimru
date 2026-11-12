@@ -1,0 +1,12 @@
+ ┌ Export retained console log ─┐s
+ │ Source: android-device · fr… │ 
+ │ Full snapshot, including     │×
+┌│ query/filter-hidden lines.   │┐
+││ Destination (no overwrite)   ││
+││ ‹-frozen-config-53318-2.txt  ││
+││ Ready · 48 B retained text   ││
+││ May contain secrets. UTF-8.  ││
+││ [ Export ]  [ Cancel ]       ││
+││ Enter Export; Esc Cancel     ││
+││ ←→ Home End edit · Tab focus ││
+└└──────────────────────────────┘┘

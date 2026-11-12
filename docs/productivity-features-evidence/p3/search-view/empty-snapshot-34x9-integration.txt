@@ -1,0 +1,12 @@
+Toolbar · sessions continue       
+                                  
+[Pixel] [Other live]              
+┌ Snapshot · Pixel 界  · developme┐
+│Search: (empty)                 │
+│All · 1 rows · col 1 ↔          │
+│Snapshot is empty.              │
+│                                │
+│                                │
+│n/N matches · f filter · / edit │
+│r refresh · Esc resume live     │
+└────────────────────────────────┘

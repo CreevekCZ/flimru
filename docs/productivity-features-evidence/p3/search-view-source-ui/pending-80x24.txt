@@ -1,0 +1,24 @@
+┌ Snapshot · Pixel 界  · development ───────────────────────────────────────────┐
+│Search ▸ type to search                                                       │
+│All · Capturing…                                                              │
+│Capturing retained console…                                                   │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│Enter read · Esc stop editing                                                 │
+│Snapshot · live output continues                                              │
+└──────────────────────────────────────────────────────────────────────────────┘

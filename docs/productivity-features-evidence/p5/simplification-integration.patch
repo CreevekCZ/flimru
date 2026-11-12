@@ -1,0 +1,13 @@
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -691,8 +691,9 @@
+     }
+ 
+     fn hot_eligible_count(&self) -> usize {
+-        self.batch_targets()
++        self.runs
+             .iter()
++            .map(runs::Run::batch_target)
+             .filter(|target| target.exclusion().is_none())
+             .count()
+     }

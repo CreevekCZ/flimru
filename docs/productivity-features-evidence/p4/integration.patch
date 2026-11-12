@@ -1,0 +1,1156 @@
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -2,6 +2,7 @@
+ mod clipboard;
+ pub mod console_search;
+ mod console_style;
++pub mod export_dialog;
+ mod runs;
+ mod selection;
+ mod shortcuts;
+@@ -23,7 +24,10 @@
+     availability::{self, Assessment},
+     config::{LaunchFile, SourceEntry},
+     config_reload::{self, ConfigReloader, ReloadError, ReloadResult, ReloadSource},
++    console_review::{ReviewTicket, ReviewWorker, SeverityFilter},
++    console_snapshot,
+     device::{Device, Discovery, DiscoveryEvent, merge_devices},
++    log_export::{self, ExportError, ExportMetadata, ExportRequest, ExportWorker, SavedExport},
+     session::Session,
+     state::{self, State},
+     tool::{FlutterTool, has_ownit_helpers},
+@@ -247,6 +251,7 @@
+     retain_consoles: bool,
+     review: Option<console_search::SearchView>,
+     review_notice: Option<String>,
++    pending_export: Option<PendingExport>,
+     last_operation: Option<String>,
+     last_log: Option<vt100::Parser>,
+     last_log_source: Option<console_search::SearchSource>,
+@@ -259,6 +264,16 @@
+     help: bool,
+     quit_confirmation: bool,
+     dragging_scrollbar: Option<ScrollDrag>,
++}
++
++/// At most one export capture/write and its optional editable prompt. Closing
++/// the prompt while writing retains this owner until the actual result arrives.
++struct PendingExport {
++    source_id: runs::RunId,
++    workspace: PathBuf,
++    dialog: Option<export_dialog::ExportDialog>,
++    capture: Option<(ReviewWorker, ReviewTicket)>,
++    writer: ExportWorker,
+ }
+ 
+ /// Catalog positions are not identities. A unique name can survive edits; a
+@@ -427,6 +442,7 @@
+         retain_consoles: false,
+         review: None,
+         review_notice: None,
++        pending_export: None,
+         last_operation: None,
+         last_log: None,
+         last_log_source: None,
+@@ -614,11 +630,15 @@
+     // Stop owned children before restoring the user's terminal, even on errors.
+     app.runs.clear();
+     app.review.take();
++    let final_export = app.shutdown_export();
+     let disconnected = !terminal_input::connected().unwrap_or(false);
+     if disconnected {
+         let _ = terminal_input::detach_output();
+     }
+     drop(restore_terminal);
++    if !disconnected && let Some(message) = final_export {
++        eprintln!("{message}");
++    }
+     // A hangup can race with drawing/resizing and produce an I/O error after
+     // the health check. It is still a normal terminal-loss shutdown.
+     if disconnected { Ok(()) } else { result }
+@@ -644,10 +664,16 @@
+             .is_some_and(console_search::SearchView::showing_operation_details)
+     }
+ 
+-    /// SearchView owns covered console input/rendering even when its operation
+-    /// details are visible without a frozen source. Identity stays source-only.
++    fn export_dialog_open(&self) -> bool {
++        self.pending_export
++            .as_ref()
++            .is_some_and(|pending| pending.dialog.is_some())
++    }
++
++    /// Covered console UI owns input/cursor even without a frozen review source.
++    /// Capture identity remains separate from presentation ownership.
+     fn console_ui_owned(&self) -> bool {
+-        self.reviewing() || self.showing_operation_details()
++        self.reviewing() || self.showing_operation_details() || self.export_dialog_open()
+     }
+ 
+     fn close_review(&mut self) {
+@@ -658,6 +684,27 @@
+     }
+ 
+     fn draw(&mut self, frame: &mut ratatui::Frame<'_>) {
++        if self.export_dialog_open() {
++            ui::draw_content(frame, self);
++            let mut area = ui::review_area(frame.area());
++            if self.reviewing() && self.review_notice.is_some() {
++                area.height = area.height.saturating_sub(1);
++            }
++            if let Some(view) = &mut self.review
++                && (view.is_active() || view.showing_operation_details())
++            {
++                view.render_with_focus(frame, area, false);
++            }
++            if let Some(dialog) = self
++                .pending_export
++                .as_mut()
++                .and_then(|pending| pending.dialog.as_mut())
++            {
++                dialog.render_with_focus(frame, !self.quit_confirmation);
++            }
++            ui::draw_overlays(frame, self);
++            return;
++        }
+         if !self.reviewing() {
+             if self.showing_operation_details() {
+                 ui::draw_content(frame, self);
+@@ -718,7 +765,13 @@
+         source
+     }
+ 
+-    fn capture_review(&mut self, refresh: bool) {
++    /// Shared invocation-time identity and preclone bound for review/export.
++    fn capture_console(
++        &mut self,
++    ) -> Option<(
++        console_search::SearchSource,
++        Result<vt100::Screen, console_snapshot::SnapshotError>,
++    )> {
+         let source = match self.page {
+             Page::Console => self.runs.get(self.active_run).map(Self::run_source),
+             Page::LastLog if self.last_log.is_some() => {
+@@ -737,10 +790,7 @@
+             }
+             _ => None,
+         };
+-        let Some(source) = source else {
+-            self.status = "Select a console to search.".into();
+-            return;
+-        };
++        let source = source?;
+         // A live drag can own its own full history clone; release it before
+         // allocating the review screen, even when preflight later rejects it.
+         self.selection = None;
+@@ -780,7 +830,12 @@
+             )
+             .map(|_| screen.clone())
+         });
+-        let Some(captured) = captured else {
++        Some((source, captured?))
++    }
++
++    fn capture_review(&mut self, refresh: bool) {
++        let Some((source, captured)) = self.capture_console() else {
++            self.status = "Select a console to search.".into();
+             return;
+         };
+         if self.review.is_none() {
+@@ -805,11 +860,15 @@
+                         view.capture(source, screen)
+                     };
+                 }
+-                Err(error) => view.show_error(source, match error {
+-                    flimru::console_snapshot::SnapshotError::CaptureLimit => "128 MiB capture limit. Start a new session in a narrower terminal; history stays wide.".into(),
+-                    _ => error.to_string(),
+-                }),
+-            }
++                Err(error) => view.show_error(source, Self::capture_error_message(error)),
++            }
++        }
++    }
++
++    fn capture_error_message(error: console_snapshot::SnapshotError) -> String {
++        match error {
++            console_snapshot::SnapshotError::CaptureLimit => "128 MiB capture limit. Start a new session in a narrower terminal; history stays wide.".into(),
++            _ => error.to_string(),
+         }
+     }
+ 
+@@ -822,6 +881,209 @@
+         } else {
+             self.capture_review(false);
+         }
++    }
++
++    fn open_export(&mut self) {
++        if self.pending_export.is_some() {
++            self.report_operation(
++                "A console export is already pending; wait for its result.".into(),
++            );
++            return;
++        }
++        // Capture metadata and the exact shared review Arc before any later tab
++        // change. A pending review must finish, never become a different capture.
++        let (source, snapshot, captured) = if self.reviewing() {
++            let Some(view) = &self.review else {
++                return;
++            };
++            let (Some(source), Some(snapshot)) = (view.source().cloned(), view.snapshot()) else {
++                let message = match view.error() {
++                    Some(error) => format!("Cannot export this snapshot: {error}"),
++                    None if view.is_pending() => "Console snapshot is not ready. Wait for capture to finish before exporting.".into(),
++                    None => "No console snapshot is available to export. Capture or refresh a snapshot first.".into(),
++                };
++                self.report_operation(message);
++                return;
++            };
++            self.selection = None;
++            (source, Some(snapshot), None)
++        } else {
++            let Some((source, captured)) = self.capture_console() else {
++                self.report_operation("Select a retained console to export.".into());
++                return;
++            };
++            (source, None, Some(captured))
++        };
++        let metadata = ExportMetadata::new(
++            source
++                .captured_at
++                .duration_since(std::time::UNIX_EPOCH)
++                .unwrap_or_default()
++                .as_secs(),
++            source.device.as_deref(),
++            source.configuration.as_deref(),
++            source.outcome.as_deref(),
++        );
++        let workspace = self.launch.workspace.clone();
++        let destination = match log_export::default_destination(&workspace, &metadata) {
++            Ok(destination) => destination,
++            Err(error) => {
++                self.report_operation(error.to_string());
++                return;
++            }
++        };
++        let mut dialog =
++            export_dialog::ExportDialog::new(&source.label, metadata, &destination, snapshot);
++        let mut capture = None;
++        if let Some(captured) = captured {
++            let started = captured
++                .map_err(Self::capture_error_message)
++                .and_then(|screen| {
++                    let mut worker = ReviewWorker::new(console_style::review_severity)
++                        .map_err(|_| "Could not start console export capture worker.".to_owned())?;
++                    let ticket = worker
++                        .capture(source.id, screen, String::new(), SeverityFilter::All)
++                        .map_err(|error| error.to_string())?;
++                    Ok((worker, ticket))
++                });
++            match started {
++                Ok(worker) => capture = Some(worker),
++                Err(message) => {
++                    dialog.set_error(&message);
++                    self.report_operation(message);
++                }
++            }
++        }
++        self.top_focus = None;
++        self.dragging_scrollbar = None;
++        self.actions_open = false;
++        self.help = false;
++        self.diagnostics_open = false;
++        self.pending_export = Some(PendingExport {
++            source_id: source.id,
++            workspace,
++            dialog: Some(dialog),
++            capture,
++            writer: ExportWorker::new(),
++        });
++    }
++
++    /// Modal routing consumes every event, before selection/review/PTY fallback.
++    fn export_event(&mut self, event: &Event) -> bool {
++        if !self.export_dialog_open() {
++            return false;
++        }
++        let Some(mut pending) = self.pending_export.take() else {
++            return false;
++        };
++        let effect = pending
++            .dialog
++            .as_mut()
++            .map(|dialog| dialog.handle_event(event));
++        match effect {
++            Some(export_dialog::DialogAction::Submit(destination)) => {
++                let request = pending.dialog.as_ref().and_then(|dialog| {
++                    dialog.snapshot().map(|snapshot| {
++                        ExportRequest::new(
++                            &pending.workspace,
++                            &destination,
++                            Arc::clone(snapshot),
++                            dialog.metadata().clone(),
++                        )
++                    })
++                });
++                let result = request
++                    .unwrap_or(Err(ExportError::InvalidInput("snapshot is not ready")))
++                    .and_then(|request| pending.writer.start(request));
++                if let Err(error) = result {
++                    let message = error.to_string();
++                    if let Some(dialog) = &mut pending.dialog {
++                        dialog.set_error(&message);
++                    }
++                    self.report_operation(message);
++                }
++                self.pending_export = Some(pending);
++            }
++            Some(export_dialog::DialogAction::Cancel) => {
++                self.pending_export = Some(pending);
++                self.cancel_export();
++            }
++            _ => self.pending_export = Some(pending),
++        }
++        true
++    }
++
++    fn cancel_export(&mut self) {
++        let Some(mut pending) = self.pending_export.take() else {
++            return;
++        };
++        pending.dialog = None;
++        // Capture has bounded cancellation checkpoints; its owned worker joins.
++        pending.capture.take();
++        if pending.writer.is_running() {
++            pending.writer.cancel();
++            self.pending_export = Some(pending);
++            self.report_operation("Cancelling console export; waiting for its result.".into());
++        } else {
++            self.report_operation("Console export cancelled.".into());
++        }
++    }
++
++    fn export_result_message(result: &Result<SavedExport, ExportError>) -> String {
++        match result {
++            Ok(saved) => format!(
++                "Saved console log to {} ({} bytes).",
++                saved.path.display(),
++                saved.bytes
++            ),
++            Err(error) => error.to_string(),
++        }
++    }
++
++    fn advance_export(&mut self) -> bool {
++        let Some(mut pending) = self.pending_export.take() else {
++            return false;
++        };
++        let mut changed = false;
++        if let Some((worker, ticket)) = &mut pending.capture
++            && let Some(update) = worker.take_update()
++            && update.ticket == *ticket
++        {
++            changed = true;
++            if let Some(dialog) = &mut pending.dialog {
++                match update.result {
++                    Ok(data) => dialog.set_snapshot(data.snapshot),
++                    Err(error) => {
++                        let message = error.to_string();
++                        dialog.set_error(&message);
++                        self.report_operation(message);
++                    }
++                }
++            }
++            pending.capture.take();
++        }
++        if let Some(result) = pending.writer.poll() {
++            self.report_operation(Self::export_result_message(&result));
++            if let Err(error) = &result
++                && *error != ExportError::Cancelled
++                && let Some(dialog) = &mut pending.dialog
++            {
++                dialog.set_error(&error.to_string());
++                self.pending_export = Some(pending);
++            }
++            return true;
++        }
++        self.pending_export = Some(pending);
++        changed
++    }
++
++    fn shutdown_export(&mut self) -> Option<String> {
++        let mut pending = self.pending_export.take()?;
++        pending.capture.take();
++        let result = pending.writer.shutdown()?;
++        let message = Self::export_result_message(&result);
++        self.report_operation(message.clone());
++        Some(message)
+     }
+ 
+     fn review_event(&mut self, event: &Event) -> bool {
+@@ -1004,7 +1266,15 @@
+             self.status = "Session is running. Stop it with q/Esc before closing its tab.".into();
+             return;
+         }
+-        if self.reviewed_source() == Some(run.id) {
++        let source_id = run.id;
++        if self
++            .pending_export
++            .as_ref()
++            .is_some_and(|pending| pending.source_id == source_id)
++        {
++            self.cancel_export();
++        }
++        if self.reviewed_source() == Some(source_id) {
+             self.close_review();
+         }
+         self.runs.remove(index);
+@@ -1029,6 +1299,11 @@
+     }
+ 
+     fn close_last_log(&mut self) {
++        if self.pending_export.as_ref().is_some_and(|pending| {
++            Some(pending.source_id) == self.last_log_source.as_ref().map(|source| source.id)
++        }) {
++            self.cancel_export();
++        }
+         if self.reviewed_source() == self.last_log_source.as_ref().map(|source| source.id) {
+             self.close_review();
+         }
+@@ -1765,6 +2040,8 @@
+             }
+         }
+         changed |= self.advance_availability();
++        // Acknowledged export outcomes follow lifecycle/discovery notices.
++        changed |= self.advance_export();
+         let (ready, _, pending) = self.availability_counts();
+         if self.reveal_unavailable_after_check && pending == 0 {
+             self.reveal_unavailable_after_check = false;
+@@ -1800,6 +2077,14 @@
+         // Leave function keys to the terminal/macOS; they are never launcher
+         // commands or an implicit dismissal of a saved console or modal.
+         if matches!(key.code, KeyCode::F(_)) {
++            return Ok(false);
++        }
++        if self.export_dialog_open() && !self.quit_confirmation {
++            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
++                self.quit_confirmation = true;
++                return Ok(false);
++            }
++            self.export_event(&Event::Key(key));
+             return Ok(false);
+         }
+         if self.diagnostics_open {
+@@ -2269,6 +2554,18 @@
+ 
+ impl App {
+     fn paste(&mut self, text: &str) {
++        if self.export_dialog_open() {
++            if !self.quit_confirmation {
++                // Keep an oversize sentinel; never allocate an unbounded second
++                // clipboard copy merely to reject it in the modal path editor.
++                let bounded = text
++                    .chars()
++                    .take(log_export::MAX_DESTINATION_BYTES + 1)
++                    .collect();
++                self.export_event(&Event::Paste(bounded));
++            }
++            return;
++        }
+         self.selection = None;
+         if self.quit_confirmation
+             || self.help
+@@ -2361,6 +2658,10 @@
+     }
+ 
+     fn mouse(&mut self, event: MouseEvent, area: ratatui::layout::Rect) -> Result<bool> {
++        if self.export_dialog_open() && !self.quit_confirmation {
++            self.export_event(&Event::Mouse(event));
++            return Ok(false);
++        }
+         if self.showing_operation_details()
+             && !self.actions_open
+             && !self.help
+@@ -2610,6 +2911,7 @@
+                     | ui::MouseAction::RefreshSnapshot
+                     | ui::MouseAction::ResumeLive
+                     | ui::MouseAction::SnapshotSource
++                    | ui::MouseAction::ExportLog
+             )
+         {
+             self.top_focus = focus;
+@@ -2702,6 +3004,10 @@
+             }
+             MouseAction::SearchConsole => {
+                 self.search_console();
++                return Ok(false);
++            }
++            MouseAction::ExportLog => {
++                self.open_export();
+                 return Ok(false);
+             }
+             MouseAction::RefreshSnapshot => {
+@@ -3059,6 +3365,7 @@
+             retain_consoles: false,
+             review: None,
+             review_notice: None,
++            pending_export: None,
+             last_operation: None,
+             last_log: None,
+             last_log_source: None,
+@@ -5360,3 +5667,7 @@
+ #[cfg(test)]
+ #[path = "../tests/support/console_search_app.rs"]
+ mod console_search_app_tests;
++
++#[cfg(test)]
++#[path = "../tests/support/log_export_app.rs"]
++mod log_export_app_tests;
+--- a/src/ui.rs
++++ b/src/ui.rs
+@@ -53,6 +53,7 @@
+     OldestOutput,
+     SelectText,
+     SearchConsole,
++    ExportLog,
+     EditSearchQuery,
+     NextSearchMatch,
+     PreviousSearchMatch,
+@@ -279,6 +280,7 @@
+         }
+     }
+     if matches!(app.page, Page::Console | Page::LastLog) {
++        add("Export retained console log", "", MouseAction::ExportLog);
+         if reviewing {
+             add(
+                 "Edit console query",
+--- a/src/log_export.rs
++++ b/src/log_export.rs
+@@ -239,14 +239,25 @@
+             active.cancelled.store(true, Ordering::Relaxed);
+         }
+     }
++
++    /// Final owner shutdown only: cancel, join and acknowledge the actual
++    /// publication result. Normal UI cancellation should use `cancel` + `poll`.
++    pub fn shutdown(&mut self) -> Option<Result<SavedExport, ExportError>> {
++        self.cancel();
++        let active = self.active.take()?;
++        let _ = active.thread.join();
++        Some(
++            active
++                .receiver
++                .try_recv()
++                .unwrap_or(Err(ExportError::WorkerStopped)),
++        )
++    }
+ }
+ 
+ impl Drop for ExportWorker {
+     fn drop(&mut self) {
+-        self.cancel();
+-        if let Some(active) = self.active.take() {
+-            let _ = active.thread.join();
+-        }
++        let _ = self.shutdown();
+     }
+ }
+ 
+--- a/src/export_dialog.rs
++++ b/src/export_dialog.rs
+@@ -290,6 +290,12 @@
+     }
+ 
+     pub fn render(&mut self, frame: &mut Frame) {
++        self.render_with_focus(frame, true);
++    }
++
++    /// Covered dialogs keep their state but must not claim the native cursor
++    /// while an application-wide quit overlay owns keyboard input.
++    pub fn render_with_focus(&mut self, frame: &mut Frame, focused: bool) {
+         self.regions = DialogRegions::default();
+         let screen = frame.area();
+         self.usable_layout = screen.width >= 30 && screen.height >= 12;
+@@ -419,7 +425,7 @@
+             .style(label_style),
+             row(9, 1),
+         );
+-        if self.focus == Focus::Destination && !matches!(self.status, Status::Saving) {
++        if focused && self.focus == Focus::Destination && !matches!(self.status, Status::Saving) {
+             frame.set_cursor_position((
+                 self.regions.destination.x + cursor_column as u16,
+                 self.regions.destination.y,
+--- a/tests/support/log_export_app.rs
++++ b/tests/support/log_export_app.rs
+@@ -0,0 +1,504 @@
++#![allow(clippy::unwrap_used, clippy::panic)]
++use super::*;
++use ratatui::{
++    Terminal,
++    backend::TestBackend,
++    buffer::Buffer,
++    layout::Rect,
++    style::{Color, Modifier},
++};
++use std::path::Path;
++
++const AREA: Rect = Rect::new(0, 0, 80, 24);
++
++fn fixture(workspace: &Path, text: &str) -> App {
++    let mut app = crate::tests::app();
++    Arc::make_mut(&mut app.launch).workspace = workspace.to_path_buf();
++    app.page = Page::Console;
++    app.retain_consoles = true;
++    let mut run = runs::Run::failed(
++        app.devices[0].clone(),
++        "frozen config".into(),
++        "fixture".into(),
++        24,
++        80,
++    );
++    let mut parser = vt100::Parser::new(24, 80, 100);
++    parser.process(text.as_bytes());
++    run.console = Some(parser);
++    run.outcome = Some("exited successfully".into());
++    run.history_capacity = 100;
++    app.runs.push(run);
++    app
++}
++fn press(app: &mut App, key: KeyCode) {
++    assert!(
++        !app.key(KeyEvent::new(key, KeyModifiers::NONE), 80, 24)
++            .unwrap()
++    );
++}
++fn until(app: &mut App, mut ready: impl FnMut(&App) -> bool) {
++    let deadline = Instant::now() + Duration::from_secs(5);
++    while !ready(app) {
++        app.tick().unwrap();
++        assert!(
++            Instant::now() < deadline,
++            "App export did not settle: {}",
++            app.status
++        );
++        std::thread::sleep(Duration::from_millis(1));
++    }
++}
++fn settle_capture(app: &mut App) {
++    until(app, |app| {
++        app.pending_export.as_ref().unwrap().capture.is_none()
++    });
++    assert!(
++        app.pending_export
++            .as_ref()
++            .unwrap()
++            .dialog
++            .as_ref()
++            .unwrap()
++            .snapshot()
++            .is_some()
++    );
++}
++fn destination(app: &App) -> PathBuf {
++    app.pending_export
++        .as_ref()
++        .unwrap()
++        .dialog
++        .as_ref()
++        .unwrap()
++        .destination()
++        .into()
++}
++fn buffer(app: &mut App, width: u16, height: u16) -> Buffer {
++    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
++    terminal
++        .draw(|frame| app.draw(frame))
++        .unwrap()
++        .buffer
++        .clone()
++}
++fn text(buffer: &Buffer) -> String {
++    (0..buffer.area.height)
++        .map(|y| {
++            (0..buffer.area.width)
++                .map(|x| buffer[(x, y)].symbol())
++                .collect::<String>()
++        })
++        .collect::<Vec<_>>()
++        .join("\n")
++}
++
++#[test]
++fn log_export_review_reuses_exact_arc_full_filter_scope_and_preserves_query_viewport() {
++    let root = tempfile::tempdir().unwrap();
++    let mut app = fixture(
++        root.path(),
++        "ERROR needle 界e\u{301}\r\nINFO hidden\r\nWARN retained",
++    );
++    app.capture_review(false);
++    until(&mut app, |app| !app.review.as_ref().unwrap().is_pending());
++    let view = app.review.as_mut().unwrap();
++    view.set_query("needle");
++    view.set_filter(SeverityFilter::Errors);
++    until(&mut app, |app| !app.review.as_ref().unwrap().is_pending());
++    let view = app.review.as_ref().unwrap();
++    let frozen = view.snapshot().unwrap();
++    let offsets = view.offsets();
++    let source = view.source().unwrap().clone();
++    app.activate(ui::MouseAction::ExportLog, AREA).unwrap();
++    let pending = app.pending_export.as_ref().unwrap();
++    assert_eq!(pending.source_id, source.id);
++    assert!(pending.capture.is_none());
++    assert!(Arc::ptr_eq(
++        pending.dialog.as_ref().unwrap().snapshot().unwrap(),
++        &frozen
++    ));
++    assert!(!root.path().join("flimru-logs").exists());
++    let path = destination(&app);
++    press(&mut app, KeyCode::Enter);
++    press(&mut app, KeyCode::Enter);
++    until(&mut app, |app| app.pending_export.is_none());
++    let exported = std::fs::read_to_string(&path).unwrap();
++    assert_eq!(exported.split_once("\n\n").unwrap().1, frozen.plain_text());
++    assert!(exported.contains("INFO hidden\nWARN retained"));
++    assert!(exported.contains("Configuration: frozen config"));
++    assert!(
++        exported.contains(
++            &source
++                .captured_at
++                .duration_since(std::time::UNIX_EPOCH)
++                .unwrap()
++                .as_secs()
++                .to_string()
++        )
++    );
++    assert!(
++        app.last_operation
++            .as_ref()
++            .unwrap()
++            .contains(&std::fs::canonicalize(path).unwrap().display().to_string())
++    );
++    let view = app.review.as_ref().unwrap();
++    assert_eq!(view.query(), "needle");
++    assert_eq!(view.filter(), SeverityFilter::Errors);
++    assert_eq!(view.offsets(), offsets);
++    assert!(Arc::ptr_eq(&view.snapshot().unwrap(), &frozen));
++    // Pending source review never triggers a replacement capture for export.
++    app.close_review();
++    app.capture_review(false);
++    let captured_at = app.review.as_ref().unwrap().source().unwrap().captured_at;
++    app.open_export();
++    assert!(app.pending_export.is_none());
++    assert!(app.status.contains("not ready"));
++    assert_eq!(
++        app.review.as_ref().unwrap().source().unwrap().captured_at,
++        captured_at
++    );
++    app.close_review();
++    app.runs[0].history_capacity = Session::SCROLLBACK_CAPACITY;
++    app.runs[0].max_columns = 500;
++    app.runs[0]
++        .console
++        .as_mut()
++        .unwrap()
++        .process(b"\x1b[?1049h");
++    app.capture_review(false);
++    assert!(app.review.as_ref().unwrap().error().is_some());
++    app.open_export();
++    assert!(app.pending_export.is_none());
++    assert!(
++        app.status
++            .contains("Start a new session in a narrower terminal")
++    );
++    assert!(!app.status.contains("Wait for capture"));
++    app.close_review();
++    app.open_export();
++    assert!(app.pending_export.as_ref().unwrap().capture.is_none());
++    assert!(
++        app.last_operation
++            .as_ref()
++            .unwrap()
++            .contains("Start a new session in a narrower terminal")
++    );
++}
++
++#[test]
++fn log_export_outside_review_freezes_invocation_source_without_writes_or_double_submit() {
++    let root = tempfile::tempdir().unwrap();
++    let mut app = fixture(root.path(), "old retained text");
++    let source_id = app.runs[0].id;
++    app.runs[0].offset = 3;
++    app.open_export();
++    assert!(!root.path().join("flimru-logs").exists());
++    app.runs[0]
++        .console
++        .as_mut()
++        .unwrap()
++        .process(b"\r\nnew output");
++    app.runs[0].config = "later renamed config".into();
++    app.runs.push(runs::Run::failed(
++        app.devices[1].clone(),
++        "Other".into(),
++        "unrelated".into(),
++        24,
++        80,
++    ));
++    app.switch_run(1);
++    settle_capture(&mut app);
++    assert_eq!(app.pending_export.as_ref().unwrap().source_id, source_id);
++    assert_eq!(app.runs[0].offset, 3);
++    assert!(!root.path().join("flimru-logs").exists());
++    let path = destination(&app);
++    press(&mut app, KeyCode::Enter);
++    let pending = app.pending_export.as_ref().unwrap();
++    assert!(pending.writer.is_running());
++    assert!(pending.capture.is_none());
++    press(&mut app, KeyCode::Enter);
++    until(&mut app, |app| app.pending_export.is_none());
++    let saved = std::fs::read_to_string(path).unwrap();
++    assert!(saved.ends_with("\n\nold retained text"));
++    assert!(saved.contains("Configuration: frozen config"));
++    assert!(!saved.contains("new output"));
++    assert!(!saved.contains("Other"));
++    assert_eq!(
++        std::fs::read_dir(root.path().join("flimru-logs"))
++            .unwrap()
++            .count(),
++        1
++    );
++    assert_eq!(app.active_run, 1);
++}
++
++#[test]
++fn log_export_error_retry_retains_source_and_reports_complete_outcome_details() {
++    let root = tempfile::tempdir().unwrap();
++    let mut app = fixture(root.path(), "exact retained output");
++    app.open_export();
++    settle_capture(&mut app);
++    let path = destination(&app);
++    std::fs::create_dir(path.parent().unwrap()).unwrap();
++    std::fs::write(&path, "existing").unwrap();
++    press(&mut app, KeyCode::Enter);
++    until(&mut app, |app| {
++        !app.pending_export.as_ref().unwrap().writer.is_running()
++    });
++    assert!(app.status.contains("destination must not exist"));
++    assert_eq!(std::fs::read_to_string(path).unwrap(), "existing");
++    app.paste("-retry");
++    let retry = destination(&app);
++    press(&mut app, KeyCode::Enter);
++    until(&mut app, |app| app.pending_export.is_none());
++    assert!(
++        std::fs::read_to_string(&retry)
++            .unwrap()
++            .ends_with("\n\nexact retained output")
++    );
++    let message = app.last_operation.clone().unwrap();
++    assert!(message.contains(&std::fs::canonicalize(retry).unwrap().display().to_string()));
++    assert!(message.contains("bytes"));
++    app.activate(ui::MouseAction::OperationDetails, AREA)
++        .unwrap();
++    assert!(app.showing_operation_details());
++    assert!(text(&buffer(&mut app, 120, 40)).contains("Saved console log"));
++}
++
++#[test]
++fn log_export_cancel_and_shutdown_acknowledge_publication_wins_and_close_source() {
++    let root = tempfile::tempdir().unwrap();
++    let mut app = fixture(root.path(), "retained");
++    app.open_export();
++    press(&mut app, KeyCode::Esc);
++    assert!(app.pending_export.is_none());
++    assert!(!root.path().join("flimru-logs").exists());
++    app.open_export();
++    settle_capture(&mut app);
++    let path = destination(&app);
++    press(&mut app, KeyCode::Enter);
++    let deadline = Instant::now() + Duration::from_secs(5);
++    while !path.exists() {
++        assert!(Instant::now() < deadline);
++        std::thread::sleep(Duration::from_millis(1));
++    }
++    press(&mut app, KeyCode::Esc);
++    assert!(!app.export_dialog_open());
++    assert!(
++        app.pending_export.is_some(),
++        "retain writer until its result is acknowledged"
++    );
++    until(&mut app, |app| app.pending_export.is_none());
++    assert!(app.status.starts_with("Saved console log"));
++    assert!(app.status.contains("bytes"));
++    app.open_export();
++    app.close_ended_run(0);
++    assert!(app.pending_export.is_none());
++    let mut app = fixture(root.path(), "shutdown");
++    app.open_export();
++    settle_capture(&mut app);
++    let path = destination(&app);
++    press(&mut app, KeyCode::Enter);
++    let message = app.shutdown_export().unwrap();
++    assert!(app.pending_export.is_none());
++    if path.exists() {
++        assert!(message.starts_with("Saved console log"));
++    } else {
++        assert!(message.contains("cancelled"));
++    }
++    assert!(
++        !std::fs::read_dir(root.path().join("flimru-logs"))
++            .unwrap()
++            .any(|entry| entry
++                .unwrap()
++                .file_name()
++                .to_string_lossy()
++                .ends_with(".partial"))
++    );
++}
++
++#[test]
++#[cfg(unix)]
++fn log_export_live_modal_owns_input_selection_and_cursor_while_global_quit_remains_available() {
++    let root = tempfile::tempdir().unwrap();
++    let input = root.path().join("child-input");
++    let mut app = fixture(root.path(), "unused");
++    app.runs.clear();
++    let session = Session::start(&flimru::tool::RunCommand {
++        capture_vm_service: false, executable: "/bin/bash".into(),
++        args: vec!["-c".into(), "stty raw -echo; printf 'ready'; while :; do IFS= read -rsn1 key || continue; printf '%s' \"$key\" >> \"$INPUT_LOG\"; done".into()],
++        cwd: root.path().into(), env: std::collections::BTreeMap::from([("INPUT_LOG".into(), input.display().to_string())]),
++    },24,80).unwrap();
++    app.runs.push(runs::Run::running(
++        app.devices[0].clone(),
++        "live source".into(),
++        session,
++    ));
++    until(&mut app, |app| {
++        app.runs[0].screen().unwrap().contents().contains("ready")
++    });
++    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
++    terminal.draw(|frame| app.draw(frame)).unwrap();
++    assert!(terminal.backend().cursor_visible());
++    app.open_export();
++    settle_capture(&mut app);
++    terminal.draw(|frame| app.draw(frame)).unwrap();
++    let destination_region = app
++        .pending_export
++        .as_ref()
++        .unwrap()
++        .dialog
++        .as_ref()
++        .unwrap()
++        .regions()
++        .destination;
++    assert_eq!(
++        terminal.get_cursor_position().unwrap().y,
++        destination_region.y
++    );
++    assert!(app.console_ui_owned());
++    app.key(Shortcut::SelectText.key(), 80, 24).unwrap();
++    app.begin_text_selection(AREA);
++    assert!(app.selection.is_none());
++    app.key(Shortcut::Actions.key(), 80, 24).unwrap();
++    assert!(!app.actions_open);
++    for code in [
++        KeyCode::Char('r'),
++        KeyCode::Char('R'),
++        KeyCode::Char('q'),
++        KeyCode::Home,
++        KeyCode::End,
++    ] {
++        press(&mut app, code);
++    }
++    app.paste("modal-only");
++    app.mouse(
++        MouseEvent {
++            kind: MouseEventKind::Down(MouseButton::Left),
++            column: 0,
++            row: 0,
++            modifiers: KeyModifiers::NONE,
++        },
++        AREA,
++    )
++    .unwrap();
++    app.key(
++        KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
++        80,
++        24,
++    )
++    .unwrap();
++    terminal.draw(|frame| app.draw(frame)).unwrap();
++    assert!(app.quit_confirmation);
++    assert!(!terminal.backend().cursor_visible());
++    app.paste("quit overlay input");
++    press(&mut app, KeyCode::Enter);
++    assert!(!app.quit_confirmation);
++    press(&mut app, KeyCode::Esc);
++    assert!(!app.console_ui_owned());
++    press(&mut app, KeyCode::Char('z'));
++    until(&mut app, |_| {
++        std::fs::read_to_string(&input).is_ok_and(|text| text.contains('z'))
++    });
++    assert_eq!(std::fs::read_to_string(input).unwrap(), "z");
++    assert!(
++        app.runs[0]
++            .session
++            .as_ref()
++            .unwrap()
++            .stop_requested
++            .is_none()
++    );
++}
++
++fn escape(value: &str) -> String {
++    value
++        .replace('&', "&amp;")
++        .replace('<', "&lt;")
++        .replace('>', "&gt;")
++        .replace('"', "&quot;")
++}
++fn color(value: Color, fallback: &str) -> String {
++    match value {
++        Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
++        Color::Yellow => "#ffff00".into(),
++        _ => fallback.into(),
++    }
++}
++fn evidence(directory: &Path, stem: &str, buffer: &Buffer) {
++    std::fs::create_dir_all(directory).unwrap();
++    std::fs::write(
++        directory.join(format!("{stem}.txt")),
++        format!("{}\n", text(buffer)),
++    )
++    .unwrap();
++    let mut svg = format!(
++        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}"><rect width="100%" height="100%" fill="#0e131b"/>"##,
++        buffer.area.width * 10,
++        buffer.area.height * 20
++    );
++    for y in 0..buffer.area.height {
++        for x in 0..buffer.area.width {
++            let cell = &buffer[(x, y)];
++            if cell.bg != Color::Reset {
++                svg.push_str(&format!(
++                    r#"<rect x="{}" y="{}" width="10" height="20" fill="{}"/>"#,
++                    x * 10,
++                    y * 20,
++                    color(cell.bg, "#0e131b")
++                ));
++            }
++        }
++    }
++    for y in 0..buffer.area.height {
++        for x in 0..buffer.area.width {
++            let cell = &buffer[(x, y)];
++            if cell.symbol() != " " && !cell.symbol().is_empty() {
++                svg.push_str(&format!(r#"<text x="{}" y="{}" fill="{}" font-family="Menlo,monospace" font-size="15"{}>{}</text>"#,x*10,y*20+16,color(cell.fg,"#e0e8f0"),if cell.modifier.contains(Modifier::BOLD) {" font-weight=\"bold\""}else{""},escape(cell.symbol())));
++            }
++        }
++    }
++    svg.push_str("</svg>");
++    std::fs::write(directory.join(format!("{stem}.svg")), svg).unwrap();
++}
++
++#[test]
++fn log_export_actual_app_render_evidence_ready_error_and_review() {
++    let root = tempfile::tempdir().unwrap();
++    for (width, height) in [(34, 12), (80, 24), (120, 40)] {
++        for state in ["ready", "error", "review"] {
++            let mut app = fixture(
++                root.path(),
++                "ERROR needle 界e\u{301}\r\nINFO retained despite filter",
++            );
++            if state == "review" {
++                app.capture_review(false);
++                until(&mut app, |app| !app.review.as_ref().unwrap().is_pending());
++                app.review
++                    .as_mut()
++                    .unwrap()
++                    .set_filter(SeverityFilter::Errors);
++                until(&mut app, |app| !app.review.as_ref().unwrap().is_pending());
++            }
++            app.activate(ui::MouseAction::ExportLog, AREA).unwrap();
++            settle_capture(&mut app);
++            if state == "error" {
++                app.pending_export.as_mut().unwrap().dialog.as_mut().unwrap().set_error("Destination exists. Choose another filename; existing logs are never overwritten.");
++            }
++            let rendered = buffer(&mut app, width, height);
++            let text = text(&rendered);
++            assert!(text.contains("Export retained console log"));
++            assert!(text.contains("query/filter-hidden lines."));
++            assert!(text.contains("[ Export ]"));
++            if let Some(directory) = std::env::var_os("FLIMRU_P4_APP_EVIDENCE_DIR") {
++                evidence(
++                    Path::new(&directory),
++                    &format!("{state}-{width}x{height}"),
++                    &rendered,
++                );
++            }
++        }
++    }
++}
+--- a/tests/terminal_flow.rs
++++ b/tests/terminal_flow.rs
+@@ -2145,3 +2145,64 @@
+     tui.until("Resumed live console");
+     tui.quit();
+ }
++
++#[test]
++fn console_export_real_binary_saves_full_filtered_snapshot_and_isolates_modal_input() {
++    let project = project();
++    let log_path = project.path().join("session.log");
++    let saved_path = project.path().join("explicit-retained-log.txt");
++    let mut tui = Terminal::start_with_refresh_interval(
++        project.path(),
++        &project.path().join("state.json"),
++        false,
++        3600,
++    );
++    tui.until("Demo phone");
++    tui.send(b"\r");
++    tui.until_control("Run");
++    tui.send(b"\r");
++    tui.until("SESSION READY");
++    tui.send(b"c");
++    tui.until("INFO: connected");
++    tui.send(&[0x13]);
++    tui.until("Search");
++    tui.send(b"SESSION\r");
++    tui.until("1/1");
++    tui.menu_click("Console severity: Errors");
++    tui.until("No matches");
++    tui.menu_click("Export retained console log");
++    tui.until("Export retained console log");
++    tui.until("Ready");
++    assert!(!project.path().join("flimru-logs").exists());
++    assert!(!saved_path.exists());
++    tui.send(b"rRq\x05\x10"); // Plain text plus covered selection/menu shortcuts.
++    tui.mouse(0, 0, 0); // Background input belongs to the export modal.
++    tui.send(&[0x15]);
++    tui.send(format!("\x1b[200~{}\x1b[201~", saved_path.display()).as_bytes());
++    tui.send(b"\r");
++    tui.until("Saved console log");
++    let exported = std::fs::read_to_string(&saved_path).unwrap();
++    let (header, retained) = exported.split_once("\n\n").unwrap();
++    assert!(header.contains("Device: Demo phone"));
++    assert!(header.contains("Configuration: Demo debug"));
++    assert!(!header.contains("--dart-define"));
++    assert!(retained.contains("SESSION READY"));
++    assert!(
++        retained.contains("INFO: connected"),
++        "query/severity-hidden lines must be exported"
++    );
++    assert!(retained.contains("SEVERE: failed"));
++    assert!(!exported.contains('\x1b'));
++    let child_input = std::fs::read_to_string(&log_path).unwrap();
++    assert_eq!(child_input.matches("key:c\n").count(), 1);
++    for key in ["r", "R", "q"] {
++        assert!(!child_input.contains(&format!("key:{key}\n")));
++    }
++    tui.menu_click("Operation details");
++    tui.until("Latest operation outcome");
++    tui.until("explicit-retained-log");
++    tui.until("bytes).");
++    tui.send(b"\x1b");
++    tui.until("Snapshot");
++    tui.quit();
++}

@@ -1,0 +1,24 @@
+┌ Snapshot · Pixel 界  · development ───────────────────────────────────────────┐
+│Search: request                                                               │
+│All · 1/2 · col 1 ↔                                                           │
+│ERROR request failed 界  é                                                     │
+│WARN retry scheduled                                                          │
+│  stack continuation                                                          │
+│INFO connected                                                                │
+│ERROR request failed again                                                    │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│n/N matches · f filter · / edit                                               │
+│r refresh · Esc resume live                                                   │
+└──────────────────────────────────────────────────────────────────────────────┘

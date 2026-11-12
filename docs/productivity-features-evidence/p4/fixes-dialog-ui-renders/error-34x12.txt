@@ -1,0 +1,12 @@
+L┌ Export retained console log ─┐ 
+ │ Source: Phone 界  · Debug · … │ 
+ │ Full snapshot, including     │ 
+ │ query/filter-hidden lines.   │ 
+ │ Destination (no overwrite)   │ 
+ │ ‹limru-logs/phone-debug.txt  │ 
+ │ Error: Destination already   │ 
+ │ exists. Choose another       │ 
+ │ [ Export ]  [ Cancel ]       │ 
+ │ Enter Export; Esc Cancel     │ 
+ │ ←→ Home End edit · Tab focus │ 
+ └──────────────────────────────┘ 

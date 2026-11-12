@@ -226,6 +226,71 @@ fn confirmed(control: &AnimationControl, expected: f64) {
 }
 
 #[test]
+fn service_file_discovers_missing_output_and_tracks_changed_addresses() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("service-uri");
+    let first = Service::new(true);
+    let replacement = Service::new(true);
+    let mut control = AnimationControl::with_service_file(path.clone());
+    assert_eq!(control.state(), AnimationState::Waiting);
+    // An incomplete write must not prevent discovery when Flutter finishes it.
+    std::fs::write(&path, "ws://").unwrap();
+    control.reconnect().unwrap();
+    std::fs::write(
+        &path,
+        format!("{}ws\n", first.endpoint.replacen("http://", "ws://", 1)),
+    )
+    .unwrap();
+    confirmed(&control, 1.0);
+    control.toggle().unwrap();
+    confirmed(&control, 5.0);
+
+    std::fs::write(&path, &replacement.endpoint).unwrap();
+    until(|| replacement.state.lock().unwrap().factor == 5.0);
+    confirmed(&control, 5.0);
+    control.toggle().unwrap();
+    confirmed(&control, 1.0);
+    assert_eq!(first.state.lock().unwrap().factor, 5.0);
+
+    // An unchanged file must not overwrite a newer URL printed by Flutter.
+    let newest = Service::new(true);
+    newest.connect(&mut control);
+    until(|| !newest.requests().is_empty());
+    confirmed(&control, 1.0);
+    thread::sleep(Duration::from_millis(1100));
+    control.toggle().unwrap();
+    confirmed(&control, 5.0);
+    assert_eq!(newest.state.lock().unwrap().factor, 5.0);
+    assert_eq!(replacement.state.lock().unwrap().factor, 1.0);
+}
+
+#[test]
+fn reconnect_retries_known_service_without_toggling_or_leaking_authentication() {
+    let service = Service::new(true);
+    let mut control = AnimationControl::new(true);
+    control.reconnect().unwrap();
+    assert_eq!(control.state(), AnimationState::Waiting);
+    service.connect(&mut control);
+    confirmed(&control, 1.0);
+    service.state.lock().unwrap().fail_all = true;
+    until(|| control.state() == AnimationState::Disconnected);
+    let diagnostic = control.connection_error().unwrap();
+    assert!(diagnostic.contains("VM Service"));
+    assert!(!diagnostic.contains(AUTH_PATH));
+    assert!(!diagnostic.contains(&service.endpoint));
+    service.state.lock().unwrap().fail_all = false;
+    control.reconnect().unwrap();
+    confirmed(&control, 1.0);
+    assert!(control.connection_error().is_none());
+    assert!(
+        service
+            .requests()
+            .iter()
+            .all(|request| request.parameter("timeDilation").is_none())
+    );
+}
+
+#[test]
 fn toggles_use_authenticated_endpoint_and_confirm_actual_factors() {
     let service = Service::new(true);
     let mut control = AnimationControl::new(true);
@@ -352,6 +417,51 @@ fn selected_speed_survives_extension_registration_delay_and_transient_restart_fa
             .any(
                 |request| request.parameter("isolateId") == Some("isolates/normal-after-restart")
                     && request.parameter("timeDilation").is_some()
+            )
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn session_send_restart_preserves_and_restores_the_selected_animation_speed() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = Service::new(true);
+    let mut session = flimru::session::Session::start(
+        &flimru::tool::RunCommand {
+            capture_vm_service: false,
+            hot_capabilities: flimru::batch_commands::HotCapabilities::Supported,
+            executable: "/bin/sh".into(),
+            args: vec!["-c".into(), "exec sleep 30".into()],
+            cwd: directory.path().into(),
+            env: Default::default(),
+        },
+        10,
+        40,
+    )
+    .unwrap();
+    service.connect(&mut session.animations);
+    confirmed(&session.animations, 1.0);
+    session.animations.toggle().unwrap();
+    confirmed(&session.animations, 5.0);
+    {
+        let mut state = service.state.lock().unwrap();
+        state.isolate = "isolates/session-restart".into();
+        state.factor = 1.0;
+        state.extension_available = false;
+    }
+    session.send(b"R").unwrap();
+    until(|| session.animations.state() == AnimationState::Restoring(5.0));
+    service.state.lock().unwrap().extension_available = true;
+    let started = Instant::now();
+    confirmed(&session.animations, 5.0);
+    assert!(started.elapsed() < Duration::from_millis(700));
+    assert!(
+        service
+            .requests()
+            .iter()
+            .any(
+                |request| request.parameter("isolateId") == Some("isolates/session-restart")
+                    && request.parameter("timeDilation") == Some("5.0")
             )
     );
 }

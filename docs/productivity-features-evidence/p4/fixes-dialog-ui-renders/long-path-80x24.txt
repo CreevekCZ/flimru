@@ -1,0 +1,24 @@
+LIVE FLUTTER CONSOLE · other tabs keep running                                  
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ ┌ Export retained console log ───────────────────────────────────────────────┐ 
+ │ Source: Long 界  é source · Long 界  é source · Long 界  é source · Long 界  … │ 
+ │ Full snapshot, including                                                   │ 
+ │ query/filter-hidden lines.                                                 │ 
+ │ Destination (no overwrite)                                                 │ 
+ │ ‹y/long-界 é-directory/long-界 é-directory/long-界 é-directory//終 端 -log.txt  │ 
+ │ Ready · 35 B retained text                                                 │ 
+ │ May contain secrets. UTF-8.                                                │ 
+ │ [ Export ]  [ Cancel ]                                                     │ 
+ │ Enter Export; Esc Cancel                                                   │ 
+ │ ←→ Home End edit · Tab focus                                               │ 
+ └────────────────────────────────────────────────────────────────────────────┘ 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                

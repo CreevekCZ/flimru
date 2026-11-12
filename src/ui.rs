@@ -31,11 +31,15 @@ pub enum MouseAction {
     Back,
     Refresh,
     ReloadConfigs,
+    ConfigurationDiagnostics,
+    ToggleUnavailable,
+    ExplainConfiguration,
     LastLog,
     Quit,
     Help,
     DismissHelp,
     ToggleAnimations,
+    ReconnectAnimations,
     ConsoleScroll(u16),
     ConfirmQuit,
     CancelQuit,
@@ -46,8 +50,20 @@ pub enum MouseAction {
     ApplyFilter,
     ClearFilter,
     FlutterKey(char),
+    BatchHotCommand(flimru::batch_commands::HotCommand),
     OldestOutput,
     SelectText,
+    SearchConsole,
+    ExportLog,
+    EditSearchQuery,
+    NextSearchMatch,
+    PreviousSearchMatch,
+    CycleSearchFilter,
+    SearchFilter(flimru::console_review::SeverityFilter),
+    RefreshSnapshot,
+    ResumeLive,
+    SnapshotSource,
+    OperationDetails,
     FollowOutput,
     ScrollActions(usize),
     ToggleMulti,
@@ -71,11 +87,22 @@ pub struct ActionItem {
 
 /// One command inventory drives the menu for both pointer and keyboard input.
 pub fn available_actions(app: &App) -> Vec<ActionItem> {
+    let reviewing = app.reviewing();
+    let owns_console_ui = app.console_ui_owned();
+    let operation_details = app.showing_operation_details();
+    let reading = reviewing
+        && app.review.as_ref().is_some_and(|view| {
+            !view.editing() && !view.showing_source_details() && !view.showing_operation_details()
+        });
     let mut items = Vec::new();
     let mut add = |label: &str, shortcut, action| {
         items.push(ActionItem {
             label: label.into(),
-            shortcut,
+            shortcut: if operation_details && action != MouseAction::Quit {
+                ""
+            } else {
+                shortcut
+            },
             action,
         });
     };
@@ -84,24 +111,57 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
         Shortcut::AddSession.label(),
         MouseAction::AddSession,
     );
+    if app.last_operation.is_some() {
+        add("Operation details", "", MouseAction::OperationDetails);
+    }
     match app.page {
         Page::Devices | Page::Configs => {
             if app.page == Page::Configs {
                 add("Back to devices", "Esc", MouseAction::Back);
             }
-            add(
-                if app.page == Page::Devices {
-                    if app.multi {
-                        "Choose configuration"
+            if app.page != Page::Configs
+                || (app.reload_run_guard().is_none()
+                    && app
+                        .visible_entries()
+                        .get(app.config_index)
+                        .is_some_and(|entry| app.assessment(entry).runnable()))
+            {
+                add(
+                    if app.page == Page::Devices {
+                        if app.multi {
+                            "Choose configuration"
+                        } else {
+                            "Choose device"
+                        }
                     } else {
-                        "Choose device"
-                    }
-                } else {
-                    "Run configuration"
-                },
-                "Enter",
-                MouseAction::NextOrRun,
-            );
+                        "Run configuration"
+                    },
+                    "Enter",
+                    MouseAction::NextOrRun,
+                );
+            }
+            if app.page == Page::Devices {
+                add(
+                    "Configuration diagnostics",
+                    "d",
+                    MouseAction::ConfigurationDiagnostics,
+                );
+            } else {
+                add(
+                    if app.show_unavailable {
+                        "Hide unavailable"
+                    } else {
+                        "Show unavailable"
+                    },
+                    "u",
+                    MouseAction::ToggleUnavailable,
+                );
+                add(
+                    "Explain configuration",
+                    "i",
+                    MouseAction::ExplainConfiguration,
+                );
+            }
             add("Filter list", "/", MouseAction::Filter);
             if app.search.is_some() {
                 add("Apply filter", "Enter", MouseAction::ApplyFilter);
@@ -132,8 +192,18 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
                     );
                 }
             }
-            add("Refresh devices", "r", MouseAction::Refresh);
-            add("Reload configs", "c", MouseAction::ReloadConfigs);
+            if app.page == Page::Devices {
+                add("Refresh devices", "r", MouseAction::Refresh);
+            }
+            add(
+                "Reload configs",
+                if app.page == Page::Configs {
+                    "r / c"
+                } else {
+                    "c"
+                },
+                MouseAction::ReloadConfigs,
+            );
             if app.last_log.is_some() {
                 add("Last console", "l", MouseAction::LastLog);
             }
@@ -145,14 +215,31 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
                 MouseAction::Devices,
             );
             if app.active_session().is_some() {
-                add("Hot reload", "r", MouseAction::FlutterKey('r'));
-                add("Hot restart", "R", MouseAction::FlutterKey('R'));
-                add("Flutter help", "h", MouseAction::FlutterKey('h'));
-                add("Open DevTools", "v", MouseAction::FlutterKey('v'));
+                for (label, shortcut, key) in [
+                    ("Hot reload", "r", 'r'),
+                    ("Hot restart", "R", 'R'),
+                    ("Flutter help", "h", 'h'),
+                    ("Open DevTools", "v", 'v'),
+                ] {
+                    add(
+                        label,
+                        if owns_console_ui { "" } else { shortcut },
+                        MouseAction::FlutterKey(key),
+                    );
+                }
                 add(
                     "Animation speed",
-                    Shortcut::Animations.label(),
+                    if owns_console_ui {
+                        ""
+                    } else {
+                        Shortcut::Animations.label()
+                    },
                     MouseAction::ToggleAnimations,
+                );
+                add(
+                    "Reconnect animation control",
+                    "",
+                    MouseAction::ReconnectAnimations,
                 );
             }
             if app.active_session().is_none() && !app.runs.is_empty() {
@@ -162,15 +249,17 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
                     MouseAction::CloseConsole(app.active_run),
                 );
             }
-            add("Oldest output", "Home", MouseAction::OldestOutput);
-            add("Follow output", "End", MouseAction::FollowOutput);
+            if !owns_console_ui {
+                add("Oldest output", "Home", MouseAction::OldestOutput);
+                add("Follow output", "End", MouseAction::FollowOutput);
+            }
             add(
                 if app.active_session().is_some() {
                     "Stop session"
                 } else {
                     "Back to devices"
                 },
-                "q / Esc",
+                if owns_console_ui { "" } else { "q / Esc" },
                 MouseAction::Back,
             );
         }
@@ -180,19 +269,102 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
                 Shortcut::CloseSession.label(),
                 MouseAction::CloseLastLog,
             );
-            add("Back to devices", "Esc", MouseAction::Back);
-            add("Oldest output", "Home", MouseAction::OldestOutput);
-            add("Latest output", "End", MouseAction::FollowOutput);
+            add(
+                "Back to devices",
+                if owns_console_ui { "" } else { "Esc" },
+                MouseAction::Back,
+            );
+            if !owns_console_ui {
+                add("Oldest output", "Home", MouseAction::OldestOutput);
+                add("Latest output", "End", MouseAction::FollowOutput);
+            }
         }
     }
     if matches!(app.page, Page::Console | Page::LastLog) {
-        add(
-            "Select text",
-            Shortcut::SelectText.label(),
-            MouseAction::SelectText,
-        );
+        add("Export retained console log", "", MouseAction::ExportLog);
+        if reviewing {
+            add(
+                "Edit console query",
+                Shortcut::SearchConsole.label(),
+                MouseAction::EditSearchQuery,
+            );
+            add(
+                "Next console match",
+                if reading { "n" } else { "" },
+                MouseAction::NextSearchMatch,
+            );
+            add(
+                "Previous console match",
+                if reading { "N" } else { "" },
+                MouseAction::PreviousSearchMatch,
+            );
+            add(
+                "Cycle console severity",
+                if reading { "f" } else { "" },
+                MouseAction::CycleSearchFilter,
+            );
+            for (label, filter) in [
+                (
+                    "Console severity: All",
+                    flimru::console_review::SeverityFilter::All,
+                ),
+                (
+                    "Console severity: Errors",
+                    flimru::console_review::SeverityFilter::Errors,
+                ),
+                (
+                    "Console severity: Warnings",
+                    flimru::console_review::SeverityFilter::Warnings,
+                ),
+                (
+                    "Console severity: Errors + warnings",
+                    flimru::console_review::SeverityFilter::ErrorsAndWarnings,
+                ),
+            ] {
+                add(label, "", MouseAction::SearchFilter(filter));
+            }
+            add(
+                "Refresh snapshot",
+                if reading { "r" } else { "" },
+                MouseAction::RefreshSnapshot,
+            );
+            add(
+                "Snapshot source details",
+                if reading { "i" } else { "" },
+                MouseAction::SnapshotSource,
+            );
+            add(
+                "Resume live console",
+                if reading { "Esc" } else { "" },
+                MouseAction::ResumeLive,
+            );
+        } else {
+            add(
+                "Search console",
+                Shortcut::SearchConsole.label(),
+                MouseAction::SearchConsole,
+            );
+            if !owns_console_ui {
+                add(
+                    "Select text",
+                    Shortcut::SelectText.label(),
+                    MouseAction::SelectText,
+                );
+            }
+        }
     }
     if !app.runs.is_empty() {
+        let count = app.hot_eligible_count();
+        for (label, command) in [
+            ("Reload", flimru::batch_commands::HotCommand::Reload),
+            ("Restart", flimru::batch_commands::HotCommand::Restart),
+        ] {
+            add(
+                &format!("{label} all eligible ({count})"),
+                "",
+                MouseAction::BatchHotCommand(command),
+            );
+        }
         add(
             "Previous console",
             Shortcut::PreviousConsole.label(),
@@ -223,7 +395,11 @@ pub fn available_actions(app: &App) -> Vec<ActionItem> {
         if app.running_count() > 0 {
             add(
                 "Stop all sessions",
-                Shortcut::StopAll.label(),
+                if reviewing {
+                    ""
+                } else {
+                    Shortcut::StopAll.label()
+                },
                 MouseAction::StopAll,
             );
         }
@@ -344,6 +520,7 @@ fn list_offset(selected: usize, count: usize, height: u16, previous: usize) -> u
 }
 
 pub fn update_picker_viewport(app: &mut App, area: Rect) {
+    clamp_diagnostics_scroll(app, area);
     let list = picker_layout(body_layout(area)[2])[0];
     let height = panel(String::new()).inner(list).height;
     app.device_list_offset = list_offset(
@@ -352,12 +529,8 @@ pub fn update_picker_viewport(app: &mut App, area: Rect) {
         height,
         app.device_list_offset,
     );
-    app.config_list_offset = list_offset(
-        app.config_index,
-        app.visible_configs().len(),
-        height,
-        app.config_list_offset,
-    );
+    let count = app.visible_entries().len();
+    app.config_list_offset = list_offset(app.config_index, count, height, app.config_list_offset);
 }
 
 fn list_hit(
@@ -433,10 +606,50 @@ fn toolbar_buttons(app: &App, compact: bool) -> Vec<Button> {
             }
         }
         Page::Configs => {
-            add("Run".into(), MouseAction::NextOrRun);
+            if app.reload_run_guard().is_some() {
+                add(
+                    if app.manual_reload_pending.is_some() {
+                        "Reloading…"
+                    } else {
+                        "Finishing reload…"
+                    }
+                    .into(),
+                    MouseAction::ExplainConfiguration,
+                );
+            } else if app
+                .visible_entries()
+                .get(app.config_index)
+                .is_some_and(|entry| app.assessment(entry).runnable())
+            {
+                add("Run".into(), MouseAction::NextOrRun);
+            } else {
+                let entry = app.visible_entries().get(app.config_index);
+                let pending = entry.map_or(app.availability_counts().2 > 0, |entry| {
+                    app.assessment(entry).pending
+                });
+                add(
+                    if pending {
+                        "Checking…"
+                    } else if entry.is_none() {
+                        "Select a row"
+                    } else {
+                        "Why blocked?"
+                    }
+                    .into(),
+                    MouseAction::ExplainConfiguration,
+                );
+            }
+            add(
+                if app.show_unavailable {
+                    "Hide unavailable"
+                } else {
+                    "Show unavailable"
+                }
+                .into(),
+                MouseAction::ToggleUnavailable,
+            );
             add("Back".into(), MouseAction::Back);
-            add("Refresh".into(), MouseAction::Refresh);
-            add("Configs".into(), MouseAction::ReloadConfigs);
+            add("Reload".into(), MouseAction::ReloadConfigs);
         }
         Page::Console => {
             add(
@@ -461,6 +674,13 @@ fn toolbar_buttons(app: &App, compact: bool) -> Vec<Button> {
                     format!("Speed {}", session.animations.short_label()),
                     MouseAction::ToggleAnimations,
                 );
+                if matches!(
+                    session.animations.state(),
+                    flimru::animation::AnimationState::Waiting
+                        | flimru::animation::AnimationState::Disconnected
+                ) {
+                    add("Reconnect".into(), MouseAction::ReconnectAnimations);
+                }
             }
         }
         Page::LastLog => {
@@ -877,6 +1097,9 @@ pub fn mouse_action(app: &App, area: Rect, event: MouseEvent) -> Option<MouseAct
             None
         };
     }
+    if app.diagnostics_open {
+        return None;
+    }
     if app.help {
         return Some(MouseAction::DismissHelp);
     }
@@ -937,7 +1160,7 @@ pub fn mouse_action(app: &App, area: Rect, event: MouseEvent) -> Option<MouseAct
             } else {
                 (
                     app.config_index,
-                    app.visible_configs().len(),
+                    app.visible_entries().len(),
                     app.config_list_offset,
                 )
             };
@@ -967,7 +1190,7 @@ pub fn mouse_action(app: &App, area: Rect, event: MouseEvent) -> Option<MouseAct
     }
 }
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw_content(frame: &mut Frame, app: &App) {
     let area = frame.area();
     frame.render_widget(
         Block::default().style(
@@ -1034,6 +1257,18 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" Flimru", Style::default().bold()),
+            Span::styled(
+                if app.reload_error.is_some() {
+                    " · Config error"
+                } else if app.manual_reload_pending.is_some() {
+                    " · Reloading"
+                } else if app.reload_input_drain_pending {
+                    " · Finishing reload…"
+                } else {
+                    ""
+                },
+                Style::default().fg(Color::Yellow),
+            ),
             Span::styled(format!(" / {project}"), Style::default().fg(ACCENT)),
         ])),
         header[0],
@@ -1110,6 +1345,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
     }
 
+    if app.console_ui_owned() {
+        return;
+    }
     match app.page {
         Page::Devices | Page::Configs => picker(frame, app, parts[2]),
         Page::Console => {
@@ -1186,6 +1424,21 @@ pub fn draw(frame: &mut Frame, app: &App) {
             .map(|row| console_line(row.iter()))
             .collect();
         frame.render_widget(Paragraph::new(Text::from(lines)), selection.area);
+        if let Some((position, max)) = selection.scroll_position() {
+            let mut scrollbar = ScrollbarState::new(max.saturating_add(1))
+                .viewport_content_length(usize::from(selection.area.height))
+                .position(position);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(None)
+                    .end_symbol(None)
+                    .track_symbol(Some("│"))
+                    .thumb_symbol("█")
+                    .style(Style::default().fg(if max > 0 { ACCENT } else { MUTED })),
+                console_scrollbar_area(area),
+                &mut scrollbar,
+            );
+        }
         for row in 0..selection.area.height {
             for col in 0..selection.area.width {
                 if selection.contains(row, col) {
@@ -1212,7 +1465,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
     } else if app.page == Page::Console
         && let Some(session) = app.active_session()
     {
-        format!("  {} · {}", app.status, session.animations.label())
+        let diagnostic = session
+            .animations
+            .connection_error()
+            .map(|error| format!(" · {error}"))
+            .unwrap_or_default();
+        format!(
+            "  {} · {}{diagnostic}",
+            app.status,
+            session.animations.label()
+        )
     } else {
         format!("  {}", app.status)
     };
@@ -1256,7 +1518,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .as_ref()
         .is_some_and(|selection| selection.has_range())
     {
-        " Drag to select · release copies\n Esc clears selection"
+        " Drag to edge to scroll · release copies\n Esc clears selection"
     } else if app.top_focus.is_some() {
         " ←/→ choose · Enter/Space select\n ↓ / Esc / Tab return to content"
     } else {
@@ -1265,12 +1527,32 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 if app.multi {
                     " Space check · Enter next\n Tab actions · / filter · m single"
                 } else if area.width < 60 {
-                    " ↑↓ select · Enter next\n Tab actions · / filter"
+                    " ↑↓ select · Enter next\n d diagnostics · Tab actions"
                 } else {
                     " ↑↓ select · Enter next · f favorite\n Tab actions · / filter · m multi"
                 }
             }
-            Page::Configs => " ↑↓ select · Enter run · Esc back\n Tab actions · / filter",
+            Page::Configs => {
+                if app.manual_reload_pending.is_some() {
+                    " Reloading configurations…\n Wait, then choose Run explicitly"
+                } else if app.reload_input_drain_pending {
+                    " Finishing reload…\n Choose Run when it appears"
+                } else if app.config_index == usize::MAX {
+                    if app.availability_counts().2 > 0 {
+                        " Checking selected availability\n ↑↓ choose · u unavailable · / filter"
+                    } else {
+                        " Select a configuration to run\n ↑↓ choose · u unavailable · / filter"
+                    }
+                } else if app
+                    .visible_entries()
+                    .get(app.config_index)
+                    .is_some_and(|entry| app.assessment(entry).runnable())
+                {
+                    " Enter run · i explain · Esc back\n u unavailable · / filter · r reload"
+                } else {
+                    " Enter explains · Esc back\n u unavailable · i details · / filter"
+                }
+            }
             Page::Console if app.active_session().is_some() => {
                 " r reload · R restart · Esc stop\n Drag to copy · Ctrl+g actions"
             }
@@ -1283,8 +1565,61 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Paragraph::new(help).style(Style::default().fg(MUTED)),
         parts[4],
     );
+}
+
+pub fn review_area(area: Rect) -> Rect {
+    Rect::new(
+        area.x,
+        area.y.saturating_add(3).min(area.bottom()),
+        area.width,
+        area.height.saturating_sub(3),
+    )
+}
+
+pub fn draw(frame: &mut Frame, app: &App) {
+    draw_content(frame, app);
+    draw_overlays(frame, app);
+}
+
+pub fn review_operation_notice(frame: &mut Frame, notice: &str) {
+    let area = frame.area();
+    let span = Span::raw(notice);
+    let shortened = span.width() > usize::from(area.width);
+    let mut text = if shortened {
+        "Ctrl+p details: ".to_owned()
+    } else {
+        String::new()
+    };
+    let mut columns = Span::raw(&text).width() as u16;
+    for grapheme in span.styled_graphemes(Style::default()) {
+        let width = Span::raw(grapheme.symbol).width() as u16;
+        let limit = if shortened {
+            area.width.saturating_sub(1)
+        } else {
+            area.width
+        };
+        if columns.saturating_add(width) > limit {
+            text.push('…');
+            break;
+        }
+        columns += width;
+        text.push_str(grapheme.symbol);
+    }
+    frame.render_widget(
+        Paragraph::new(text).style(Style::default().fg(Color::Yellow).bg(PANEL)),
+        Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
+    );
+}
+
+pub fn draw_overlays(frame: &mut Frame, app: &App) {
+    if frame.area().width < 34 || frame.area().height < 12 {
+        return;
+    }
+    if app.diagnostics_open {
+        diagnostics_overlay(frame, app);
+    }
     if app.help {
-        help_overlay(frame);
+        help_overlay(frame, app);
     }
     if app.actions_open {
         actions_overlay(frame, app);
@@ -1297,17 +1632,37 @@ pub fn draw(frame: &mut Frame, app: &App) {
 fn panel(title: String) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .title(title)
+        .title(Line::styled(title, Style::default().fg(MUTED)))
         .border_style(Style::default().fg(Color::Rgb(45, 54, 68)))
         .style(Style::default().bg(PANEL))
 }
 
 fn picker(frame: &mut Frame, app: &App, area: Rect) {
     let split = picker_layout(area);
+    let inner = panel(String::new()).inner(split[0]);
+    let count = if app.page == Page::Devices {
+        app.visible_devices().len()
+    } else {
+        app.visible_entries().len()
+    };
+    let selected = if app.page == Page::Devices {
+        app.device_index
+    } else {
+        app.config_index
+    };
+    let previous = if app.page == Page::Devices {
+        app.device_list_offset
+    } else {
+        app.config_list_offset
+    };
+    let offset = list_offset(selected, count, inner.height, previous);
+    let capacity = usize::from(inner.height.div_ceil(2));
     let (items, selected, title) = if app.page == Page::Devices {
         let devices = app.visible_devices();
         let items: Vec<_> = devices
             .iter()
+            .skip(offset)
+            .take(capacity)
             .map(|device| {
                 ListItem::new(vec![
                     Line::from(vec![
@@ -1367,37 +1722,59 @@ fn picker(frame: &mut Frame, app: &App, area: Rect) {
             },
         )
     } else {
-        let configs = app.visible_configs();
+        let configs = app.visible_entries();
         let items: Vec<_> = configs
             .iter()
-            .map(|config| {
+            .skip(offset)
+            .take(capacity)
+            .map(|entry| {
+                let assessment = app.assessment(entry);
+                let description = if assessment.pending {
+                    "checking availability · i details".into()
+                } else if let Some(reason) = assessment.reasons.first() {
+                    format!("blocked · {} · i explains", reason.code)
+                } else if assessment.target_required {
+                    "select a target · i explains".into()
+                } else {
+                    "ready".into()
+                };
                 ListItem::new(vec![
-                    Line::from(Span::styled(
-                        format!(" {}", config.name),
-                        Style::default().bold(),
-                    )),
-                    Line::from(Span::styled(
+                    Line::styled(
                         format!(
                             " {}{}",
-                            if config.is_test() { "test" } else { "run" },
-                            config
-                                .flutter_mode
-                                .as_ref()
-                                .map(|mode| format!(" · {mode}"))
-                                .unwrap_or_default()
+                            if assessment.pending {
+                                "… "
+                            } else if assessment.runnable() {
+                                ""
+                            } else {
+                                "⊘ "
+                            },
+                            crate::diagnostic_text(&entry.name, crate::CONFIG_LABEL_CHARS)
                         ),
-                        Style::default().fg(MUTED),
-                    )),
+                        Style::default().bold(),
+                    ),
+                    Line::styled(
+                        format!(" {description}"),
+                        Style::default().fg(if assessment.runnable() {
+                            MUTED
+                        } else {
+                            Color::Yellow
+                        }),
+                    ),
                 ])
             })
             .collect();
+        let (ready, blocked, pending) = app.availability_counts();
         (
             items,
             app.config_index,
-            format!(" Configurations ({}) ", configs.len()),
+            if pending == 0 {
+                format!(" Configs · {ready} ready / {blocked} blocked ")
+            } else {
+                format!(" Configs · {pending} checking / {ready} ready ")
+            },
         )
     };
-    let count = items.len();
     let list = List::new(items)
         .block(panel(title))
         .highlight_style(
@@ -1414,25 +1791,23 @@ fn picker(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             "› "
         });
-    let inner = panel(String::new()).inner(split[0]);
-    let previous = if app.page == Page::Devices {
-        app.device_list_offset
+    let mut state = ListState::default().with_selected(if selected < count {
+        Some(selected.saturating_sub(offset))
     } else {
-        app.config_list_offset
-    };
-    let mut state = ListState::default()
-        .with_offset(list_offset(selected, count, inner.height, previous))
-        .with_selected(if count == 0 {
-            None
-        } else {
-            Some(selected.min(count - 1))
-        });
+        None
+    });
     frame.render_stateful_widget(list, split[0], &mut state);
     if count == 0 {
         let empty = if app.page == Page::Devices {
-            "No devices yet.\n\nConnect a device or start an emulator.\nSaved favorites appear immediately.\nPress r to refresh."
+            "No devices yet.\nConnect a device or start an emulator.\nd · configuration diagnostics\nr · refresh"
+        } else if app.launch.entries.is_empty() {
+            "Empty configurations array.\nAdd a configuration, then r reload.\ni · file warnings"
+        } else if app.search.as_ref().is_some_and(|query| !query.is_empty()) {
+            "No text-filter matches.\nEsc clears the filter.\nu · show unavailable"
+        } else if app.availability_counts().2 > 0 {
+            "Checking availability…\nYou can inspect entries with u."
         } else {
-            "No matching configurations.\n\nA configuration with deviceId is offered\non that configured device.\nPress Esc to select another device."
+            "No runnable configurations.\nu · show unavailable\ni · configuration diagnostics"
         };
         frame.render_widget(
             Paragraph::new(empty)
@@ -1475,61 +1850,13 @@ fn picker(frame: &mut Frame, app: &App, area: Rect) {
                 Line::raw("You can select saved favorites immediately."),
             ]
         }
-    } else if let Some(config) = app.visible_configs().get(app.config_index) {
-        let mut lines = vec![
-            Line::styled(config.name.clone(), Style::default().fg(ACCENT).bold()),
-            Line::raw(""),
-            Line::raw(format!(
-                "Device  {}",
-                app.targets()
-                    .iter()
-                    .map(|d| d.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
-            Line::raw(format!("Directory  {}", config.cwd.display())),
-            Line::raw(format!(
-                "Target  {}",
-                config.program.as_deref().unwrap_or("lib/main.dart")
-            )),
-            Line::raw(""),
-            Line::raw("Flutter options"),
-        ];
-        let mut redact_next = false;
-        for flag in config.tool_args.iter().chain(&config.args) {
-            let text = if redact_next {
-                redact_next = false;
-                "  <redacted>".into()
-            } else if flag.starts_with("--dart-define=") {
-                "  --dart-define=<redacted>".into()
-            } else {
-                if flag == "--dart-define" {
-                    redact_next = true;
-                }
-                format!("  {flag}")
-            };
-            lines.push(Line::raw(text));
-        }
-        if let Some(task) = &config.pre_launch_task {
-            lines.push(Line::styled(
-                format!("Blocked: preLaunchTask '{task}' is not supported."),
-                Style::default().fg(Color::Yellow),
-            ));
-        }
-        lines
     } else {
-        vec![Line::raw(
-            "Choose another device to see its configurations.",
-        )]
+        app.diagnostics_lines().into_iter().map(Line::raw).collect()
     };
     let mut detail = detail;
-    if !app.launch.warnings.is_empty() {
+    if app.page == Page::Devices && !app.launch.warnings.is_empty() {
         detail.push(Line::raw(""));
-        detail.push(Line::styled(
-            format!("{} configuration warning(s)", app.launch.warnings.len()),
-            Style::default().fg(Color::Yellow),
-        ));
-        detail.extend(app.launch.warnings.iter().map(|w| Line::raw(w.clone())));
+        detail.extend(app.catalog_warning_lines().into_iter().map(Line::raw));
     }
     frame.render_widget(
         Paragraph::new(detail)
@@ -1547,7 +1874,7 @@ fn terminal_color(color: vt100::Color) -> Color {
     }
 }
 
-fn console_line<'a>(cells: impl Iterator<Item = &'a vt100::Cell>) -> Line<'static> {
+fn console_line<'a>(cells: impl Iterator<Item = &'a vt100::Cell>) -> Line<'a> {
     let mut spans = Vec::new();
     let mut plain = String::new();
     let mut ansi_colors = false;
@@ -1580,11 +1907,11 @@ fn console_line<'a>(cells: impl Iterator<Item = &'a vt100::Cell>) -> Line<'stati
             style = style.reversed();
         }
         let text = if cell.has_contents() {
-            cell.contents().to_owned()
+            cell.contents()
         } else {
-            " ".into()
+            " "
         };
-        plain.push_str(&text);
+        plain.push_str(text);
         spans.push(Span::styled(text, style));
     }
     if !ansi_colors && let Some(color) = crate::console_style::fallback_color(&plain) {
@@ -1710,13 +2037,108 @@ fn actions_overlay(frame: &mut Frame, app: &App) {
             &mut state,
         );
     }
+    let hint = match actions.get(app.action_index).map(|item| item.action) {
+        Some(MouseAction::BatchHotCommand(flimru::batch_commands::HotCommand::Reload)) => {
+            "Hot reload · input requests"
+        }
+        Some(MouseAction::BatchHotCommand(flimru::batch_commands::HotCommand::Restart)) => {
+            "Hot restart · input requests"
+        }
+        _ => "↑↓ / wheel · Enter / click",
+    };
     frame.render_widget(
-        Paragraph::new("↑↓ / wheel · Enter / click").style(Style::default().fg(MUTED)),
+        Paragraph::new(hint).style(Style::default().fg(MUTED)),
         footer,
     );
 }
 
-fn help_overlay(frame: &mut Frame) {
+struct DiagnosticsLayout {
+    popup: Rect,
+    inner: Rect,
+    content: Rect,
+    lines: Vec<Line<'static>>,
+    max_scroll: u16,
+}
+
+fn diagnostics_layout(app: &App, area: Rect) -> DiagnosticsLayout {
+    let popup = Rect::new(
+        area.x + 1,
+        area.y + 1,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    let inner = panel(" Diagnostics ".into()).inner(popup);
+    let content = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width,
+        inner.height.saturating_sub(1),
+    );
+    let mut lines = Vec::<Line>::new();
+    for source in app.diagnostics_lines() {
+        let mut line = String::new();
+        for word in source.split_whitespace() {
+            if !line.is_empty()
+                && Line::raw(format!("{line} {word}")).width() > usize::from(content.width)
+            {
+                lines.push(Line::raw(std::mem::take(&mut line)));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            for character in word.chars() {
+                if Line::raw(format!("{line}{character}")).width() > usize::from(content.width)
+                    && !line.is_empty()
+                {
+                    lines.push(Line::raw(std::mem::take(&mut line)));
+                }
+                line.push(character);
+            }
+        }
+        lines.push(Line::raw(line));
+        lines.push(Line::raw(""));
+    }
+    let max_scroll = lines
+        .len()
+        .saturating_sub(usize::from(content.height))
+        .min(u16::MAX as usize) as u16;
+    DiagnosticsLayout {
+        popup,
+        inner,
+        content,
+        lines,
+        max_scroll,
+    }
+}
+
+pub(super) fn clamp_diagnostics_scroll(app: &mut App, area: Rect) {
+    if app.diagnostics_open {
+        app.diagnostics_offset = app
+            .diagnostics_offset
+            .min(diagnostics_layout(app, area).max_scroll);
+    }
+}
+
+fn diagnostics_overlay(frame: &mut Frame, app: &App) {
+    let layout = diagnostics_layout(app, frame.area());
+    frame.render_widget(Clear, layout.popup);
+    frame.render_widget(
+        Paragraph::new(layout.lines).scroll((app.diagnostics_offset.min(layout.max_scroll), 0)),
+        layout.content,
+    );
+    frame.render_widget(
+        Paragraph::new("↑↓ scroll · Esc close").style(Style::default().fg(ACCENT)),
+        Rect::new(
+            layout.inner.x,
+            layout.inner.bottom().saturating_sub(1),
+            layout.inner.width,
+            1,
+        ),
+    );
+    frame.render_widget(panel(" Diagnostics ".into()), layout.popup);
+}
+
+fn help_overlay(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let width = area.width.saturating_sub(4).min(76);
     let height = area.height.saturating_sub(2).min(10);
@@ -1727,7 +2149,27 @@ fn help_overlay(frame: &mut Frame) {
         height,
     );
     frame.render_widget(Clear, modal);
-    frame.render_widget(Paragraph::new("Ctrl+g top · ←→ Enter select\nCtrl+w close ended tab\nCtrl+p menu · Ctrl+n add\nCtrl+b/f switch consoles\nCtrl+d devices · Ctrl+x stop\nCtrl+a slow · Ctrl+e select\nCtrl+q quit · Esc return\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
+    let text = if app.showing_operation_details() {
+        "Latest operation outcome\n↑↓ PgUp/PgDn scroll\nHome / End: first / last\nEsc / Enter / i: back\nLive message; not snapshot\nCtrl+p menu · Esc back\nProcess controls: Actions\nCtrl+q quit · any key closes"
+    } else if app
+        .review
+        .as_ref()
+        .is_some_and(|view| view.showing_source_details())
+    {
+        "Frozen source details\n↑↓ PgUp/PgDn scroll\nHome / End: first / last\nEsc / Enter / i: back\nQuery and position preserved\nCtrl+p menu · Ctrl+g top\nProcess controls: Actions\nCtrl+q quit · any key closes"
+    } else if app.reviewing() && app.review.as_ref().is_some_and(|view| view.editing()) {
+        "Query editing\nType / paste: query text\nEnter: read matches\nEsc: stop editing\nCtrl+s: edit query\nCtrl+p menu · Ctrl+g top\nProcess controls: Actions\nCtrl+q quit · any key closes"
+    } else if app.reviewing() {
+        "Ctrl+g top · Ctrl+p menu\nCtrl+b/f tabs · Ctrl+d pick\nCtrl+n add · Ctrl+w close\nCtrl+s edit · n/N matches\nf filter · i source\nr refresh · Esc resume\nProcess controls: Actions\nCtrl+q quit · any key closes"
+    } else {
+        "Ctrl+g top · ←→ Enter select\nCtrl+w close ended tab\nCtrl+p menu · Ctrl+n add\nCtrl+b/f switch consoles\nCtrl+d devices · Ctrl+x stop\nCtrl+a slow · Ctrl+e select\nCtrl+q quit · Esc return\nAny key / click: close"
+    };
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(panel(" Keyboard and mouse ".into()))
+            .wrap(Wrap { trim: false }),
+        modal,
+    );
 }
 
 fn quit_overlay(frame: &mut Frame, app: &App) {
@@ -1785,6 +2227,27 @@ mod tests {
         (area.x..area.right())
             .map(|x| buffer[(x, y)].symbol())
             .collect()
+    }
+
+    #[test]
+    fn console_text_borrows_cells_without_losing_wide_or_combining_characters() {
+        let mut parser = vt100::Parser::new(1, 12, 0);
+        parser.process("\x1b[31mA界e\u{301}\x1b[0m!".as_bytes());
+        let screen = parser.screen();
+        let line = console_line((0..12).filter_map(|column| screen.cell(0, column)));
+        assert!(
+            line.spans
+                .iter()
+                .all(|span| matches!(span.content, std::borrow::Cow::Borrowed(_)))
+        );
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(text.trim_end(), "A界e\u{301}!");
+        assert_eq!(line.spans[1].style.fg, Some(Color::Indexed(1)));
+        assert_eq!(line.spans[2].content, "e\u{301}");
     }
 
     #[test]
@@ -2265,6 +2728,41 @@ mod tests {
     }
 
     #[test]
+    fn reload_actions_match_each_picker_page() {
+        let mut app = crate::tests::app();
+        let actions = available_actions(&app);
+        assert!(
+            actions
+                .iter()
+                .any(|item| { item.action == MouseAction::Refresh && item.shortcut == "r" })
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|item| { item.action == MouseAction::ReloadConfigs && item.shortcut == "c" })
+        );
+
+        app.page = Page::Configs;
+        let actions = available_actions(&app);
+        assert!(
+            !actions
+                .iter()
+                .any(|item| item.action == MouseAction::Refresh)
+        );
+        assert!(
+            actions.iter().any(|item| {
+                item.action == MouseAction::ReloadConfigs && item.shortcut == "r / c"
+            })
+        );
+        for compact in [false, true] {
+            let buttons = toolbar_buttons(&app, compact);
+            assert!(buttons.iter().any(|button| {
+                button.label == "Reload" && button.action == MouseAction::ReloadConfigs
+            }));
+        }
+    }
+
+    #[test]
     fn configuration_rows_and_toolbar_buttons_use_rendered_hit_regions() {
         let mut app = crate::tests::app();
         app.page = Page::Configs;
@@ -2273,6 +2771,7 @@ mod tests {
             .iter()
             .find(|d| d.id == "android-device")
             .cloned();
+        app.settle_availability();
         for (width, height) in [(34, 12), (80, 24), (120, 40)] {
             let area = Rect::new(0, 0, width, height);
             let inner = panel(String::new()).inner(picker_layout(body_layout(area)[2])[0]);
@@ -2436,5 +2935,488 @@ mod tests {
         assert!(visible.contains("tail99"));
         assert_eq!(snapshot.size(), original.size());
         assert_eq!(snapshot.contents(), original.contents());
+    }
+    /// Actual cell renders, retained when FLIMRU_P2_EVIDENCE_DIR is set.
+    #[test]
+    fn configuration_reload_render_evidence_and_run_gating() {
+        use flimru::config::LaunchFile;
+        use flimru::config_reload::{ReloadError, ReloadResult, ReloadSource};
+        use std::sync::Arc;
+
+        fn escape(value: &str) -> String {
+            value
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+        }
+        fn color(value: Color) -> String {
+            match value {
+                Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+                Color::Yellow => "#ffff00".into(),
+                Color::White => "#ffffff".into(),
+                _ => "#e0e8f0".into(),
+            }
+        }
+        let fixture = tempfile::tempdir().unwrap();
+        let workspace = fixture.path().join("Example");
+        std::fs::create_dir(&workspace).unwrap();
+        for (width, height) in [(34, 12), (80, 24), (120, 40)] {
+            for state in [
+                "reload-error",
+                "reload-error-filter",
+                "reload-error-details",
+                "recovered",
+                "empty",
+                "no-selection",
+                "manual-pending",
+                "input-drain",
+                "input-drain-error",
+                "selected-pending",
+            ] {
+                let mut app = crate::tests::app();
+                app.ownit = false;
+                app.selected_device = Some(Device {
+                    id: "selected-target".into(),
+                    name: "Selected phone 界".into(),
+                    platform: "ios".into(),
+                    available: true,
+                    favorite: false,
+                });
+                let raw = r#"{"configurations":[{"name":"Stable 界 é"},{"name":"Other"}]}"#;
+                app.launch = Arc::new(
+                    LaunchFile::parse(raw, &workspace.join("launch.json"), &workspace).unwrap(),
+                );
+                app.page = Page::Configs;
+                app.status = "Unrelated session status remains available.".into();
+                app.settle_availability();
+                app.set_config_source_selection(Some(0));
+                let make_result = |app: &App, raw, generation| ReloadResult {
+                    generation,
+                    source: ReloadSource::Automatic,
+                    result: LaunchFile::parse(raw, &app.launch.path, &app.launch.workspace)
+                        .map_err(|_| ReloadError::InvalidConfiguration),
+                };
+                if state.starts_with("reload-error") || state == "recovered" {
+                    app.apply_config_reload(ReloadResult {
+                        generation: 1,
+                        source: ReloadSource::Automatic,
+                        result: Err(ReloadError::InvalidConfiguration),
+                    });
+                }
+                match state {
+                    "reload-error-filter" => {
+                        app.search = Some("Stable".into());
+                        app.searching = true;
+                    }
+                    "reload-error-details" => {
+                        app.diagnostics_open = true;
+                    }
+                    "recovered" => {
+                        app.apply_config_reload(make_result(&app, raw, 2));
+                        app.settle_availability();
+                    }
+                    "empty" => {
+                        app.apply_config_reload(make_result(&app, r#"{"configurations":[]}"#, 1));
+                        app.settle_availability();
+                    }
+                    "no-selection" => {
+                        app.apply_config_reload(make_result(
+                            &app,
+                            r#"{"configurations":[{"name":"Replacement 界 é"}]}"#,
+                            1,
+                        ));
+                        app.settle_availability();
+                    }
+                    "manual-pending" => {
+                        app.manual_reload_pending = Some(1);
+                        app.reload_generation = 1;
+                    }
+                    "input-drain" | "input-drain-error" => {
+                        app.manual_reload_pending = Some(1);
+                        let result = if state == "input-drain-error" {
+                            ReloadResult {
+                                generation: 1,
+                                source: ReloadSource::Manual,
+                                result: Err(ReloadError::InvalidConfiguration),
+                            }
+                        } else {
+                            make_result(&app, raw, 1)
+                        };
+                        app.apply_config_reload(result);
+                        app.settle_availability();
+                    }
+                    "selected-pending" => {
+                        app.set_config_selection(1);
+                        app.selected_device
+                            .as_mut()
+                            .unwrap()
+                            .name
+                            .push_str(" updated");
+                        app.ensure_availability_context();
+                        app.restore_deferred_config_selection();
+                        app.apply_config_reload(make_result(
+                            &app,
+                            r#"{"configurations":[{"name":"Other"},{"name":"Stable 界 é"}]}"#,
+                            1,
+                        ));
+                        let mut results = crate::tests::take_queued_previews(&app);
+                        results.retain(|(source, _)| *source == 1); // Keep selected source 0 pending.
+                        app.apply_availability_results(results);
+                    }
+                    _ => {}
+                }
+                let area = Rect::new(0, 0, width, height);
+                update_picker_viewport(&mut app, area);
+                update_top_viewport(&mut app, area);
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| draw(frame, &app)).unwrap();
+                let buffer = terminal.backend().buffer();
+                let text = (0..height)
+                    .map(|y| row_text(buffer, area, y))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(!text.contains("SECRET"), "{state}: {text}");
+                if state.starts_with("reload-error") {
+                    assert!(text.contains("Config error"), "{state}: {text}");
+                }
+                if state == "reload-error-details" {
+                    assert!(text.contains("last good catalog"), "{text}");
+                }
+                if state == "recovered" {
+                    assert!(!text.contains("Config error"));
+                    assert_eq!(app.selected_config_source(), Some(0));
+                }
+                if state == "empty" {
+                    assert!(text.contains("Empty configurations array."), "{text}");
+                }
+                if state == "no-selection" || state == "selected-pending" {
+                    assert_eq!(app.config_index, usize::MAX);
+                }
+                if matches!(
+                    state,
+                    "no-selection"
+                        | "selected-pending"
+                        | "manual-pending"
+                        | "input-drain"
+                        | "input-drain-error"
+                ) {
+                    assert!(
+                        !available_actions(&app)
+                            .iter()
+                            .any(|item| item.label == "Run configuration")
+                    );
+                }
+                if state.starts_with("input-drain") {
+                    assert!(text.contains("Finishing reload…"), "{text}");
+                    assert!(text.contains("Choose Run when it appears"), "{text}");
+                    assert!(!text.contains("queued input"), "{text}");
+                    assert!(app.reload_input_drain_pending);
+                    assert_eq!(app.manual_reload_pending, None);
+                    assert!(
+                        !toolbar_buttons(&app, true)
+                            .iter()
+                            .any(|item| item.label == "Run")
+                    );
+                }
+                if state == "manual-pending" {
+                    assert!(text.contains("Reloading"), "{text}");
+                    assert!(
+                        !toolbar_buttons(&app, true)
+                            .iter()
+                            .any(|item| item.label == "Run")
+                    );
+                }
+                if state == "no-selection" {
+                    assert_eq!(app.availability_counts(), (1, 0, 0));
+                    assert!(text.contains("Replacement"), "{text}");
+                }
+                if state == "selected-pending" {
+                    assert_eq!(app.availability_counts(), (1, 0, 1));
+                    assert_eq!(app.selected_config_source(), Some(0));
+                    assert!(text.contains("Checking selected availability"), "{text}");
+                }
+                if let Some(output) = std::env::var_os("FLIMRU_P2_EVIDENCE_DIR") {
+                    let output = std::path::PathBuf::from(output);
+                    std::fs::create_dir_all(&output).unwrap();
+                    let stem = format!("{state}-{width}x{height}");
+                    std::fs::write(output.join(format!("{stem}.txt")), format!("{text}\n"))
+                        .unwrap();
+                    let mut svg = format!(
+                        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="0 0 {} {}"><rect width="100%" height="100%" fill="#0e131b"/>"##,
+                        width * 10,
+                        height * 20,
+                        width * 10,
+                        height * 20
+                    );
+                    for y in 0..height {
+                        for x in 0..width {
+                            let cell = &buffer[(x, y)];
+                            if cell.bg != Color::Reset {
+                                svg.push_str(&format!(
+                                    r#"<rect x="{}" y="{}" width="10" height="20" fill="{}"/>"#,
+                                    x * 10,
+                                    y * 20,
+                                    color(cell.bg)
+                                ));
+                            }
+                        }
+                    }
+                    for y in 0..height {
+                        for x in 0..width {
+                            let cell = &buffer[(x, y)];
+                            if cell.symbol() != " " && !cell.symbol().is_empty() {
+                                svg.push_str(&format!(r#"<text x="{}" y="{}" fill="{}" font-family="Menlo,monospace" font-size="15"{}>{}</text>"#, x*10,y*20+16,color(cell.fg),if cell.modifier.contains(Modifier::BOLD) { " font-weight=\"bold\"" } else { "" },escape(cell.symbol())));
+                            }
+                        }
+                    }
+                    svg.push_str("</svg>");
+                    std::fs::write(output.join(format!("{stem}.svg")), svg).unwrap();
+                }
+            }
+        }
+    }
+
+    /// Set FLIMRU_P1_EVIDENCE_DIR to retain these actual TestBackend cells.
+    #[test]
+    fn configuration_diagnostics_render_evidence_and_minimum_size_interactions() {
+        fn escape(value: &str) -> String {
+            value
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+        }
+        fn color(value: Color, fallback: &str) -> String {
+            match value {
+                Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+                Color::Yellow => "#ffff00".into(),
+                Color::White => "#ffffff".into(),
+                Color::Black => "#000000".into(),
+                Color::Red => "#ff5555".into(),
+                Color::Green => "#55ff55".into(),
+                Color::Cyan => "#55ffff".into(),
+                _ => fallback.into(),
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        for (width, height) in [(34, 12), (80, 24), (120, 40)] {
+            for state in [
+                "rejected-only",
+                "checking",
+                "partial-fill-selection",
+                "warning-explanation",
+                "warning-summary-explanation",
+                "warning-limit-explanation-scrolled",
+                "empty",
+                "excluded-hidden",
+                "excluded-shown",
+                "no-filter-matches",
+                "no-devices",
+                "no-target-explanation",
+                "blocked-explanation",
+                "blocked-explanation-scrolled",
+            ] {
+                let mut app = crate::tests::app();
+                app.ownit = false;
+                let mut warning_source = serde_json::Map::new();
+                warning_source.insert("name".into(), "Many warnings".into());
+                for i in 0..40 {
+                    warning_source.insert(format!("unknown{i:02}"), true.into());
+                }
+                let warning_limit_raw =
+                    serde_json::json!({"configurations":[warning_source]}).to_string();
+                let raw = match state {
+                    "warning-limit-explanation-scrolled" => &warning_limit_raw,
+                    "warning-explanation" | "warning-summary-explanation" => {
+                        r#"{"configurations":[{"name":"Selected config","selectedUnknown":true,"args":["--device-id"]},{"name":"Sibling rejected","type":"SECRET_TYPE"}],"compounds":[{}]}"#
+                    }
+                    "empty" => r#"{"configurations":[]}"#,
+                    "partial-fill-selection" => {
+                        r#"{"configurations":[{"name":"Ready first"},{"name":"Selected second"}]}"#
+                    }
+                    "rejected-only" => {
+                        r#"{"configurations":[{"name":"Unsupported debugger 界","type":"SECRET_TYPE"}]}"#
+                    }
+                    _ => {
+                        r#"{"configurations":[{"name":"Very long pinned configuration 界 é","deviceId":"other-target","env":{"TOKEN":"SECRET_ENV"},"args":["--dart-define=TOKEN=SECRET_DEFINE"]},{"name":"Ready config"}],"compounds":[{}]}"#
+                    }
+                };
+                app.launch = std::sync::Arc::new(
+                    flimru::config::LaunchFile::parse(
+                        raw,
+                        &directory.path().join("launch.json"),
+                        directory.path(),
+                    )
+                    .unwrap(),
+                );
+                std::sync::Arc::make_mut(&mut app.launch).workspace = "/workspace/Example".into();
+                app.page = Page::Configs;
+                app.selected_device = Some(Device {
+                    id: "selected-target".into(),
+                    name: "Selected phone 界".into(),
+                    platform: "ios".into(),
+                    available: true,
+                    favorite: false,
+                });
+                app.show_unavailable = !matches!(
+                    state,
+                    "excluded-hidden" | "no-filter-matches" | "partial-fill-selection"
+                );
+                if state == "no-filter-matches" {
+                    app.search = Some("missing text".into());
+                }
+                if state == "no-devices" {
+                    app.page = Page::Devices;
+                    app.devices.clear();
+                    app.selected_device = None;
+                }
+                if state == "no-target-explanation" {
+                    app.selected_device = None;
+                }
+                app.diagnostics_open = state.contains("explanation");
+                if state == "blocked-explanation-scrolled" {
+                    app.diagnostics_offset = 4;
+                }
+                if state == "warning-limit-explanation-scrolled" {
+                    app.diagnostics_offset = u16::MAX;
+                }
+                if state == "partial-fill-selection" {
+                    app.set_config_source_selection(Some(1));
+                    let mut results = crate::tests::take_queued_previews(&app);
+                    assert_eq!(results.len(), 2);
+                    results.pop(); // Keep the selected source pending in the actual UI view.
+                    app.apply_availability_results(results);
+                } else if state == "checking" {
+                    app.ensure_availability_context();
+                } else {
+                    app.settle_availability();
+                }
+                if state == "warning-summary-explanation" {
+                    app.set_config_source_selection(None);
+                }
+                let area = Rect::new(0, 0, width, height);
+                update_picker_viewport(&mut app, area);
+                update_top_viewport(&mut app, area);
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| draw(frame, &app)).unwrap();
+                let buffer = terminal.backend().buffer();
+                let text = (0..height)
+                    .map(|y| row_text(buffer, area, y))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(!text.contains("SECRET"), "{state}: {text}");
+                if state == "partial-fill-selection" {
+                    assert!(text.contains("Ready first"), "{text}");
+                    assert!(text.contains("Checking selected availability"), "{text}");
+                    assert_eq!(app.config_index, usize::MAX);
+                    assert_eq!(app.availability_counts(), (1, 0, 1));
+                    assert!(
+                        !available_actions(&app)
+                            .iter()
+                            .any(|item| item.label == "Run configuration")
+                    );
+                    let list = panel(String::new()).inner(picker_layout(body_layout(area)[2])[0]);
+                    for x in list.x..list.right() {
+                        assert_eq!(
+                            buffer[(x, list.y)].bg,
+                            PANEL,
+                            "unselected ready row acquired selection highlight"
+                        );
+                    }
+                }
+                if state == "checking" {
+                    assert!(text.contains("checking availability"), "{text}");
+                    assert!(app.assessment(&app.launch.entries[0]).pending);
+                    assert!(app.assessment(&app.launch.entries[0]).reasons.is_empty());
+                    assert_eq!(app.availability_counts(), (0, 0, 2));
+                    assert!(
+                        !available_actions(&app)
+                            .iter()
+                            .any(|item| item.label == "Run configuration")
+                    );
+                }
+                if state == "excluded-hidden" || state == "excluded-shown" {
+                    // Verify actual rendered foreground, not just cell presence.
+                    let title = picker_layout(body_layout(area)[2])[0];
+                    let title_row = row_text(buffer, area, title.y);
+                    assert!(title_row.contains("1 ready / 1 blocked"), "{title_row}");
+                    for x in title.x + 2..title.right().saturating_sub(2) {
+                        let cell = &buffer[(x, title.y)];
+                        if cell.symbol().chars().any(char::is_alphanumeric) {
+                            assert_eq!(cell.fg, MUTED);
+                            assert_eq!(cell.bg, PANEL);
+                        }
+                    }
+                }
+                if state == "warning-limit-explanation-scrolled" {
+                    assert!(text.contains("24 more warnings"), "{text}");
+                    assert!(text.contains("--check"), "{text}");
+                }
+                if state == "warning-explanation" && width >= 80 {
+                    assert!(text.contains("selectedUnknown"), "{text}");
+                    assert!(text.contains("File warnings"), "{text}");
+                    assert!(!text.contains("Sibling rejected"), "{text}");
+                }
+                if state == "warning-summary-explanation" {
+                    assert!(!text.contains("selectedUnknown"), "{text}");
+                    assert!(!text.contains("Sibling rejected"), "{text}");
+                }
+                if state.contains("explanation") {
+                    assert!(text.contains("Diagnostics"), "{text}");
+                    assert!(text.contains("Esc close"), "{text}");
+                    assert!(mouse_action(&app, area, click(2, 2)).is_none());
+                }
+                if state == "excluded-shown" {
+                    assert!(
+                        !available_actions(&app)
+                            .iter()
+                            .any(|item| item.label == "Run configuration")
+                    );
+                    assert!(
+                        available_actions(&app)
+                            .iter()
+                            .any(|item| item.action == MouseAction::ExplainConfiguration)
+                    );
+                }
+                if let Some(output) = std::env::var_os("FLIMRU_P1_EVIDENCE_DIR") {
+                    let output = std::path::PathBuf::from(output);
+                    std::fs::create_dir_all(&output).unwrap();
+                    let stem = format!("{state}-{width}x{height}");
+                    std::fs::write(output.join(format!("{stem}.txt")), format!("{text}\n"))
+                        .unwrap();
+                    let mut svg = format!(
+                        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="0 0 {} {}"><rect width="100%" height="100%" fill="#101722"/>"##,
+                        width * 10,
+                        height * 20,
+                        width * 10,
+                        height * 20
+                    );
+                    for y in 0..height {
+                        for x in 0..width {
+                            let cell = &buffer[(x, y)];
+                            if cell.bg != Color::Reset {
+                                svg.push_str(&format!(
+                                    r#"<rect x="{}" y="{}" width="10" height="20" fill="{}"/>"#,
+                                    x * 10,
+                                    y * 20,
+                                    color(cell.bg, "#101722")
+                                ));
+                            }
+                        }
+                    }
+                    for y in 0..height {
+                        for x in 0..width {
+                            let cell = &buffer[(x, y)];
+                            if cell.symbol() != " " && !cell.symbol().is_empty() {
+                                svg.push_str(&format!(r#"<text x="{}" y="{}" fill="{}" font-family="Menlo,monospace" font-size="15"{}>{}</text>"#, x*10, y*20+16, color(cell.fg,"#dce3ed"), if cell.modifier.contains(Modifier::BOLD) { " font-weight=\"bold\"" } else { "" }, escape(cell.symbol())));
+                            }
+                        }
+                    }
+                    svg.push_str("</svg>");
+                    std::fs::write(output.join(format!("{stem}.svg")), svg).unwrap();
+                }
+            }
+        }
     }
 }

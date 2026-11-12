@@ -1,0 +1,12 @@
+ Flimru / Example        0 devices
+  Run       ›│ Menu   Help   Quit 
+ Devices  › Config  › Console     
+┌ Configs · 2 ready / 0 blocked ─┐
+│›  Stable 界  é                  │
+│   ready                        │
+│                                │
+└────────────────────────────────┘
+  Unrelated session     [Filter /]
+status remains                    
+ Enter run · i explain · Esc back 
+ u unavailable · / filter · r relo

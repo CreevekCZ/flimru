@@ -1,0 +1,40 @@
+ Flimru · Finishing reload… / Example                                                                          0 devices
+  Finishing reload…   Show unavailable   Back   Reload                                          │ Actions   Help   Quit 
+ Devices   › Configuration   › Console                                                                                  
+┌ Configs · 2 ready / 0 blocked ───────────────────────────────┐┌ Details ─────────────────────────────────────────────┐
+│›  Stable 界  é                                                ││Finishing reload… Choose Run when it appears.         │
+│   ready                                                      ││Stable 界  é                                           │
+│   Other                                                      ││Ready to run on the selected target(s).               │
+│   ready                                                      ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+│                                                              ││                                                      │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────┘
+  Launch configurations reloaded.                                                                             [Filter /]
+                                                                                                                        
+ Finishing reload…                                                                                                      
+ Choose Run when it appears                                                                                             

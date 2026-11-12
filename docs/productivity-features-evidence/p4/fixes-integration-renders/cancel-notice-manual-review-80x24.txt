@@ -1,0 +1,24 @@
+ Flimru / .tmpNzSH6M                                                   3 devices
+  Close   Add session                                   │ Actions   Help   Quit 
+ 1○ android-device · frozen config     ×                                        
+┌ Snapshot · android-device · frozen config ───────────────────────────────────┐
+│Search: needle                                                                │
+│All · 1/1 · col 1 ↔                                                           │
+│line 085                                                                      │
+│line 086                                                                      │
+│line 087                                                                      │
+│line 088                                                                      │
+│line 089                                                                      │
+│line 090                                                                      │
+│line 091                                                                      │
+│line 092                                                                      │
+│line 093                                                                      │
+│line 094                                                                      │
+│line 095                                                                      │
+│line 096                                                                      │
+│line 097                                                                      │
+│line 098                                                                      │
+│n/N matches · f filter · / edit                                               │
+│r refresh · Esc resume live                                                   │
+└ i source ────────────────────────────────────────────────────────────────────┘
+Console export cancelled.                                                       

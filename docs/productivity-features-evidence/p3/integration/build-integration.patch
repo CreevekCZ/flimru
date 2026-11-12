@@ -1,0 +1,4422 @@
+--- p2/src/main.rs
++++ p3/src/main.rs
+@@ -1,5 +1,6 @@
+ mod availability_worker;
+ mod clipboard;
++pub mod console_search;
+ mod console_style;
+ mod runs;
+ mod selection;
+@@ -125,6 +126,13 @@
+         shown.push_str("… [shortened; --check for full text]");
+     }
+     shown
++}
++
++fn source_label(text: &str, limit: usize) -> String {
++    text.chars()
++        .filter(|ch| !ch.is_control())
++        .take(limit + 1)
++        .collect()
+ }
+ 
+ fn append_display_warnings(lines: &mut Vec<String>, title: &str, warnings: &[String]) {
+@@ -236,7 +244,12 @@
+     runs: Vec<runs::Run>,
+     active_run: usize,
+     retain_consoles: bool,
++    review: Option<console_search::SearchView>,
++    review_notice: Option<String>,
+     last_log: Option<vt100::Parser>,
++    last_log_source: Option<console_search::SearchSource>,
++    last_log_max_columns: u16,
++    last_log_history_capacity: usize,
+     last_log_scrollback: usize,
+     last_log_offset: usize,
+     last_log_view_rows: u16,
+@@ -410,7 +423,12 @@
+         runs: vec![],
+         active_run: 0,
+         retain_consoles: false,
++        review: None,
++        review_notice: None,
+         last_log: None,
++        last_log_source: None,
++        last_log_max_columns: 1,
++        last_log_history_capacity: Session::SCROLLBACK_CAPACITY,
+         last_log_scrollback: 0,
+         last_log_offset: 0,
+         last_log_view_rows: 0,
+@@ -522,7 +540,7 @@
+                         ratatui::layout::Rect::new(0, 0, area.width, area.height),
+                     );
+                 }
+-                terminal.draw(|frame| ui::draw(frame, &app))?;
++                terminal.draw(|frame| app.draw(frame))?;
+                 redraw = false;
+             }
+             let mut exit_requested = false;
+@@ -592,6 +610,7 @@
+     })();
+     // Stop owned children before restoring the user's terminal, even on errors.
+     app.runs.clear();
++    app.review.take();
+     let disconnected = !terminal_input::connected().unwrap_or(false);
+     if disconnected {
+         let _ = terminal_input::detach_output();
+@@ -603,6 +622,283 @@
+ }
+ 
+ impl App {
++    fn reviewing(&self) -> bool {
++        self.review
++            .as_ref()
++            .is_some_and(console_search::SearchView::is_active)
++    }
++
++    fn reviewed_source(&self) -> Option<runs::RunId> {
++        self.review
++            .as_ref()
++            .and_then(|view| view.source())
++            .map(|source| source.id)
++    }
++
++    fn close_review(&mut self) {
++        self.review_notice = None;
++        if let Some(view) = &mut self.review {
++            view.close();
++        }
++    }
++
++    fn draw(&mut self, frame: &mut ratatui::Frame<'_>) {
++        if !self.reviewing() {
++            ui::draw(frame, self);
++            return;
++        }
++        ui::draw_content(frame, self);
++        if frame.area().width >= 34 && frame.area().height >= 12 {
++            let mut area = ui::review_area(frame.area());
++            if self.review_notice.is_some() {
++                area.height = area.height.saturating_sub(1);
++            }
++            let focused = !self.actions_open
++                && !self.help
++                && !self.quit_confirmation
++                && !self.diagnostics_open
++                && self.top_focus.is_none();
++            if let Some(view) = &mut self.review {
++                view.render_with_focus(frame, area, focused);
++            }
++            if let Some(notice) = &self.review_notice {
++                ui::review_operation_notice(frame, notice);
++            }
++        }
++        ui::draw_overlays(frame, self);
++    }
++
++    fn run_source(run: &runs::Run) -> console_search::SearchSource {
++        let mut source = console_search::SearchSource::new(
++            run.id,
++            format!(
++                "{} · {}",
++                source_label(&run.device.name, 96),
++                source_label(&run.config, 96)
++            ),
++            std::time::SystemTime::now(),
++        );
++        source.device = Some(
++            run.device
++                .name
++                .chars()
++                .filter(|ch| !ch.is_control())
++                .take(129)
++                .collect(),
++        );
++        source.configuration = Some(
++            run.config
++                .chars()
++                .filter(|ch| !ch.is_control())
++                .take(129)
++                .collect(),
++        );
++        source.outcome = Some(
++            run.outcome
++                .as_deref()
++                .unwrap_or(
++                    if run
++                        .session
++                        .as_ref()
++                        .is_some_and(|session| session.stop_requested.is_some())
++                    {
++                        "stopping"
++                    } else {
++                        "running"
++                    },
++                )
++                .chars()
++                .filter(|ch| !ch.is_control())
++                .take(129)
++                .collect(),
++        );
++        source
++    }
++
++    fn capture_review(&mut self, refresh: bool) {
++        let source = match self.page {
++            Page::Console => self.runs.get(self.active_run).map(Self::run_source),
++            Page::LastLog if self.last_log.is_some() => {
++                let source = self.last_log_source.get_or_insert_with(|| {
++                    let mut source = console_search::SearchSource::new(
++                        runs::next_id(),
++                        source_label(&self.active_config, 96),
++                        std::time::SystemTime::now(),
++                    );
++                    source.configuration = Some(
++                        self.active_config
++                            .chars()
++                            .filter(|ch| !ch.is_control())
++                            .take(129)
++                            .collect(),
++                    );
++                    source
++                });
++                let mut source = source.clone();
++                source.captured_at = std::time::SystemTime::now();
++                Some(source)
++            }
++            _ => None,
++        };
++        let Some(source) = source else {
++            self.status = "Select a console to search.".into();
++            return;
++        };
++        // A live drag can own its own full history clone; release it before
++        // allocating the review screen, even when preflight later rejects it.
++        self.selection = None;
++        self.dragging_scrollbar = None;
++        // This must precede the Screen clone: retained rows keep historical
++        // widths, and an inactive primary grid can retain history in alt mode.
++        let captured = match self.page {
++            Page::Console => self.runs.get(self.active_run).and_then(|run| {
++                run.screen().map(|screen| {
++                    (
++                        screen,
++                        if screen.alternate_screen() {
++                            run.history_capacity
++                        } else {
++                            run.scrollback()
++                        },
++                        run.historical_columns(),
++                    )
++                })
++            }),
++            Page::LastLog => self.last_log.as_ref().map(|parser| {
++                (
++                    parser.screen(),
++                    if parser.screen().alternate_screen() {
++                        self.last_log_history_capacity
++                    } else {
++                        self.last_log_scrollback
++                    },
++                    self.last_log_max_columns.max(parser.screen().size().1),
++                )
++            }),
++            _ => None,
++        }
++        .map(|(screen, history, columns)| {
++            flimru::console_snapshot::estimate_screen_capture_with_max_columns(
++                screen, history, columns,
++            )
++            .map(|_| screen.clone())
++        });
++        let Some(captured) = captured else {
++            return;
++        };
++        if self.review.is_none() {
++            match console_search::SearchView::new(console_style::review_severity) {
++                Ok(view) => self.review = Some(view),
++                Err(error) => {
++                    self.status = format!("Cannot start console review: {error}");
++                    return;
++                }
++            }
++        }
++        self.selection = None;
++        self.review_notice = None;
++        self.dragging_scrollbar = None;
++        self.top_focus = None;
++        self.actions_open = false;
++        self.help = false;
++        if let Some(view) = &mut self.review {
++            match captured {
++                Ok(screen) => {
++                    let _ = if refresh {
++                        view.refresh(source, screen)
++                    } else {
++                        view.capture(source, screen)
++                    };
++                }
++                Err(error) => view.show_error(source, error.to_string()),
++            }
++        }
++    }
++
++    fn search_console(&mut self) {
++        if self.reviewing() {
++            self.top_focus = None;
++            if let Some(view) = &mut self.review {
++                view.edit_query();
++            }
++        } else {
++            self.capture_review(false);
++        }
++    }
++
++    fn review_event(&mut self, event: &Event) -> bool {
++        let effect = self
++            .review
++            .as_mut()
++            .map(|view| view.handle_event(event))
++            .unwrap_or(console_search::SearchEffect::Inactive);
++        match effect {
++            console_search::SearchEffect::Inactive => false,
++            console_search::SearchEffect::RefreshSnapshot => {
++                self.capture_review(true);
++                true
++            }
++            console_search::SearchEffect::ResumeLive => {
++                self.status = "Resumed live console.".into();
++                true
++            }
++            console_search::SearchEffect::Consumed => true,
++        }
++    }
++
++    fn report_operation(&mut self, message: String) {
++        self.status = message;
++        if self.reviewing() {
++            self.review_notice = Some(self.status.clone());
++        }
++    }
++
++    fn send_flutter_key(&mut self, key: char) {
++        let operation = match key {
++            'r' => "Hot reload",
++            'R' => "Hot restart",
++            'h' => "Flutter help",
++            'v' => "DevTools",
++            _ => "Console input",
++        };
++        if let Some(session) = self.active_session_mut() {
++            let result = session.send(key.to_string().as_bytes());
++            self.report_operation(match result {
++                Ok(()) => format!("{operation} requested"),
++                Err(error) => format!("{operation}: {error:#}"),
++            });
++        }
++    }
++    fn toggle_animations(&mut self) {
++        if let Some(session) = self.active_session_mut() {
++            let result = session.animations.toggle();
++            self.report_operation(match result {
++                Ok(()) => "Animation change requested".into(),
++                Err(error) => format!("Animation control: {error:#}"),
++            });
++        }
++    }
++    fn stop_all(&mut self) {
++        let mut errors = vec![];
++        for run in &mut self.runs {
++            if let Some(session) = &mut run.session
++                && let Err(error) = session.request_stop()
++            {
++                errors.push(format!("{}: {error:#}", run.device.name));
++            }
++        }
++        self.report_operation(if errors.is_empty() {
++            if self.reviewing() {
++                "Stopping all sessions. Use Actions to force any remaining sessions."
++            } else {
++                "Stopping all sessions. Ctrl+x again forces any remaining sessions."
++            }
++            .into()
++        } else {
++            errors.join("; ")
++        });
++    }
++
+     fn active_session(&self) -> Option<&Session> {
+         self.runs.get(self.active_run)?.session.as_ref()
+     }
+@@ -648,6 +944,12 @@
+     fn switch_run(&mut self, index: usize) {
+         self.selection = None;
+         if index < self.runs.len() {
++            if self
++                .reviewed_source()
++                .is_some_and(|source| source != self.runs[index].id)
++            {
++                self.close_review();
++            }
+             self.active_run = index;
+             self.top_focus = None;
+             self.toolbar_offset = 0;
+@@ -685,6 +987,9 @@
+         if run.session.is_some() {
+             self.status = "Session is running. Stop it with q/Esc before closing its tab.".into();
+             return;
++        }
++        if self.reviewed_source() == Some(run.id) {
++            self.close_review();
+         }
+         self.runs.remove(index);
+         self.active_run = self
+@@ -708,7 +1013,12 @@
+     }
+ 
+     fn close_last_log(&mut self) {
++        if self.reviewed_source() == self.last_log_source.as_ref().map(|source| source.id) {
++            self.close_review();
++        }
+         self.last_log = None;
++        self.last_log_source = None;
++        self.last_log_max_columns = 1;
+         self.last_log_offset = 0;
+         self.last_log_scrollback = 0;
+         self.last_log_view_rows = 0;
+@@ -826,6 +1136,8 @@
+         self.runs.extend(next_runs);
+         self.retain_consoles = self.multi || running > 0;
+         self.last_log.take();
++        self.last_log_source = None;
++        self.last_log_max_columns = 1;
+         self.last_log_scrollback = 0;
+         self.last_log_offset = 0;
+         self.saved.last_device = added_device;
+@@ -1344,6 +1656,13 @@
+ 
+     fn tick(&mut self) -> Result<Update> {
+         let mut changed = self.advance_config_reload();
++        changed |= self
++            .review
++            .as_mut()
++            .is_some_and(console_search::SearchView::poll);
++        let reviewing = self.reviewing();
++        let reviewed_source = self.reviewed_source();
++        let mut reviewed_outcome = None;
+         let mut output_received = false;
+         if let Some(selection) = &mut self.selection {
+             changed |= selection.tick(Instant::now());
+@@ -1389,14 +1708,33 @@
+             output_received |= output_changed;
+             let just_ended = was_running && run.session.is_none();
+             changed |= just_ended
+-                || (output_changed && self.page == Page::Console && index == self.active_run);
++                || (output_changed
++                    && self.page == Page::Console
++                    && index == self.active_run
++                    && !reviewing);
++            if just_ended && reviewed_source == Some(run.id) {
++                reviewed_outcome = run
++                    .outcome
++                    .as_ref()
++                    .map(|outcome| source_label(outcome, 128));
++            }
+             ended |= just_ended;
++        }
++        if let Some(outcome) = reviewed_outcome {
++            self.review_notice = Some(format!("Console ended: {outcome}"));
+         }
+         if ended {
+             let running = self.running_count();
+             self.status = format!("{running} session(s) running.");
+-            if !self.retain_consoles && running == 0 && self.runs.len() == 1 {
++            if !self.retain_consoles
++                && running == 0
++                && self.runs.len() == 1
++                && self.reviewed_source() != self.runs.first().map(|run| run.id)
++            {
+                 let mut run = self.runs.remove(0);
++                self.last_log_source = Some(Self::run_source(&run));
++                self.last_log_max_columns = run.historical_columns();
++                self.last_log_history_capacity = run.history_capacity;
+                 self.last_log = run.console.take();
+                 self.last_log_scrollback = run.scrollback_len;
+                 self.last_log_offset = 0;
+@@ -1426,6 +1764,7 @@
+     }
+ 
+     fn back(&mut self) {
++        self.close_review();
+         self.selection = None;
+         self.top_focus = None;
+         self.toolbar_offset = 0;
+@@ -1464,10 +1803,11 @@
+             ui::clamp_diagnostics_scroll(self, area);
+             return Ok(false);
+         }
+-        if self
+-            .selection
+-            .as_ref()
+-            .is_some_and(|selection| selection.keyboard)
++        if !self.reviewing()
++            && self
++                .selection
++                .as_ref()
++                .is_some_and(|selection| selection.keyboard)
+         {
+             let delta = match key.code {
+                 KeyCode::Left => Some((-1, 0)),
+@@ -1495,7 +1835,7 @@
+                 return Ok(false);
+             }
+         }
+-        if self.selection.take().is_some() && key.code == KeyCode::Esc {
++        if !self.reviewing() && self.selection.take().is_some() && key.code == KeyCode::Esc {
+             return Ok(false);
+         }
+         if self.quit_confirmation {
+@@ -1524,7 +1864,11 @@
+             self.action_offset = 0;
+             return Ok(false);
+         }
+-        if shortcut == Some(Shortcut::SelectText) && !self.actions_open && !self.help {
++        if shortcut == Some(Shortcut::SelectText)
++            && !self.actions_open
++            && !self.help
++            && !self.reviewing()
++        {
+             self.begin_text_selection(ratatui::layout::Rect::new(0, 0, cols, rows));
+             return Ok(false);
+         }
+@@ -1568,6 +1912,14 @@
+                 }
+                 _ => {
+                     self.actions_open = false;
++                    let reading_binding = self.review.as_ref().is_some_and(|view| {
++                        !view.editing()
++                            && !view.showing_source_details()
++                            && matches!(key.code, KeyCode::Char('n' | 'N' | 'f' | 'r' | 'i' | '/'))
++                    });
++                    if self.reviewing() && shortcut.is_none() && !reading_binding {
++                        return Ok(false);
++                    }
+                     return self.key(key, cols, rows);
+                 }
+             }
+@@ -1605,6 +1957,10 @@
+         } else if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) && self.page != Page::Console
+         {
+             ui::focus_top(self, key.code == KeyCode::BackTab);
++            return Ok(false);
++        }
++        if shortcut == Some(Shortcut::SearchConsole) {
++            self.search_console();
+             return Ok(false);
+         }
+         if matches!(
+@@ -1641,29 +1997,17 @@
+             }
+             return Ok(false);
+         }
++        // Explicit navigation above remains global. Everything else belongs
++        // to snapshot review before process controls, selection or PTY fallback.
++        if self.review_event(&Event::Key(key)) {
++            return Ok(false);
++        }
+         if shortcut == Some(Shortcut::StopAll) {
+-            let mut errors = vec![];
+-            for run in &mut self.runs {
+-                if let Some(session) = &mut run.session
+-                    && let Err(error) = session.request_stop()
+-                {
+-                    errors.push(format!("{}: {error:#}", run.device.name));
+-                }
+-            }
+-            self.status = if errors.is_empty() {
+-                "Stopping all sessions. Ctrl+x again forces any remaining sessions.".into()
+-            } else {
+-                errors.join("; ")
+-            };
++            self.stop_all();
+             return Ok(false);
+         }
+         if shortcut == Some(Shortcut::Animations) {
+-            if self.page == Page::Console
+-                && let Some(session) = self.active_session_mut()
+-                && let Err(error) = session.animations.toggle()
+-            {
+-                self.status = format!("Console input: {error:#}");
+-            }
++            self.toggle_animations();
+             return Ok(false);
+         }
+         if self.page != Page::Console
+@@ -1912,6 +2256,14 @@
+         {
+             return;
+         }
++        if self.reviewing() {
++            let bounded: String = text
++                .chars()
++                .take(flimru::console_snapshot::MAX_QUERY_CHARS + 1)
++                .collect();
++            self.review_event(&Event::Paste(bounded));
++            return;
++        }
+         if self.page == Page::Console {
+             if let Some(session) = self.active_session_mut()
+                 && let Err(error) = session.send(text.as_bytes())
+@@ -1948,6 +2300,9 @@
+     }
+ 
+     fn begin_text_selection(&mut self, area: ratatui::layout::Rect) {
++        if self.reviewing() {
++            return;
++        }
+         self.prepare_last_log(area.height.saturating_sub(9).max(1));
+         if area.width < 34 || area.height < 12 {
+             return;
+@@ -1996,6 +2351,40 @@
+                 _ => {}
+             }
+             ui::clamp_diagnostics_scroll(self, area);
++            return Ok(false);
++        }
++        if self.reviewing() && !self.actions_open && !self.help && !self.quit_confirmation {
++            let small = area.width < 34 || area.height < 12;
++            if small || event.row < area.y.saturating_add(3) {
++                if matches!(event.kind, MouseEventKind::Down(MouseButton::Left))
++                    && let Some(action) = ui::mouse_action(self, area, event)
++                {
++                    self.top_focus = None;
++                    return self.activate(action, area);
++                }
++                if !small
++                    && matches!(
++                        event.kind,
++                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
++                    )
++                {
++                    let direction = if event.kind == MouseEventKind::ScrollUp {
++                        -1
++                    } else {
++                        1
++                    };
++                    if self.top_focus.is_none() {
++                        ui::focus_top(self, false);
++                    } else {
++                        ui::step_top(self, direction);
++                    }
++                }
++            } else {
++                if matches!(event.kind, MouseEventKind::Down(MouseButton::Left)) {
++                    self.top_focus = None;
++                }
++                self.review_event(&Event::Mouse(event));
++            }
+             return Ok(false);
+         }
+         if self
+@@ -2181,6 +2570,15 @@
+                 ui::MouseAction::CloseConsole(_)
+                     | ui::MouseAction::CloseLastLog
+                     | ui::MouseAction::SelectText
++                    | ui::MouseAction::SearchConsole
++                    | ui::MouseAction::EditSearchQuery
++                    | ui::MouseAction::NextSearchMatch
++                    | ui::MouseAction::PreviousSearchMatch
++                    | ui::MouseAction::CycleSearchFilter
++                    | ui::MouseAction::SearchFilter(_)
++                    | ui::MouseAction::RefreshSnapshot
++                    | ui::MouseAction::ResumeLive
++                    | ui::MouseAction::SnapshotSource
+             )
+         {
+             self.top_focus = focus;
+@@ -2214,7 +2612,8 @@
+                 return self.key(Shortcut::AddSession.key(), area.width, area.height);
+             }
+             MouseAction::StopAll => {
+-                return self.key(Shortcut::StopAll.key(), area.width, area.height);
++                self.stop_all();
++                return Ok(false);
+             }
+             MouseAction::SwitchConsole(index) => {
+                 self.switch_run(index);
+@@ -2266,15 +2665,50 @@
+                 self.set_config_selection(0);
+                 return Ok(false);
+             }
+-            MouseAction::FlutterKey(key) => KeyCode::Char(key),
++            MouseAction::FlutterKey(key) => {
++                self.send_flutter_key(key);
++                return Ok(false);
++            }
++            MouseAction::SearchConsole => {
++                self.search_console();
++                return Ok(false);
++            }
++            MouseAction::RefreshSnapshot => {
++                self.capture_review(true);
++                return Ok(false);
++            }
++            MouseAction::ResumeLive => {
++                self.close_review();
++                return Ok(false);
++            }
++            MouseAction::EditSearchQuery
++            | MouseAction::NextSearchMatch
++            | MouseAction::PreviousSearchMatch
++            | MouseAction::CycleSearchFilter
++            | MouseAction::SearchFilter(_)
++            | MouseAction::SnapshotSource => {
++                if let Some(view) = &mut self.review {
++                    match action {
++                        MouseAction::EditSearchQuery => view.edit_query(),
++                        MouseAction::NextSearchMatch => view.next_match(false),
++                        MouseAction::PreviousSearchMatch => view.previous_match(),
++                        MouseAction::CycleSearchFilter => view.cycle_filter(),
++                        MouseAction::SearchFilter(filter) => view.set_filter(filter),
++                        MouseAction::SnapshotSource => view.show_source_details(),
++                        _ => {}
++                    }
++                }
++                return Ok(false);
++            }
+             MouseAction::SelectText => {
+                 self.actions_open = false;
+                 self.top_focus = None;
+                 self.begin_text_selection(area);
+                 return Ok(false);
+             }
+-            MouseAction::OldestOutput => KeyCode::Home,
+-            MouseAction::FollowOutput => KeyCode::End,
++            MouseAction::OldestOutput if !self.reviewing() => KeyCode::Home,
++            MouseAction::FollowOutput if !self.reviewing() => KeyCode::End,
++            MouseAction::OldestOutput | MouseAction::FollowOutput => return Ok(false),
+             MouseAction::SelectDevice(index) => {
+                 self.searching = false;
+                 self.device_index = index;
+@@ -2301,6 +2735,28 @@
+                 self.searching = false;
+                 KeyCode::Enter
+             }
++            MouseAction::Back if self.page == Page::Console => {
++                if let Some(session) = self.active_session_mut() {
++                    let forced = session.stop_requested.is_some();
++                    let result = session.request_stop();
++                    self.report_operation(match result {
++                        Ok(()) => if forced {
++                            "Forced stop requested"
++                        } else {
++                            "Stop requested"
++                        }
++                        .into(),
++                        Err(error) => format!("Stop: {error:#}"),
++                    });
++                } else {
++                    self.back();
++                }
++                return Ok(false);
++            }
++            MouseAction::Back if self.page == Page::LastLog => {
++                self.back();
++                return Ok(false);
++            }
+             MouseAction::Back => {
+                 self.search = None;
+                 self.searching = false;
+@@ -2316,6 +2772,9 @@
+             }
+             MouseAction::LastLog => {
+                 if self.last_log.is_some() {
++                    if self.page != Page::LastLog {
++                        self.close_review();
++                    }
+                     self.page = Page::LastLog;
+                     self.actions_open = false;
+                     self.searching = false;
+@@ -2340,18 +2799,23 @@
+                 return Ok(false);
+             }
+             MouseAction::ToggleAnimations => {
+-                return self.key(Shortcut::Animations.key(), area.width, area.height);
++                self.toggle_animations();
++                return Ok(false);
+             }
+             MouseAction::ReconnectAnimations => {
+                 if let Some(session) = self.active_session_mut() {
+-                    self.status = match session.reconnect_animations() {
++                    let message = match session.reconnect_animations() {
+                         Ok(()) => "VM Service reconnect requested.".into(),
+                         Err(error) => format!("Animation reconnect: {error:#}"),
+                     };
++                    self.report_operation(message);
+                 }
+                 return Ok(false);
+             }
+             MouseAction::ConsoleScroll(row) => {
++                if self.reviewing() {
++                    return Ok(false);
++                }
+                 let track = ui::console_scrollbar_area(area);
+                 self.begin_scrollbar_drag(track.y.saturating_add(row), track);
+                 return Ok(false);
+@@ -2416,6 +2880,9 @@
+     }
+ 
+     fn set_console_position(&mut self, position: usize) {
++        if self.reviewing() {
++            return;
++        }
+         match self.page {
+             Page::Console => {
+                 if let Some(run) = self.runs.get_mut(self.active_run) {
+@@ -2539,7 +3006,12 @@
+             runs: vec![],
+             active_run: 0,
+             retain_consoles: false,
++            review: None,
++            review_notice: None,
+             last_log: None,
++            last_log_source: None,
++            last_log_max_columns: 1,
++            last_log_history_capacity: Session::SCROLLBACK_CAPACITY,
+             last_log_scrollback: 0,
+             last_log_offset: 0,
+             last_log_view_rows: 0,
+@@ -4832,3 +5304,7 @@
+         }
+     }
+ }
++
++#[cfg(test)]
++#[path = "../tests/support/console_search_app.rs"]
++mod console_search_app_tests;
+--- p2/src/ui.rs
++++ p3/src/ui.rs
+@@ -52,6 +52,15 @@
+     FlutterKey(char),
+     OldestOutput,
+     SelectText,
++    SearchConsole,
++    EditSearchQuery,
++    NextSearchMatch,
++    PreviousSearchMatch,
++    CycleSearchFilter,
++    SearchFilter(flimru::console_review::SeverityFilter),
++    RefreshSnapshot,
++    ResumeLive,
++    SnapshotSource,
+     FollowOutput,
+     ScrollActions(usize),
+     ToggleMulti,
+@@ -75,6 +84,12 @@
+ 
+ /// One command inventory drives the menu for both pointer and keyboard input.
+ pub fn available_actions(app: &App) -> Vec<ActionItem> {
++    let reviewing = app.reviewing();
++    let reading = reviewing
++        && app
++            .review
++            .as_ref()
++            .is_some_and(|view| !view.editing() && !view.showing_source_details());
+     let mut items = Vec::new();
+     let mut add = |label: &str, shortcut, action| {
+         items.push(ActionItem {
+@@ -189,13 +204,33 @@
+                 MouseAction::Devices,
+             );
+             if app.active_session().is_some() {
+-                add("Hot reload", "r", MouseAction::FlutterKey('r'));
+-                add("Hot restart", "R", MouseAction::FlutterKey('R'));
+-                add("Flutter help", "h", MouseAction::FlutterKey('h'));
+-                add("Open DevTools", "v", MouseAction::FlutterKey('v'));
++                add(
++                    "Hot reload",
++                    if reviewing { "" } else { "r" },
++                    MouseAction::FlutterKey('r'),
++                );
++                add(
++                    "Hot restart",
++                    if reviewing { "" } else { "R" },
++                    MouseAction::FlutterKey('R'),
++                );
++                add(
++                    "Flutter help",
++                    if reviewing { "" } else { "h" },
++                    MouseAction::FlutterKey('h'),
++                );
++                add(
++                    "Open DevTools",
++                    if reviewing { "" } else { "v" },
++                    MouseAction::FlutterKey('v'),
++                );
+                 add(
+                     "Animation speed",
+-                    Shortcut::Animations.label(),
++                    if reviewing {
++                        ""
++                    } else {
++                        Shortcut::Animations.label()
++                    },
+                     MouseAction::ToggleAnimations,
+                 );
+                 add(
+@@ -211,15 +246,17 @@
+                     MouseAction::CloseConsole(app.active_run),
+                 );
+             }
+-            add("Oldest output", "Home", MouseAction::OldestOutput);
+-            add("Follow output", "End", MouseAction::FollowOutput);
++            if !reviewing {
++                add("Oldest output", "Home", MouseAction::OldestOutput);
++                add("Follow output", "End", MouseAction::FollowOutput);
++            }
+             add(
+                 if app.active_session().is_some() {
+                     "Stop session"
+                 } else {
+                     "Back to devices"
+                 },
+-                "q / Esc",
++                if reviewing { "" } else { "q / Esc" },
+                 MouseAction::Back,
+             );
+         }
+@@ -229,12 +266,83 @@
+                 Shortcut::CloseSession.label(),
+                 MouseAction::CloseLastLog,
+             );
+-            add("Back to devices", "Esc", MouseAction::Back);
+-            add("Oldest output", "Home", MouseAction::OldestOutput);
+-            add("Latest output", "End", MouseAction::FollowOutput);
++            add(
++                "Back to devices",
++                if reviewing { "" } else { "Esc" },
++                MouseAction::Back,
++            );
++            if !reviewing {
++                add("Oldest output", "Home", MouseAction::OldestOutput);
++                add("Latest output", "End", MouseAction::FollowOutput);
++            }
+         }
+     }
+     if matches!(app.page, Page::Console | Page::LastLog) {
++        if reviewing {
++            add(
++                "Edit console query",
++                Shortcut::SearchConsole.label(),
++                MouseAction::EditSearchQuery,
++            );
++            add(
++                "Next console match",
++                if reading { "n" } else { "" },
++                MouseAction::NextSearchMatch,
++            );
++            add(
++                "Previous console match",
++                if reading { "N" } else { "" },
++                MouseAction::PreviousSearchMatch,
++            );
++            add(
++                "Cycle console severity",
++                if reading { "f" } else { "" },
++                MouseAction::CycleSearchFilter,
++            );
++            for (label, filter) in [
++                (
++                    "Console severity: All",
++                    flimru::console_review::SeverityFilter::All,
++                ),
++                (
++                    "Console severity: Errors",
++                    flimru::console_review::SeverityFilter::Errors,
++                ),
++                (
++                    "Console severity: Warnings",
++                    flimru::console_review::SeverityFilter::Warnings,
++                ),
++                (
++                    "Console severity: Errors + warnings",
++                    flimru::console_review::SeverityFilter::ErrorsAndWarnings,
++                ),
++            ] {
++                add(label, "", MouseAction::SearchFilter(filter));
++            }
++            add(
++                "Refresh snapshot",
++                if reading { "r" } else { "" },
++                MouseAction::RefreshSnapshot,
++            );
++            add(
++                "Snapshot source details",
++                if reading { "i" } else { "" },
++                MouseAction::SnapshotSource,
++            );
++            add(
++                "Resume live console",
++                if reading { "Esc" } else { "" },
++                MouseAction::ResumeLive,
++            );
++        } else {
++            add(
++                "Search console",
++                Shortcut::SearchConsole.label(),
++                MouseAction::SearchConsole,
++            );
++        }
++    }
++    if matches!(app.page, Page::Console | Page::LastLog) && !reviewing {
+         add(
+             "Select text",
+             Shortcut::SelectText.label(),
+@@ -272,7 +380,11 @@
+         if app.running_count() > 0 {
+             add(
+                 "Stop all sessions",
+-                Shortcut::StopAll.label(),
++                if reviewing {
++                    ""
++                } else {
++                    Shortcut::StopAll.label()
++                },
+                 MouseAction::StopAll,
+             );
+         }
+@@ -1063,7 +1175,7 @@
+     }
+ }
+ 
+-pub fn draw(frame: &mut Frame, app: &App) {
++pub fn draw_content(frame: &mut Frame, app: &App) {
+     let area = frame.area();
+     frame.render_widget(
+         Block::default().style(
+@@ -1218,6 +1330,9 @@
+         }
+     }
+ 
++    if app.reviewing() {
++        return;
++    }
+     match app.page {
+         Page::Devices | Page::Configs => picker(frame, app, parts[2]),
+         Page::Console => {
+@@ -1435,11 +1550,50 @@
+         Paragraph::new(help).style(Style::default().fg(MUTED)),
+         parts[4],
+     );
++}
++
++pub fn review_area(area: Rect) -> Rect {
++    Rect::new(
++        area.x,
++        area.y.saturating_add(3).min(area.bottom()),
++        area.width,
++        area.height.saturating_sub(3),
++    )
++}
++
++pub fn draw(frame: &mut Frame, app: &App) {
++    draw_content(frame, app);
++    draw_overlays(frame, app);
++}
++
++pub fn review_operation_notice(frame: &mut Frame, notice: &str) {
++    let area = frame.area();
++    let mut text = String::new();
++    let mut columns: u16 = 0;
++    for ch in notice.chars().filter(|ch| !ch.is_control()) {
++        let width = Span::raw(ch.to_string()).width() as u16;
++        if columns.saturating_add(width) > area.width.saturating_sub(1) {
++            text.push('…');
++            break;
++        }
++        columns += width;
++        text.push(ch);
++    }
++    frame.render_widget(
++        Paragraph::new(text).style(Style::default().fg(Color::Yellow).bg(PANEL)),
++        Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
++    );
++}
++
++pub fn draw_overlays(frame: &mut Frame, app: &App) {
++    if frame.area().width < 34 || frame.area().height < 12 {
++        return;
++    }
+     if app.diagnostics_open {
+         diagnostics_overlay(frame, app);
+     }
+     if app.help {
+-        help_overlay(frame);
++        help_overlay(frame, app);
+     }
+     if app.actions_open {
+         actions_overlay(frame, app);
+@@ -1949,7 +2103,7 @@
+     frame.render_widget(panel(" Diagnostics ".into()), layout.popup);
+ }
+ 
+-fn help_overlay(frame: &mut Frame) {
++fn help_overlay(frame: &mut Frame, app: &App) {
+     let area = frame.area();
+     let width = area.width.saturating_sub(4).min(76);
+     let height = area.height.saturating_sub(2).min(10);
+@@ -1960,7 +2114,17 @@
+         height,
+     );
+     frame.render_widget(Clear, modal);
+-    frame.render_widget(Paragraph::new("Ctrl+g top · ←→ Enter select\nCtrl+w close ended tab\nCtrl+p menu · Ctrl+n add\nCtrl+b/f switch consoles\nCtrl+d devices · Ctrl+x stop\nCtrl+a slow · Ctrl+e select\nCtrl+q quit · Esc return\nAny key / click: close").block(panel(" Keyboard and mouse ".into())).wrap(Wrap { trim: false }), modal);
++    let text = if app.reviewing() {
++        "Ctrl+g top · Ctrl+p menu\nCtrl+b/f tabs · Ctrl+d pick\nCtrl+n add · Ctrl+w close\nCtrl+s edit · n/N matches\nf filter · i source\nr refresh · Esc resume\nProcess controls: Actions\nCtrl+q quit · any key closes"
++    } else {
++        "Ctrl+g top · ←→ Enter select\nCtrl+w close ended tab\nCtrl+p menu · Ctrl+n add\nCtrl+b/f switch consoles\nCtrl+d devices · Ctrl+x stop\nCtrl+a slow · Ctrl+e select\nCtrl+q quit · Esc return\nAny key / click: close"
++    };
++    frame.render_widget(
++        Paragraph::new(text)
++            .block(panel(" Keyboard and mouse ".into()))
++            .wrap(Wrap { trim: false }),
++        modal,
++    );
+ }
+ 
+ fn quit_overlay(frame: &mut Frame, app: &App) {
+--- p2/src/runs.rs
++++ p3/src/runs.rs
+@@ -2,8 +2,19 @@
+ use flimru::{device::Device, session::Session};
+ 
+ pub const MAX_RUNS: usize = 8;
++pub type RunId = u64;
++static NEXT_RUN_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
++
++/// Console identities survive vector removal and live-to-ended transfer. At a
++/// million launches per second the u64 space lasts more than half a million years.
++pub fn next_id() -> RunId {
++    NEXT_RUN_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
++}
+ 
+ pub struct Run {
++    pub id: RunId,
++    pub max_columns: u16,
++    pub history_capacity: usize,
+     pub device: Device,
+     pub config: String,
+     pub session: Option<Session>,
+@@ -17,6 +28,9 @@
+ impl Run {
+     pub fn running(device: Device, config: String, session: Session) -> Self {
+         Self {
++            id: next_id(),
++            max_columns: session.max_columns,
++            history_capacity: Session::SCROLLBACK_CAPACITY,
+             device,
+             config,
+             session: Some(session),
+@@ -34,6 +48,9 @@
+         let message: String = error.chars().filter(|c| !c.is_control()).collect();
+         console.process(format!("Cannot start: {message}").as_bytes());
+         Self {
++            id: next_id(),
++            max_columns: cols.max(1),
++            history_capacity: 0,
+             device,
+             config,
+             session: None,
+@@ -50,6 +67,14 @@
+             .as_ref()
+             .map(|s| s.parser.screen())
+             .or_else(|| self.console.as_ref().map(vt100::Parser::screen))
++    }
++
++    pub fn historical_columns(&self) -> u16 {
++        self.max_columns.max(
++            self.session
++                .as_ref()
++                .map_or(0, |session| session.max_columns),
++        )
+     }
+ 
+     pub fn scrollback(&self) -> usize {
+@@ -116,6 +141,7 @@
+         if let Some(outcome) = outcome {
+             self.offset = session.parser.screen().scrollback();
+             self.scrollback_len = session.scrollback_len;
++            self.max_columns = self.max_columns.max(session.max_columns);
+             self.console = Some(session.take_console());
+             self.outcome = Some(outcome);
+             self.session.take();
+--- p2/src/session.rs
++++ p3/src/session.rs
+@@ -24,6 +24,8 @@
+     pub parser: vt100::Parser,
+     pub animations: AnimationControl,
+     pub scrollback_len: usize,
++    /// Lifetime width bound: vt100 retains old scrollback rows across resize.
++    pub max_columns: u16,
+     pub visual_revision: u64,
+     child: Box<dyn Child + Send + Sync>,
+     master: Box<dyn MasterPty + Send>,
+@@ -78,6 +80,7 @@
+ }
+ 
+ impl Session {
++    pub const SCROLLBACK_CAPACITY: usize = 10_000;
+     /// Request colored child output while honoring explicit launch.json env overrides.
+     pub fn start(plan: &RunCommand, rows: u16, cols: u16) -> Result<Self> {
+         let mut args = plan.args.clone();
+@@ -199,7 +202,7 @@
+             }
+         });
+         Ok(Self {
+-            parser: vt100::Parser::new(rows.max(1), cols.max(1), 10_000),
++            parser: vt100::Parser::new(rows.max(1), cols.max(1), Self::SCROLLBACK_CAPACITY),
+             animations: match &service_directory {
+                 Some(directory) => {
+                     AnimationControl::with_service_file(directory.path().join("service-uri"))
+@@ -212,6 +215,7 @@
+                 ),
+             },
+             scrollback_len: 0,
++            max_columns: cols.max(1),
+             visual_revision: 0,
+             child,
+             master: pair.master,
+@@ -369,6 +373,7 @@
+         if self.parser.screen().size() != (rows.max(1), cols.max(1)) {
+             self.master.resize(size(rows, cols))?;
+             self.parser.screen_mut().set_size(rows.max(1), cols.max(1));
++            self.max_columns = self.max_columns.max(cols.max(1));
+             self.update_scroll_bounds();
+             self.visual_revision = self.visual_revision.wrapping_add(1);
+         }
+@@ -518,8 +523,11 @@
+             session.tick().unwrap();
+             thread::sleep(Duration::from_millis(10));
+         }
++        assert_eq!(session.max_columns, 90);
++        session.resize(15, 120).unwrap();
+         session.resize(15, 60).unwrap();
+         assert_eq!(session.parser.screen().size(), (15, 60));
++        assert_eq!(session.max_columns, 120);
+         session.send(b"h").unwrap();
+         session.send(b"v").unwrap();
+         session.request_stop().unwrap();
+--- p2/src/shortcuts.rs
++++ p3/src/shortcuts.rs
+@@ -7,6 +7,7 @@
+     FocusActions,
+     Actions,
+     SelectText,
++    SearchConsole,
+     Animations,
+     PreviousConsole,
+     NextConsole,
+@@ -25,6 +26,7 @@
+             KeyCode::Char('g') => Self::FocusActions,
+             KeyCode::Char('p') => Self::Actions,
+             KeyCode::Char('e') => Self::SelectText,
++            KeyCode::Char('s') => Self::SearchConsole,
+             KeyCode::Char('a') => Self::Animations,
+             KeyCode::Char('b') => Self::PreviousConsole,
+             KeyCode::Char('f') => Self::NextConsole,
+@@ -41,6 +43,7 @@
+             Self::FocusActions => ('g', "Ctrl+g"),
+             Self::Actions => ('p', "Ctrl+p"),
+             Self::SelectText => ('e', "Ctrl+e"),
++            Self::SearchConsole => ('s', "Ctrl+s"),
+             Self::Animations => ('a', "Ctrl+a"),
+             Self::PreviousConsole => ('b', "Ctrl+b"),
+             Self::NextConsole => ('f', "Ctrl+f"),
+--- p2/src/console_style.rs
++++ p3/src/console_style.rs
+@@ -48,6 +48,19 @@
+ /// Color recognized severity prefixes, never words buried in a message.
+ /// Incoming ANSI colors take precedence at the call site.
+ pub fn fallback_color(text: &str) -> Option<Color> {
++    classify(text).map(Severity::color)
++}
++
++/// Semantic search filters use exactly the same recognized prefixes as colors.
++pub fn review_severity(text: &str) -> Option<flimru::console_review::Severity> {
++    match classify(text) {
++        Some(Severity::Error) => Some(flimru::console_review::Severity::Error),
++        Some(Severity::Warning) => Some(flimru::console_review::Severity::Warning),
++        _ => None,
++    }
++}
++
++fn classify(text: &str) -> Option<Severity> {
+     let mut message = text.trim_start();
+     let mut transport = None;
+     if let Some(rest) = message.strip_prefix("flutter:") {
+@@ -76,7 +89,7 @@
+             && let Some((label, rest)) = rest.split_once(']')
+         {
+             if let Some(severity) = level(label.trim()) {
+-                return Some(severity.color());
++                return Some(severity);
+             }
+             message = rest.trim_start();
+         } else {
+@@ -86,16 +99,16 @@
+     if let Some((label, _)) = message.split_once(':')
+         && let Some(severity) = level(label.trim())
+     {
+-        return Some(severity.color());
++        return Some(severity);
+     }
+     if message
+         .trim_start_matches('═')
+         .strip_prefix('╡')
+         .is_some_and(|rest| rest.trim_start().starts_with("EXCEPTION CAUGHT BY"))
+     {
+-        return Some(Severity::Error.color());
++        return Some(Severity::Error);
+     }
+-    transport.map(Severity::color)
++    transport
+ }
+ 
+ #[cfg(test)]
+@@ -139,4 +152,25 @@
+             assert_eq!(fallback_color(message), None);
+         }
+     }
++    #[test]
++    fn review_filters_share_prefix_precedence_and_leave_stack_lines_unclassified() {
++        use flimru::console_review::Severity as ReviewSeverity;
++        for (line, expected) in [
++            ("\u{1b}[31m", None),
++            (
++                "I/flutter: [Orders] SEVERE: failed",
++                Some(ReviewSeverity::Error),
++            ),
++            ("W/Tag: native warning", Some(ReviewSeverity::Warning)),
++            (
++                "[time] [Logger] WARNING: retry",
++                Some(ReviewSeverity::Warning),
++            ),
++            ("INFO: useful context", None),
++            ("  stack error at source.dart", None),
++            ("WARN buried without recognized delimiter", None),
++        ] {
++            assert_eq!(review_severity(line), expected, "{line}");
++        }
++    }
+ }
+--- p2/src/console_search.rs
++++ p3/src/console_search.rs
+@@ -0,0 +1,1021 @@
++//! Frozen console review UI. Route application-wide actions/modal overlays first;
++//! while active, every remaining event belongs here and must never reach the PTY.
++use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
++use flimru::console_review::{
++    ReviewData, ReviewError, ReviewTicket, ReviewWorker, Severity, SeverityFilter,
++};
++use flimru::console_snapshot::{ConsoleSnapshot, MAX_QUERY_CHARS};
++use ratatui::{
++    Frame,
++    layout::Rect,
++    style::{Color, Modifier, Style},
++    text::{Line, Span},
++    widgets::{Block, Borders, Clear, Paragraph, Wrap},
++};
++use std::borrow::Cow;
++use std::io;
++use std::ops::Range;
++use std::sync::Arc;
++use std::time::{SystemTime, UNIX_EPOCH};
++
++const ACCENT: Color = Color::Rgb(96, 210, 225);
++const MUTED: Color = Color::Rgb(151, 163, 180);
++const PANEL: Color = Color::Rgb(22, 28, 39);
++const TEXT: Color = Color::Rgb(224, 232, 240);
++const MATCH: Color = Color::Rgb(34, 64, 78);
++const ERROR: Color = Color::Rgb(255, 128, 142);
++
++/// Capture-time metadata, independent of later tab selection or session lifecycle.
++/// Callers supply display labels only, never launch arguments or environment.
++#[derive(Clone, Debug)]
++pub struct SearchSource {
++    pub id: u64,
++    pub label: String,
++    pub device: Option<String>,
++    pub configuration: Option<String>,
++    pub outcome: Option<String>,
++    pub captured_at: SystemTime,
++}
++impl SearchSource {
++    pub fn new(id: u64, label: String, captured_at: SystemTime) -> Self {
++        Self {
++            id,
++            label,
++            device: None,
++            configuration: None,
++            outcome: None,
++            captured_at,
++        }
++    }
++    fn normalized(mut self) -> (Self, bool) {
++        let mut shortened = false;
++        let mut normalize = |value: &str, limit| {
++            let (value, clipped) = bounded_label(value, limit);
++            shortened |= clipped;
++            value
++        };
++        self.label = normalize(&self.label, 96);
++        self.device = self.device.map(|value| normalize(&value, 128));
++        self.configuration = self.configuration.map(|value| normalize(&value, 128));
++        self.outcome = self.outcome.map(|value| normalize(&value, 128));
++        (self, shortened)
++    }
++}
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum SearchEffect {
++    Inactive,
++    Consumed,
++    ResumeLive,
++    RefreshSnapshot,
++}
++
++pub struct SearchView {
++    worker: ReviewWorker,
++    source: Option<SearchSource>,
++    source_shortened: bool,
++    source_details: bool,
++    source_scroll: usize,
++    source_viewport: Rect,
++    expected: Option<ReviewTicket>,
++    data: Option<ReviewData>,
++    query: String,
++    filter: SeverityFilter,
++    editing: bool,
++    pending: bool,
++    capturing: bool,
++    error: Option<String>,
++    notice: Option<&'static str>,
++    current: Option<usize>,
++    top: usize,
++    left: u16,
++    viewport: Rect,
++    reveal: bool,
++}
++impl SearchView {
++    pub fn new(classify: fn(&str) -> Option<Severity>) -> io::Result<Self> {
++        Ok(Self {
++            worker: ReviewWorker::new(classify)?,
++            source: None,
++            source_shortened: false,
++            source_details: false,
++            source_scroll: 0,
++            source_viewport: Rect::default(),
++            expected: None,
++            data: None,
++            query: String::new(),
++            filter: SeverityFilter::All,
++            editing: false,
++            pending: false,
++            capturing: false,
++            error: None,
++            notice: None,
++            current: None,
++            top: 0,
++            left: 0,
++            viewport: Rect::default(),
++            reveal: false,
++        })
++    }
++    pub fn is_active(&self) -> bool {
++        self.source.is_some()
++    }
++    pub fn is_pending(&self) -> bool {
++        self.pending
++    }
++    pub fn editing(&self) -> bool {
++        self.editing
++    }
++    pub fn source(&self) -> Option<&SearchSource> {
++        self.source.as_ref()
++    }
++    pub fn showing_source_details(&self) -> bool {
++        self.source_details
++    }
++    /// Explicit Actions entry points work in either editing or reading mode.
++    pub fn edit_query(&mut self) {
++        if self.is_active() {
++            self.source_details = false;
++            self.editing = true;
++        }
++    }
++    pub fn show_source_details(&mut self) {
++        if self.is_active() {
++            self.source_details = true;
++            self.source_scroll = 0;
++        }
++    }
++    pub fn data(&self) -> Option<&ReviewData> {
++        self.data.as_ref()
++    }
++    pub fn query(&self) -> &str {
++        &self.query
++    }
++    pub fn filter(&self) -> SeverityFilter {
++        self.filter
++    }
++    pub fn current_match(&self) -> Option<usize> {
++        self.current
++    }
++    pub fn offsets(&self) -> (usize, u16) {
++        (self.top, self.left)
++    }
++    pub fn error(&self) -> Option<&str> {
++        self.error.as_deref()
++    }
++    /// Exact full snapshot, including lines hidden by query/severity filtering.
++    pub fn snapshot(&self) -> Option<Arc<ConsoleSnapshot>> {
++        self.data.as_ref().map(|data| Arc::clone(&data.snapshot))
++    }
++
++    /// Caller must run the historical-width-aware preflight before making this
++    /// screen clone. New sources start an empty query; refreshing preserves it.
++    pub fn capture(
++        &mut self,
++        source: SearchSource,
++        screen: vt100::Screen,
++    ) -> Result<(), ReviewError> {
++        let source_id = source.id;
++        let same_source = self.source.as_ref().is_some_and(|old| old.id == source.id);
++        if !same_source {
++            self.query.clear();
++            self.filter = SeverityFilter::All;
++            self.editing = true;
++        }
++        // Release UI-owned output before handing another capture to the worker.
++        self.data = None;
++        let (source, shortened) = source.normalized();
++        self.source = Some(source);
++        self.source_shortened = shortened;
++        self.source_details = false;
++        self.source_scroll = 0;
++        self.current = None;
++        self.top = 0;
++        self.left = 0;
++        self.notice = None;
++        self.error = None;
++        self.pending = false;
++        self.expected = None;
++        match self
++            .worker
++            .capture(source_id, screen, self.query.clone(), self.filter)
++        {
++            Ok(ticket) => {
++                self.expected = Some(ticket);
++                self.pending = true;
++                self.capturing = true;
++                self.reveal = true;
++                Ok(())
++            }
++            Err(error) => {
++                self.error = Some(error.to_string());
++                Err(error)
++            }
++        }
++    }
++
++    /// Supply refreshed capture-time outcome/time alongside the same stable ID.
++    pub fn refresh(
++        &mut self,
++        source: SearchSource,
++        screen: vt100::Screen,
++    ) -> Result<(), ReviewError> {
++        if self.source.as_ref().is_none_or(|old| old.id != source.id) {
++            return Err(ReviewError::NoSnapshot);
++        }
++        self.capture(source, screen)
++    }
++    /// Keep a failed preflight visible and input-isolated without cloning a screen.
++    pub fn show_error(&mut self, source: SearchSource, message: String) {
++        self.close();
++        let (source, shortened) = source.normalized();
++        self.source = Some(source);
++        self.source_shortened = shortened;
++        self.error = Some(display_label(&message, 512));
++    }
++    pub fn close(&mut self) {
++        self.data = None;
++        self.source = None;
++        self.source_shortened = false;
++        self.source_details = false;
++        self.source_scroll = 0;
++        self.source_viewport = Rect::default();
++        self.expected = None;
++        self.pending = false;
++        self.capturing = false;
++        self.error = None;
++        self.notice = None;
++        self.current = None;
++        self.query.clear();
++        self.filter = SeverityFilter::All;
++        self.editing = false;
++        self.top = 0;
++        self.left = 0;
++        self.worker.clear();
++    }
++    /// Poll on the ordinary UI tick; a stale source/capture/query cannot replace
++    /// the current view, even if the caller closed and reopened the same source.
++    pub fn poll(&mut self) -> bool {
++        let Some(update) = self.worker.take_update() else {
++            return false;
++        };
++        if self.expected != Some(update.ticket)
++            || self
++                .source
++                .as_ref()
++                .is_none_or(|source| source.id != update.ticket.source)
++        {
++            return false;
++        }
++        self.pending = false;
++        self.capturing = false;
++        match update.result {
++            Ok(data) => {
++                self.current = (!data.matches.matches.is_empty()).then_some(0);
++                self.data = Some(data);
++                self.error = None;
++                self.top = 0;
++                self.left = 0;
++                self.reveal = true;
++                self.reveal_current();
++            }
++            Err(error) => self.error = Some(error.to_string()),
++        }
++        true
++    }
++    pub fn set_query(&mut self, query: &str) {
++        if !self.is_active() {
++            return;
++        }
++        let mut chars = query.chars().take(MAX_QUERY_CHARS + 1);
++        self.query = chars
++            .by_ref()
++            .take(MAX_QUERY_CHARS)
++            .filter(|ch| !ch.is_control())
++            .collect();
++        self.notice = chars
++            .next()
++            .is_some()
++            .then_some("Query limited to 512 characters");
++        self.submit();
++    }
++    pub fn set_filter(&mut self, filter: SeverityFilter) {
++        if self.is_active() && self.filter != filter {
++            self.filter = filter;
++            self.submit();
++        }
++    }
++    pub fn next_match(&mut self, backwards: bool) {
++        if self.pending || self.error.is_some() {
++            return;
++        }
++        let count = self
++            .data
++            .as_ref()
++            .map_or(0, |data| data.matches.matches.len());
++        if count == 0 {
++            return;
++        }
++        self.current = Some(match (self.current, backwards) {
++            (None, false) => 0,
++            (None, true) => count - 1,
++            (Some(index), false) => (index + 1) % count,
++            (Some(index), true) => (index + count - 1) % count,
++        });
++        self.reveal = true;
++        self.reveal_current();
++    }
++    pub fn previous_match(&mut self) {
++        self.next_match(true);
++    }
++    fn submit(&mut self) {
++        self.error = None;
++        self.current = None;
++        match self.worker.search(self.query.clone(), self.filter) {
++            Ok(ticket) => {
++                self.expected = Some(ticket);
++                self.pending = true;
++            }
++            Err(error) => {
++                self.pending = false;
++                self.error = Some(error.to_string());
++            }
++        }
++    }
++    pub fn cycle_filter(&mut self) {
++        self.set_filter(match self.filter {
++            SeverityFilter::All => SeverityFilter::Errors,
++            SeverityFilter::Errors => SeverityFilter::Warnings,
++            SeverityFilter::Warnings => SeverityFilter::ErrorsAndWarnings,
++            SeverityFilter::ErrorsAndWarnings => SeverityFilter::All,
++        });
++    }
++    pub fn handle_event(&mut self, event: &Event) -> SearchEffect {
++        if !self.is_active() {
++            return SearchEffect::Inactive;
++        }
++        if self.source_details {
++            self.handle_source_event(event);
++            return SearchEffect::Consumed;
++        }
++        match event {
++            Event::Key(key) if key.kind != KeyEventKind::Release => return self.key(*key),
++            Event::Paste(text) if self.editing => {
++                let available = MAX_QUERY_CHARS.saturating_sub(self.query.chars().count());
++                let mut chars = text.chars().take(MAX_QUERY_CHARS + 1);
++                let addition: String = chars
++                    .by_ref()
++                    .take(available)
++                    .filter(|ch| !ch.is_control())
++                    .collect();
++                let capped = chars.next().is_some();
++                if !addition.is_empty() {
++                    self.query.push_str(&addition);
++                    self.submit();
++                }
++                self.notice = capped.then_some("Query limited to 512 characters");
++            }
++            Event::Mouse(mouse) => match mouse.kind {
++                MouseEventKind::ScrollUp => self.scroll(-3, 0),
++                MouseEventKind::ScrollDown => self.scroll(3, 0),
++                MouseEventKind::ScrollLeft => self.scroll(0, -3),
++                MouseEventKind::ScrollRight => self.scroll(0, 3),
++                _ => {}
++            },
++            Event::Resize(_, _) => self.reveal = self.current.is_some(),
++            _ => {}
++        }
++        SearchEffect::Consumed
++    }
++    fn key(&mut self, key: KeyEvent) -> SearchEffect {
++        let has_command_modifier = key
++            .modifiers
++            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
++        if key.code == KeyCode::Esc {
++            if self.editing {
++                self.editing = false;
++            } else {
++                self.close();
++                return SearchEffect::ResumeLive;
++            }
++            return SearchEffect::Consumed;
++        }
++        if self.editing {
++            match key.code {
++                KeyCode::Enter => self.editing = false,
++                KeyCode::Backspace if !has_command_modifier => {
++                    if self.query.pop().is_some() {
++                        self.notice = None;
++                        self.submit();
++                    }
++                }
++                KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
++                    self.query.clear();
++                    self.notice = None;
++                    self.submit();
++                }
++                KeyCode::Char(ch) if !ch.is_control() && !has_command_modifier => {
++                    if self.query.chars().count() < MAX_QUERY_CHARS {
++                        self.query.push(ch);
++                        self.notice = None;
++                        self.submit();
++                    } else {
++                        self.notice = Some("Query limited to 512 characters");
++                    }
++                }
++                _ => {}
++            }
++        } else if !has_command_modifier {
++            match key.code {
++                KeyCode::Char('n') => self.next_match(false),
++                KeyCode::Char('N') => self.previous_match(),
++                KeyCode::Char('/') => self.edit_query(),
++                KeyCode::Char('f') => self.cycle_filter(),
++                KeyCode::Char('i') => self.show_source_details(),
++                KeyCode::Char('r') => return SearchEffect::RefreshSnapshot,
++                KeyCode::Up => self.scroll(-1, 0),
++                KeyCode::Down => self.scroll(1, 0),
++                KeyCode::Left => self.scroll(0, -1),
++                KeyCode::Right => self.scroll(0, 1),
++                KeyCode::PageUp => self.scroll(-(self.viewport.height.max(1) as isize), 0),
++                KeyCode::PageDown => self.scroll(self.viewport.height.max(1) as isize, 0),
++                KeyCode::Home => {
++                    self.top = 0;
++                    self.left = 0;
++                    self.reveal = false;
++                }
++                KeyCode::End => {
++                    self.top = usize::MAX;
++                    self.reveal = false;
++                    self.clamp();
++                }
++                _ => {}
++            }
++        }
++        SearchEffect::Consumed
++    }
++    fn handle_source_event(&mut self, event: &Event) {
++        let page = usize::from(self.source_viewport.height.max(1));
++        let max = self
++            .source_lines(self.source_viewport.width)
++            .len()
++            .saturating_sub(page);
++        match event {
++            Event::Key(key) if key.kind != KeyEventKind::Release => {
++                if key.code == KeyCode::Esc {
++                    self.source_details = false;
++                } else if !key
++                    .modifiers
++                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
++                {
++                    match key.code {
++                        KeyCode::Enter | KeyCode::Char('i') => self.source_details = false,
++                        KeyCode::Up => self.source_scroll = self.source_scroll.saturating_sub(1),
++                        KeyCode::Down => self.source_scroll = self.source_scroll.saturating_add(1),
++                        KeyCode::PageUp => {
++                            self.source_scroll = self.source_scroll.saturating_sub(page)
++                        }
++                        KeyCode::PageDown => {
++                            self.source_scroll = self.source_scroll.saturating_add(page)
++                        }
++                        KeyCode::Home => self.source_scroll = 0,
++                        KeyCode::End => self.source_scroll = max,
++                        _ => {}
++                    }
++                }
++            }
++            Event::Mouse(mouse) => match mouse.kind {
++                MouseEventKind::ScrollUp => {
++                    self.source_scroll = self.source_scroll.saturating_sub(3)
++                }
++                MouseEventKind::ScrollDown => {
++                    self.source_scroll = self.source_scroll.saturating_add(3)
++                }
++                _ => {}
++            },
++            _ => {}
++        }
++        self.source_scroll = self.source_scroll.min(max);
++    }
++    fn scroll(&mut self, vertical: isize, horizontal: i16) {
++        self.top = self.top.saturating_add_signed(vertical);
++        self.left = self.left.saturating_add_signed(horizontal);
++        self.reveal = false;
++        self.clamp();
++    }
++    fn clamp(&mut self) {
++        let rows = self.data.as_ref().map_or(0, |data| data.rows.len());
++        let columns = self.data.as_ref().map_or(0, |data| data.snapshot.columns());
++        self.top = self
++            .top
++            .min(rows.saturating_sub(usize::from(self.viewport.height.max(1))));
++        self.left = self
++            .left
++            .min(columns.saturating_sub(self.viewport.width.max(1)));
++    }
++    fn reveal_current(&mut self) {
++        if !self.reveal || self.viewport.is_empty() {
++            return;
++        }
++        let Some(data) = &self.data else { return };
++        let Some(found) = self
++            .current
++            .and_then(|index| data.matches.matches.get(index))
++        else {
++            self.reveal = false;
++            self.clamp();
++            return;
++        };
++        if let Some(cells) = data.snapshot.cell_ranges(found.bytes.clone()).next()
++            && let Some(row) = data.rows.displayed_row(cells.row)
++        {
++            let height = usize::from(self.viewport.height);
++            if row < self.top {
++                self.top = row;
++            } else if row >= self.top + height {
++                self.top = row + 1 - height;
++            }
++            let width = self.viewport.width;
++            if cells.columns.start < self.left {
++                self.left = cells.columns.start;
++            } else if cells.columns.end > self.left.saturating_add(width) {
++                self.left = if cells.columns.end - cells.columns.start > width {
++                    cells.columns.start
++                } else {
++                    cells.columns.end.saturating_sub(width)
++                };
++            }
++        }
++        self.reveal = false;
++        self.clamp();
++    }
++
++    pub fn render(&mut self, frame: &mut Frame<'_>, area: Rect) {
++        self.render_with_focus(frame, area, true);
++    }
++
++    /// Parent overlays/top focus can suppress the native query cursor without
++    /// changing the user's editing state or frozen review data.
++    pub fn render_with_focus(&mut self, frame: &mut Frame<'_>, area: Rect, focused: bool) {
++        if !self.is_active() || area.is_empty() {
++            return;
++        }
++        if self.source_details {
++            self.render_source_details(frame, area);
++            return;
++        }
++        frame.render_widget(Clear, area);
++        let label = self
++            .source
++            .as_ref()
++            .map_or("", |source| source.label.as_str());
++        let block = Block::default()
++            .borders(Borders::ALL)
++            .title(clipped_title(
++                &format!(" Snapshot · {label} "),
++                area.width.saturating_sub(2),
++            ))
++            .title_bottom(if self.editing { "" } else { " i source " })
++            .border_style(Style::default().fg(ACCENT))
++            .style(Style::default().bg(PANEL).fg(TEXT));
++        let inner = block.inner(area);
++        frame.render_widget(block, area);
++        if inner.is_empty() {
++            return;
++        }
++        let header_height = inner.height.min(2);
++        let footer_height = inner.height.saturating_sub(header_height).min(2);
++        let body = Rect::new(
++            inner.x,
++            inner.y + header_height,
++            inner.width,
++            inner.height - header_height - footer_height,
++        );
++        if (body.width, body.height) != (self.viewport.width, self.viewport.height) {
++            self.reveal = self.current.is_some();
++        }
++        self.viewport = body;
++        self.clamp();
++        self.reveal_current();
++        let query_text = if self.query.is_empty() {
++            if self.editing {
++                "type to search"
++            } else {
++                "(empty)"
++            }
++        } else {
++            &self.query
++        };
++        let query_display = if query_text
++            .chars()
++            .next()
++            .is_some_and(|ch| Span::raw(ch.to_string()).width() == 0)
++        {
++            Cow::Owned(format!("◌{query_text}"))
++        } else {
++            Cow::Borrowed(query_text)
++        };
++        let query_text = query_display.as_ref();
++        let prefix = if self.editing {
++            "Search ▸ "
++        } else {
++            "Search: "
++        };
++        let prefix_width = (prefix.chars().count() as u16).min(inner.width);
++        frame.render_widget(
++            Paragraph::new(prefix).style(Style::default().fg(if self.editing {
++                ACCENT
++            } else {
++                MUTED
++            })),
++            Rect::new(inner.x, inner.y, prefix_width, 1),
++        );
++        let query_area = Rect::new(
++            inner.x + prefix_width,
++            inner.y,
++            inner.width - prefix_width,
++            1,
++        );
++        if query_area.width > 0 {
++            let query_width = Span::raw(query_text).width().min(usize::from(u16::MAX)) as u16;
++            let offset = if self.editing {
++                query_width.saturating_sub(query_area.width.saturating_sub(1))
++            } else {
++                0
++            };
++            frame.render_widget(Paragraph::new(query_text).scroll((0, offset)), query_area);
++            if self.editing && focused {
++                let caret = if self.query.is_empty() {
++                    0
++                } else {
++                    query_width.saturating_sub(offset)
++                }
++                .min(query_area.width - 1);
++                frame.set_cursor_position((query_area.x + caret, query_area.y));
++            }
++        }
++        if header_height > 1 {
++            let status = if self.pending {
++                if self.capturing {
++                    "Capturing…".into()
++                } else {
++                    "Searching…".into()
++                }
++            } else if let Some(notice) = self.notice {
++                notice.into()
++            } else if self.error.is_some() {
++                "Review unavailable".into()
++            } else if let Some(data) = &self.data {
++                let count = data.matches.matches.len();
++                if self.query.is_empty() {
++                    format!(
++                        "{} {} · col {} ↔",
++                        data.rows.len(),
++                        if data.rows.len() == 1 { "row" } else { "rows" },
++                        usize::from(self.left) + 1
++                    )
++                } else if count == 0 {
++                    "No matches".into()
++                } else {
++                    format!(
++                        "{}/{}{} · col {} ↔",
++                        self.current.map_or(0, |index| index + 1),
++                        count,
++                        if data.matches.capped { "+ capped" } else { "" },
++                        usize::from(self.left) + 1
++                    )
++                }
++            } else {
++                String::new()
++            };
++            let text = Line::from(vec![
++                Span::styled(filter_label(self.filter), Style::default().fg(ACCENT)),
++                Span::styled(format!(" · {status}"), Style::default().fg(MUTED)),
++            ]);
++            frame.render_widget(
++                Paragraph::new(text),
++                Rect::new(inner.x, inner.y + 1, inner.width, 1),
++            );
++        }
++        if !body.is_empty() {
++            if let Some(error) = &self.error {
++                frame.render_widget(
++                    Paragraph::new(error.as_str())
++                        .style(Style::default().fg(ERROR))
++                        .wrap(Wrap { trim: false }),
++                    body,
++                );
++            } else if self.pending {
++                frame.render_widget(
++                    Paragraph::new(if self.capturing {
++                        "Capturing retained console…"
++                    } else {
++                        "Updating snapshot review…"
++                    })
++                    .style(Style::default().fg(MUTED)),
++                    body,
++                );
++            } else if let Some(data) = &self.data {
++                if data.rows.is_empty() {
++                    frame.render_widget(
++                        Paragraph::new("No lines in this filter.")
++                            .style(Style::default().fg(MUTED)),
++                        body,
++                    );
++                } else if data.snapshot.plain_text().is_empty() {
++                    frame.render_widget(
++                        Paragraph::new("Snapshot is empty.").style(Style::default().fg(MUTED)),
++                        body,
++                    );
++                } else {
++                    self.render_rows(frame, body, data);
++                }
++            }
++        }
++        if footer_height > 0 {
++            let hint = if self.editing {
++                "Enter read · Esc stop editing"
++            } else {
++                "n/N matches · f filter · / edit"
++            };
++            frame.render_widget(
++                Paragraph::new(hint).style(Style::default().fg(MUTED)),
++                Rect::new(inner.x, inner.bottom() - footer_height, inner.width, 1),
++            );
++        }
++        if footer_height > 1 {
++            let hint = if self.editing {
++                "Snapshot · live output continues"
++            } else {
++                "r refresh · Esc resume live"
++            };
++            frame.render_widget(
++                Paragraph::new(hint).style(Style::default().fg(MUTED)),
++                Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
++            );
++        }
++    }
++
++    fn source_lines(&self, width: u16) -> Vec<Line<'static>> {
++        let Some(source) = &self.source else {
++            return Vec::new();
++        };
++        let captured = match source.captured_at.duration_since(UNIX_EPOCH) {
++            Ok(time) => format!("{} s", time.as_secs()),
++            Err(error) => format!("-{} s", error.duration().as_secs()),
++        };
++        let mut fields = vec![format!("Frozen source ID: {}", source.id)];
++        if self.source_shortened {
++            fields.push("Shortened: label 96; fields 128.".into());
++            fields.push("… marks omitted characters.".into());
++        }
++        fields.extend([
++            format!("Label: {}", source.label),
++            format!(
++                "Device: {}",
++                source.device.as_deref().unwrap_or("(not supplied)")
++            ),
++            format!(
++                "Configuration: {}",
++                source.configuration.as_deref().unwrap_or("(not supplied)")
++            ),
++            format!(
++                "Outcome: {}",
++                source.outcome.as_deref().unwrap_or("(not supplied)")
++            ),
++            format!("Captured: Unix UTC {captured}"),
++        ]);
++        // Wrap this small, bounded metadata explicitly so scroll bounds and
++        // rendering agree, including long words and wide/combining graphemes.
++        let mut lines = Vec::new();
++        if width == 0 {
++            return lines;
++        }
++        for field in fields {
++            let span = Span::raw(field);
++            let mut line = String::new();
++            let mut columns = 0;
++            for grapheme in span.styled_graphemes(Style::default()) {
++                let size = Span::raw(grapheme.symbol).width();
++                if columns + size > usize::from(width) && !line.is_empty() {
++                    lines.push(Line::raw(std::mem::take(&mut line)));
++                    columns = 0;
++                }
++                if size > usize::from(width) {
++                    line.push('…');
++                    columns += 1;
++                } else {
++                    line.push_str(grapheme.symbol);
++                    columns += size;
++                }
++            }
++            lines.push(Line::raw(line));
++        }
++        lines
++    }
++
++    fn render_source_details(&mut self, frame: &mut Frame<'_>, area: Rect) {
++        frame.render_widget(Clear, area);
++        let block = Block::default()
++            .borders(Borders::ALL)
++            .title(" Frozen source details ")
++            .border_style(Style::default().fg(ACCENT))
++            .style(Style::default().fg(TEXT).bg(PANEL));
++        let inner = block.inner(area);
++        frame.render_widget(block, area);
++        self.source_viewport = Rect::new(
++            inner.x,
++            inner.y,
++            inner.width,
++            inner.height.saturating_sub(1),
++        );
++        let lines = self.source_lines(inner.width);
++        let max = lines
++            .len()
++            .saturating_sub(usize::from(self.source_viewport.height));
++        self.source_scroll = self.source_scroll.min(max);
++        if !self.source_viewport.is_empty() {
++            frame.render_widget(
++                Paragraph::new(lines)
++                    .scroll((self.source_scroll.min(usize::from(u16::MAX)) as u16, 0)),
++                self.source_viewport,
++            );
++        }
++        if !inner.is_empty() {
++            frame.render_widget(
++                Paragraph::new("↑↓ PgUp/PgDn · Esc back").style(Style::default().fg(MUTED)),
++                Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
++            );
++        }
++    }
++
++    fn render_rows(&self, frame: &mut Frame<'_>, body: Rect, data: &ReviewData) {
++        let snapshot = &data.snapshot;
++        for y in 0..body.height {
++            let Some(row_index) = data.rows.snapshot_row(self.top + usize::from(y)) else {
++                break;
++            };
++            let row = &snapshot.rows()[row_index];
++            let right = self.left.saturating_add(body.width);
++            // Find whole-cell byte boundaries before touching text. This bounds
++            // drawing to the viewport even for a 65k-column historical row.
++            let start = byte_at_column(snapshot, row.bytes.clone(), self.left, false);
++            let end = byte_at_column(snapshot, row.bytes.clone(), right, true);
++            if start >= end {
++                continue;
++            }
++            let matches = &data.matches.matches;
++            let first = matches.partition_point(|found| found.bytes.end <= start);
++            let mut highlighted: Vec<Range<u16>> = Vec::new();
++            let mut current = None;
++            for (index, found) in matches
++                .iter()
++                .enumerate()
++                .skip(first)
++                .take_while(|(_, found)| found.bytes.start < end)
++            {
++                // A long match can cross hundreds of narrow wrapped rows.
++                // Map only this row, retaining the original match index/style.
++                let bytes =
++                    found.bytes.start.max(row.bytes.start)..found.bytes.end.min(row.bytes.end);
++                for cells in snapshot.cell_ranges(bytes) {
++                    if self.current == Some(index) {
++                        current = Some(cells.columns.clone());
++                    }
++                    if let Some(previous) = highlighted.last_mut()
++                        && previous.end >= cells.columns.start
++                    {
++                        previous.end = previous.end.max(cells.columns.end);
++                    } else {
++                        highlighted.push(cells.columns);
++                    }
++                }
++            }
++            let mut byte = start;
++            let mut highlight = 0;
++            while byte < end {
++                let Some(cells) = snapshot.cell_ranges(byte..byte + 1).next() else {
++                    break;
++                };
++                let next = if snapshot.plain_text().as_bytes()[byte].is_ascii()
++                    && (byte + 1 == end || snapshot.plain_text().as_bytes()[byte + 1].is_ascii())
++                {
++                    byte + 1
++                } else {
++                    byte_at_column(snapshot, byte..end, cells.columns.end, false)
++                };
++                if next <= byte {
++                    break;
++                }
++                while highlighted
++                    .get(highlight)
++                    .is_some_and(|range| range.end <= cells.columns.start)
++                {
++                    highlight += 1;
++                }
++                let active = current.as_ref().is_some_and(|range| {
++                    range.start < cells.columns.end && range.end > cells.columns.start
++                });
++                let marked = highlighted
++                    .get(highlight)
++                    .is_some_and(|range| range.start < cells.columns.end);
++                let style = if active {
++                    Style::default()
++                        .fg(PANEL)
++                        .bg(ACCENT)
++                        .add_modifier(Modifier::BOLD)
++                } else if marked {
++                    Style::default().fg(TEXT).bg(MATCH)
++                } else {
++                    Style::default().fg(TEXT).bg(PANEL)
++                };
++                let x = body.x + cells.columns.start.saturating_sub(self.left);
++                frame.buffer_mut().set_stringn(
++                    x,
++                    body.y + y,
++                    &snapshot.plain_text()[byte..next],
++                    usize::from(cells.columns.end - cells.columns.start),
++                    style,
++                );
++                // Ratatui resets wide continuation cells while writing a
++                // grapheme. Keep their background/style aligned with its head.
++                for continuation in 1..cells.columns.end - cells.columns.start {
++                    frame.buffer_mut()[(x + continuation, body.y + y)].set_style(style);
++                }
++                byte = next;
++            }
++        }
++    }
++}
++
++/// Lower bound by original cell coordinates; returned bytes are complete cell
++/// boundaries, so matching only a combining mark still colors its base cell.
++fn byte_at_column(
++    snapshot: &ConsoleSnapshot,
++    bytes: Range<usize>,
++    column: u16,
++    by_end: bool,
++) -> usize {
++    let mut low = bytes.start;
++    let mut high = bytes.end;
++    while low < high {
++        let middle = low + (high - low) / 2;
++        let before = snapshot
++            .cell_ranges(middle..middle + 1)
++            .next()
++            .is_some_and(|cells| {
++                if by_end {
++                    cells.columns.end <= column
++                } else {
++                    cells.columns.start < column
++                }
++            });
++        if before {
++            low = middle + 1;
++        } else {
++            high = middle;
++        }
++    }
++    low
++}
++fn filter_label(filter: SeverityFilter) -> &'static str {
++    match filter {
++        SeverityFilter::All => "All",
++        SeverityFilter::Errors => "Errors",
++        SeverityFilter::Warnings => "Warnings",
++        SeverityFilter::ErrorsAndWarnings => "Err+Warn",
++    }
++}
++fn display_label(value: &str, limit: usize) -> String {
++    bounded_label(value, limit).0
++}
++fn bounded_label(value: &str, limit: usize) -> (String, bool) {
++    let mut chars = value.chars().filter(|ch| !ch.is_control()).take(limit + 1);
++    let mut label: String = chars.by_ref().take(limit).collect();
++    let shortened = chars.next().is_some();
++    if shortened && limit > 0 {
++        label.pop();
++        label.push('…');
++    }
++    (label, shortened)
++}
++fn clipped_title(text: &str, width: u16) -> String {
++    let span = Span::raw(text);
++    if span.width() <= usize::from(width) {
++        return text.to_owned();
++    }
++    let mut title = String::new();
++    if width == 0 {
++        return title;
++    }
++    let mut columns = 0;
++    for grapheme in span.styled_graphemes(Style::default()) {
++        let size = Span::raw(grapheme.symbol).width();
++        if columns + size > usize::from(width - 1) {
++            break;
++        }
++        title.push_str(grapheme.symbol);
++        columns += size;
++    }
++    title.push('…');
++    title
++}
+--- p2/tests/console_search_ui.rs
++++ p3/tests/console_search_ui.rs
+@@ -0,0 +1,1023 @@
++#![allow(clippy::unwrap_used)]
++#[path = "../src/console_search.rs"]
++mod console_search;
++
++use console_search::{SearchEffect, SearchSource, SearchView};
++use crossterm::event::{
++    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
++};
++use flimru::console_review::{Severity, SeverityFilter};
++use ratatui::{
++    Terminal,
++    backend::TestBackend,
++    buffer::Buffer,
++    layout::Rect,
++    style::{Color, Modifier},
++    widgets::Paragraph,
++};
++use std::sync::Arc;
++use std::thread;
++use std::time::{Duration, Instant, SystemTime};
++
++const ACCENT: Color = Color::Rgb(96, 210, 225);
++fn classify(line: &str) -> Option<Severity> {
++    if line.starts_with("ERROR") {
++        Some(Severity::Error)
++    } else if line.starts_with("WARN") {
++        Some(Severity::Warning)
++    } else {
++        None
++    }
++}
++fn source(id: u64) -> SearchSource {
++    SearchSource {
++        device: Some("Pixel 界".into()),
++        configuration: Some("development".into()),
++        outcome: Some("running".into()),
++        ..SearchSource::new(id, "Pixel 界 · development".into(), SystemTime::UNIX_EPOCH)
++    }
++}
++fn screen(text: &str, rows: u16, columns: u16) -> vt100::Screen {
++    let mut parser = vt100::Parser::new(rows, columns, 100);
++    parser.process(text.as_bytes());
++    parser.screen().clone()
++}
++fn wait(view: &mut SearchView) {
++    let deadline = Instant::now() + Duration::from_secs(5);
++    while view.is_pending() {
++        view.poll();
++        assert!(Instant::now() < deadline, "search view did not finish");
++        thread::sleep(Duration::from_millis(1));
++    }
++    assert!(view.error().is_none(), "{:?}", view.error());
++}
++fn key(code: KeyCode) -> Event {
++    Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
++}
++fn view(text: &str) -> SearchView {
++    let mut view = SearchView::new(classify).unwrap();
++    view.capture(source(4), screen(text, 24, 120)).unwrap();
++    wait(&mut view);
++    view
++}
++fn draw(view: &mut SearchView, width: u16, height: u16, area: Rect) -> Buffer {
++    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
++    terminal
++        .draw(|frame| view.render(frame, area))
++        .unwrap()
++        .buffer
++        .clone()
++}
++fn text(buffer: &Buffer) -> String {
++    (buffer.area.y..buffer.area.bottom())
++        .map(|y| {
++            (buffer.area.x..buffer.area.right())
++                .map(|x| buffer[(x, y)].symbol())
++                .collect::<String>()
++        })
++        .collect::<Vec<_>>()
++        .join("\n")
++}
++
++#[test]
++fn review_owns_keyboard_paste_mouse_and_two_stage_escape() {
++    let mut view = SearchView::new(classify).unwrap();
++    assert_eq!(
++        view.handle_event(&key(KeyCode::Char('q'))),
++        SearchEffect::Inactive
++    );
++    view.capture(source(1), screen("hello", 24, 80)).unwrap();
++    assert!(view.editing());
++    for ch in ['r', 'R'] {
++        assert_eq!(
++            view.handle_event(&key(KeyCode::Char(ch))),
++            SearchEffect::Consumed
++        );
++    }
++    assert_eq!(view.query(), "rR");
++    for ch in ['a', 'e'] {
++        assert_eq!(
++            view.handle_event(&Event::Key(KeyEvent::new(
++                KeyCode::Char(ch),
++                KeyModifiers::CONTROL
++            ))),
++            SearchEffect::Consumed
++        );
++        assert_eq!(view.query(), "rR");
++    }
++    view.handle_event(&Event::Key(KeyEvent::new(
++        KeyCode::Char('u'),
++        KeyModifiers::CONTROL,
++    )));
++    assert_eq!(
++        view.handle_event(&key(KeyCode::Char('/'))),
++        SearchEffect::Consumed
++    );
++    assert_eq!(view.query(), "/");
++    let control_f = Event::Key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
++    assert_eq!(view.handle_event(&control_f), SearchEffect::Consumed);
++    assert_eq!(view.query(), "/");
++    let release = Event::Key(KeyEvent::new_with_kind(
++        KeyCode::Esc,
++        KeyModifiers::NONE,
++        KeyEventKind::Release,
++    ));
++    assert_eq!(view.handle_event(&release), SearchEffect::Consumed);
++    assert!(view.editing());
++    assert_eq!(
++        view.handle_event(&key(KeyCode::Esc)),
++        SearchEffect::Consumed
++    );
++    assert!(!view.editing());
++    assert_eq!(
++        view.handle_event(&Event::Paste("rRq/stop".into())),
++        SearchEffect::Consumed
++    );
++    assert_eq!(view.query(), "/");
++    assert_eq!(
++        view.handle_event(&key(KeyCode::Char('R'))),
++        SearchEffect::Consumed
++    );
++    for ch in ['a', 'e'] {
++        assert_eq!(
++            view.handle_event(&Event::Key(KeyEvent::new(
++                KeyCode::Char(ch),
++                KeyModifiers::CONTROL
++            ))),
++            SearchEffect::Consumed
++        );
++    }
++    assert_eq!(
++        view.handle_event(&key(KeyCode::Char('r'))),
++        SearchEffect::RefreshSnapshot
++    );
++    let mouse = Event::Mouse(MouseEvent {
++        kind: MouseEventKind::Drag(MouseButton::Left),
++        column: 2,
++        row: 4,
++        modifiers: KeyModifiers::NONE,
++    });
++    assert_eq!(view.handle_event(&mouse), SearchEffect::Consumed);
++    assert_eq!(
++        view.handle_event(&key(KeyCode::Esc)),
++        SearchEffect::ResumeLive
++    );
++    assert!(!view.is_active());
++    assert!(view.snapshot().is_none());
++}
++
++#[test]
++fn query_paste_is_bounded_unicode_and_enter_stops_editing() {
++    let mut view = view("hello");
++    assert_eq!(
++        view.handle_event(&Event::Paste("界".repeat(600))),
++        SearchEffect::Consumed
++    );
++    assert_eq!(view.query().chars().count(), 512);
++    assert_eq!(
++        view.handle_event(&key(KeyCode::Backspace)),
++        SearchEffect::Consumed
++    );
++    assert_eq!(view.query().chars().count(), 511);
++    assert_eq!(
++        view.handle_event(&key(KeyCode::Enter)),
++        SearchEffect::Consumed
++    );
++    assert!(!view.editing());
++    assert_eq!(
++        view.handle_event(&key(KeyCode::Char('q'))),
++        SearchEffect::Consumed
++    );
++    assert_eq!(view.query().chars().count(), 511);
++    view.handle_event(&key(KeyCode::Char('/')));
++    let clear = Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
++    view.handle_event(&clear);
++    assert!(view.query().is_empty());
++    view.handle_event(&Event::Paste("hello\n\r\u{1b}".into()));
++    assert_eq!(view.query(), "hello");
++    wait(&mut view);
++    assert_eq!(view.data().unwrap().matches.matches.len(), 1);
++}
++
++#[test]
++fn filter_navigation_and_refresh_keep_frozen_source_metadata_and_export_scope() {
++    let mut view = view("ERROR first\r\nWARN second\r\n  stack\r\nERROR third");
++    let frozen = view.snapshot().unwrap();
++    view.set_query("r");
++    wait(&mut view);
++    assert_eq!(view.current_match(), Some(0));
++    let count = view.data().unwrap().matches.matches.len();
++    view.next_match(true);
++    assert_eq!(view.current_match(), Some(count - 1));
++    view.next_match(false);
++    assert_eq!(view.current_match(), Some(0));
++    view.set_filter(SeverityFilter::Errors);
++    wait(&mut view);
++    assert_eq!(view.filter(), SeverityFilter::Errors);
++    assert_eq!(view.data().unwrap().rows.len(), 2);
++    assert!(Arc::ptr_eq(&frozen, &view.snapshot().unwrap()));
++    assert!(
++        view.snapshot()
++            .unwrap()
++            .plain_text()
++            .contains("WARN second\n  stack")
++    );
++    view.handle_event(&key(KeyCode::Enter));
++    view.handle_event(&key(KeyCode::Char('f')));
++    wait(&mut view);
++    assert_eq!(view.filter(), SeverityFilter::Warnings);
++    assert_eq!(view.data().unwrap().rows.len(), 1);
++    let mut refreshed = source(4);
++    refreshed.captured_at = SystemTime::UNIX_EPOCH + Duration::from_secs(42);
++    refreshed.outcome = Some("exited successfully".into());
++    view.refresh(refreshed, screen("WARN refreshed", 24, 80))
++        .unwrap();
++    assert!(
++        view.snapshot().is_none(),
++        "refresh releases the prior UI Arc before capture"
++    );
++    wait(&mut view);
++    assert_eq!(view.query(), "r");
++    assert_eq!(
++        view.source().unwrap().captured_at,
++        SystemTime::UNIX_EPOCH + Duration::from_secs(42)
++    );
++    assert_eq!(
++        view.source().unwrap().configuration.as_deref(),
++        Some("development")
++    );
++    assert_eq!(
++        view.source().unwrap().outcome.as_deref(),
++        Some("exited successfully")
++    );
++    assert!(view.refresh(source(999), screen("wrong", 1, 8)).is_err());
++}
++
++fn wide_history() -> vt100::Screen {
++    let row = format!("ERROR {}界e\u{301} needle", "a".repeat(94));
++    let mut parser = vt100::Parser::new(2, 120, 100);
++    parser.process(format!("{row}\r\nlive\r\nend").as_bytes());
++    parser.screen_mut().set_size(2, 4);
++    parser.screen().clone()
++}
++
++#[test]
++fn combining_only_match_highlights_owning_cell_and_horizontal_reveal_survives_resize() {
++    let mut view = SearchView::new(classify).unwrap();
++    view.capture(source(8), wide_history()).unwrap();
++    view.set_query("\u{301}");
++    wait(&mut view);
++    let buffer = draw(&mut view, 34, 12, Rect::new(0, 0, 34, 12));
++    let left = view.offsets().1;
++    assert!(left > 4);
++    let x = 1 + 102 - left;
++    assert_eq!(buffer[(x, 3)].symbol(), "e\u{301}");
++    assert_eq!(buffer[(x, 3)].bg, ACCENT);
++    assert!(!text(&buffer).contains("copy"));
++    view.handle_event(&key(KeyCode::Enter));
++    view.handle_event(&key(KeyCode::Left));
++    assert_eq!(view.offsets().1, left - 1);
++    let buffer = draw(&mut view, 80, 24, Rect::new(0, 0, 80, 24));
++    let x = 1 + 102 - view.offsets().1;
++    assert_eq!(buffer[(x, 3)].symbol(), "e\u{301}");
++    assert_eq!(buffer[(x, 3)].bg, ACCENT);
++    assert!(view.offsets().1 <= 42);
++    assert_eq!(
++        view.snapshot()
++            .unwrap()
++            .plain_text()
++            .matches("needle")
++            .count(),
++        1
++    );
++}
++
++#[test]
++fn scrolling_is_bounded_and_match_navigation_reveals_vertically() {
++    let log = (0..70)
++        .map(|i| format!("line {i:02} needle"))
++        .collect::<Vec<_>>()
++        .join("\r\n");
++    let mut view = view(&log);
++    view.set_query("needle");
++    wait(&mut view);
++    draw(&mut view, 34, 12, Rect::new(0, 0, 34, 12));
++    view.handle_event(&key(KeyCode::Enter));
++    view.next_match(true);
++    assert_eq!(view.current_match(), Some(69));
++    assert!(view.offsets().0 > 50);
++    view.handle_event(&key(KeyCode::Home));
++    assert_eq!(view.offsets(), (0, 0));
++    view.handle_event(&key(KeyCode::End));
++    assert!(view.offsets().0 > 50);
++    view.handle_event(&key(KeyCode::PageUp));
++    view.handle_event(&key(KeyCode::Up));
++    view.handle_event(&key(KeyCode::PageDown));
++    view.handle_event(&key(KeyCode::Down));
++    view.handle_event(&key(KeyCode::Right));
++    view.handle_event(&key(KeyCode::Left));
++    view.next_match(false);
++    assert_eq!(view.current_match(), Some(0));
++    assert_eq!(view.offsets().0, 0);
++}
++
++#[test]
++fn source_replacement_and_close_reject_queued_old_results_and_sanitize_labels() {
++    let mut view = view("old");
++    view.set_query("old");
++    let mut next = source(99);
++    next.label = format!("\u{1b}{}\n", "界".repeat(200));
++    view.capture(next, screen("new source", 24, 80)).unwrap();
++    assert!(view.query().is_empty());
++    assert_eq!(view.filter(), SeverityFilter::All);
++    assert!(view.editing());
++    wait(&mut view);
++    assert_eq!(view.source().unwrap().id, 99);
++    assert_eq!(view.source().unwrap().label.chars().count(), 96);
++    assert!(!view.source().unwrap().label.contains('\u{1b}'));
++    assert!(view.source().unwrap().label.ends_with('…'));
++    assert_eq!(view.snapshot().unwrap().plain_text(), "new source");
++    view.close();
++    assert!(!view.poll());
++    assert!(view.source().is_none());
++    view.show_error(
++        source(100),
++        "Capture exceeds 128 MiB; narrow retained history.".into(),
++    );
++    assert!(view.is_active());
++    assert!(view.error().unwrap().contains("128 MiB"));
++    assert_eq!(
++        view.handle_event(&key(KeyCode::Esc)),
++        SearchEffect::ResumeLive
++    );
++}
++
++#[test]
++fn frozen_source_details_are_scrollable_and_preserve_review_mode_and_position() {
++    let label = "Physical Pixel 界 · configuration with a long identity suffix · ended success";
++    let mut frozen = source(91);
++    frozen.label = label.into();
++    frozen.device = Some("Physical device 界 e\u{301} 01".into());
++    frozen.configuration = Some("Debug configuration 界 e\u{301} profile tail".into());
++    frozen.outcome = Some("ended successfully".into());
++    frozen.captured_at = SystemTime::UNIX_EPOCH + Duration::from_secs(42);
++    let log = (0..80)
++        .map(|i| format!("row {i} needle"))
++        .collect::<Vec<_>>()
++        .join("\r\n");
++    let mut view = SearchView::new(classify).unwrap();
++    view.capture(frozen, screen(&log, 24, 120)).unwrap();
++    view.set_query("needle");
++    wait(&mut view);
++    let area = Rect::new(0, 0, 34, 9);
++    draw(&mut view, 34, 9, area);
++    view.handle_event(&key(KeyCode::Enter));
++    view.next_match(false);
++    view.handle_event(&key(KeyCode::Down));
++    view.handle_event(&key(KeyCode::Right));
++    let position = view.offsets();
++    let current = view.current_match();
++    let snapshot = view.snapshot().unwrap();
++    let before = draw(&mut view, 34, 9, area);
++    let title = text(&before).lines().next().unwrap().to_owned();
++    assert!(title.contains('…'), "{title}");
++    assert!(text(&before).contains("i source"));
++    assert_eq!(
++        view.source().unwrap().label,
++        label,
++        "title clipping must not mutate identity"
++    );
++    assert_eq!(
++        view.handle_event(&key(KeyCode::Char('i'))),
++        SearchEffect::Consumed
++    );
++    assert!(view.showing_source_details());
++    for event in [
++        key(KeyCode::Char('r')),
++        key(KeyCode::Char('n')),
++        key(KeyCode::Char('f')),
++        Event::Paste("unexpected input".into()),
++        Event::Key(KeyEvent::new_with_kind(
++            KeyCode::Esc,
++            KeyModifiers::NONE,
++            KeyEventKind::Release,
++        )),
++    ] {
++        assert_eq!(view.handle_event(&event), SearchEffect::Consumed);
++    }
++    assert!(view.showing_source_details());
++    let mut buffer = draw(&mut view, 34, 9, area);
++    let mut contents = String::new();
++    for _ in 0..100 {
++        for x in 1..33 {
++            contents.push_str(buffer[(x, 1)].symbol());
++        }
++        let previous = buffer.clone();
++        view.handle_event(&key(KeyCode::Down));
++        buffer = draw(&mut view, 34, 9, area);
++        if buffer == previous {
++            for y in 2..7 {
++                for x in 1..33 {
++                    contents.push_str(buffer[(x, y)].symbol());
++                }
++            }
++            break;
++        }
++    }
++    let compact = |value: &str| {
++        value
++            .chars()
++            .filter(|ch| !ch.is_whitespace())
++            .collect::<String>()
++    };
++    for field in [
++        "Frozen source ID: 91",
++        label,
++        "Physical device 界 e\u{301} 01",
++        "Debug configuration 界 e\u{301} profile tail",
++        "ended successfully",
++        "Captured: Unix UTC 42 s",
++    ] {
++        assert!(
++            compact(&contents).contains(&compact(field)),
++            "missing {field}: {contents}"
++        );
++    }
++    assert_eq!(
++        view.handle_event(&key(KeyCode::Esc)),
++        SearchEffect::Consumed
++    );
++    assert!(!view.showing_source_details());
++    assert!(view.is_active());
++    assert!(!view.editing());
++    assert_eq!(view.query(), "needle");
++    assert_eq!(view.filter(), SeverityFilter::All);
++    assert_eq!(view.current_match(), current);
++    assert_eq!(view.offsets(), position);
++    assert!(Arc::ptr_eq(&view.snapshot().unwrap(), &snapshot));
++    assert_eq!(
++        view.source().unwrap().captured_at,
++        SystemTime::UNIX_EPOCH + Duration::from_secs(42)
++    );
++    assert_eq!(draw(&mut view, 34, 9, area), before);
++}
++
++#[test]
++fn explicit_review_actions_do_not_type_shortcuts_and_extreme_metadata_is_marked() {
++    let mut frozen = source(92);
++    frozen.label = "\u{1b}".to_owned() + &"界".repeat(600);
++    frozen.device = Some("e\u{301}".repeat(300));
++    frozen.configuration = Some("界".repeat(300));
++    frozen.outcome = Some("success".repeat(100));
++    let mut view = SearchView::new(classify).unwrap();
++    view.capture(
++        frozen,
++        screen("ERROR needle needle\r\nWARN needle", 24, 120),
++    )
++    .unwrap();
++    wait(&mut view);
++    view.handle_event(&key(KeyCode::Char('i')));
++    assert_eq!(view.query(), "i");
++    assert!(!view.showing_source_details());
++    view.set_query("needle");
++    wait(&mut view);
++    view.next_match(false);
++    assert_eq!(view.current_match(), Some(1));
++    view.previous_match();
++    assert_eq!(view.current_match(), Some(0));
++    view.cycle_filter();
++    wait(&mut view);
++    assert_eq!(view.filter(), SeverityFilter::Errors);
++    assert_eq!(view.query(), "needle");
++    assert!(view.editing());
++    view.show_source_details();
++    assert!(view.showing_source_details());
++    let buffer = draw(&mut view, 34, 9, Rect::new(0, 0, 34, 9));
++    let rendered = text(&buffer);
++    assert!(rendered.contains("Shortened: label 96"), "{rendered}");
++    assert!(rendered.contains("fields 128."), "{rendered}");
++    let source = view.source().unwrap();
++    for (value, bound) in [
++        (&source.label, 96),
++        (source.device.as_ref().unwrap(), 128),
++        (source.configuration.as_ref().unwrap(), 128),
++        (source.outcome.as_ref().unwrap(), 128),
++    ] {
++        assert_eq!(value.chars().count(), bound);
++        assert!(value.ends_with('…'));
++        assert!(!value.chars().any(char::is_control));
++    }
++    for width in 1..12 {
++        for height in 1..10 {
++            draw(&mut view, width, height, Rect::new(0, 0, width, height));
++        }
++    }
++    assert_eq!(
++        view.handle_event(&key(KeyCode::Enter)),
++        SearchEffect::Consumed
++    );
++    assert!(view.editing());
++    assert_eq!(view.query(), "needle");
++    view.handle_event(&key(KeyCode::Enter));
++    assert!(!view.editing());
++    view.edit_query();
++    assert!(view.editing());
++    view.close();
++    view.show_source_details();
++    view.edit_query();
++    assert!(!view.showing_source_details());
++    assert!(!view.editing());
++}
++
++fn color(value: Color, fallback: &str) -> String {
++    match value {
++        Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
++        _ => fallback.into(),
++    }
++}
++fn escape(value: &str) -> String {
++    value
++        .replace('&', "&amp;")
++        .replace('<', "&lt;")
++        .replace('>', "&gt;")
++        .replace('"', "&quot;")
++}
++fn write_evidence(directory: &std::path::Path, stem: &str, buffer: &Buffer) {
++    let width = buffer.area.width;
++    let height = buffer.area.height;
++    std::fs::create_dir_all(directory).unwrap();
++    std::fs::write(directory.join(format!("{stem}.txt")), text(buffer) + "\n").unwrap();
++    let mut svg = format!(
++        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="0 0 {} {}"><rect width="100%" height="100%" fill="#101722"/>"##,
++        width * 10,
++        height * 20,
++        width * 10,
++        height * 20
++    );
++    for y in 0..height {
++        for x in 0..width {
++            let cell = &buffer[(x, y)];
++            if cell.bg != Color::Reset {
++                svg.push_str(&format!(
++                    r#"<rect x="{}" y="{}" width="10" height="20" fill="{}"/>"#,
++                    x * 10,
++                    y * 20,
++                    color(cell.bg, "#101722")
++                ));
++            }
++        }
++    }
++    for y in 0..height {
++        for x in 0..width {
++            let cell = &buffer[(x, y)];
++            if cell.symbol() != " " && !cell.symbol().is_empty() {
++                svg.push_str(&format!(r#"<text x="{}" y="{}" fill="{}" font-family="Menlo,monospace" font-size="15"{}>{}</text>"#,x*10,y*20+16,color(cell.fg,"#dce3ed"),if cell.modifier.contains(Modifier::BOLD) { " font-weight=\"bold\"" } else { "" },escape(cell.symbol())));
++            }
++        }
++    }
++    svg.push_str("</svg>");
++    std::fs::write(directory.join(format!("{stem}.svg")), svg).unwrap();
++}
++
++/// Set FLIMRU_P3_EVIDENCE_DIR to retain actual TestBackend cells as TXT/SVG.
++#[test]
++fn render_evidence_for_review_states_and_minimum_integration_rect() {
++    for (width, height) in [(34, 12), (80, 24), (120, 40)] {
++        for state in [
++            "editing",
++            "reading",
++            "no-matches",
++            "empty-filter",
++            "empty-snapshot",
++            "pending",
++            "error",
++            "wide-highlight",
++            "capped",
++        ] {
++            let mut view = SearchView::new(classify).unwrap();
++            match state {
++                "error" => view.show_error(source(1), "Retained screen exceeds the 128 MiB capture estimate. Refresh after reducing retained history.".into()),
++                "pending" => { view.capture(source(1), screen("ERROR waiting",24,120)).unwrap(); }
++                "wide-highlight" => { view.capture(source(1), wide_history()).unwrap(); view.set_query("\u{301}"); wait(&mut view); view.handle_event(&key(KeyCode::Enter)); }
++                "capped" => { view.capture(source(1), screen(&"a".repeat(10_001),1,10_002)).unwrap(); view.set_query("A"); wait(&mut view); view.handle_event(&key(KeyCode::Enter)); }
++                _ => {
++                    let log = if state == "empty-snapshot" { "" } else { "ERROR request failed 界 e\u{301}\r\nWARN retry scheduled\r\n  stack continuation\r\nINFO connected\r\nERROR request failed again" };
++                    view.capture(source(1),screen(log,24,120)).unwrap();
++                    if state == "empty-filter" { view.set_query("missing"); view.set_filter(SeverityFilter::Errors); }
++                    else if state == "no-matches" { view.set_query("missing"); }
++                    else if state != "empty-snapshot" { view.set_query("request"); }
++                    wait(&mut view);
++                    if state == "empty-filter" { view.set_filter(SeverityFilter::Warnings); wait(&mut view); /* clear separately below */ }
++                    if state != "editing" { view.handle_event(&key(KeyCode::Enter)); }
++                }
++            }
++            if state == "empty-filter" {
++                view.capture(source(1), screen("INFO connected", 24, 120))
++                    .unwrap();
++                view.set_filter(SeverityFilter::Errors);
++                wait(&mut view);
++            }
++            let buffer = draw(&mut view, width, height, Rect::new(0, 0, width, height));
++            let rendered = text(&buffer);
++            assert!(rendered.contains("Snapshot"), "{state}: {rendered}");
++            assert!(rendered.contains("Search"), "{state}: {rendered}");
++            match state {
++                "pending" => assert!(rendered.contains("Capturing")),
++                "error" => assert!(
++                    rendered
++                        .replace('│', " ")
++                        .split_whitespace()
++                        .collect::<Vec<_>>()
++                        .join(" ")
++                        .contains("128 MiB"),
++                    "{rendered}"
++                ),
++                "no-matches" => assert!(rendered.contains("No matches")),
++                "empty-filter" => assert!(rendered.contains("No lines in this filter")),
++                "empty-snapshot" => {
++                    assert!(rendered.contains("Snapshot is empty"));
++                    assert!(rendered.contains("1 row ·"));
++                    assert!(!rendered.contains("1 rows"));
++                }
++                "capped" => assert!(rendered.contains("1/10000+")),
++                "reading" => assert!(rendered.contains("1/2")),
++                _ => {}
++            }
++            if let Some(directory) = std::env::var_os("FLIMRU_P3_EVIDENCE_DIR") {
++                write_evidence(
++                    std::path::Path::new(&directory),
++                    &format!("{state}-{width}x{height}"),
++                    &buffer,
++                );
++            }
++            if width == 34 {
++                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
++                let completed = terminal
++                    .draw(|frame| {
++                        frame.render_widget(
++                            Paragraph::new("Toolbar · sessions continue"),
++                            Rect::new(0, 0, 34, 1),
++                        );
++                        frame.render_widget(
++                            Paragraph::new("[Pixel] [Other live]"),
++                            Rect::new(0, 2, 34, 1),
++                        );
++                        view.render(frame, Rect::new(0, 3, 34, 9));
++                    })
++                    .unwrap();
++                let buffer = completed.buffer;
++                let rendered = text(buffer);
++                assert!(rendered.contains("Search"));
++                assert!(rendered.contains(if view.editing() {
++                    "Enter read"
++                } else {
++                    "Esc resume live"
++                }));
++                if let Some(directory) = std::env::var_os("FLIMRU_P3_EVIDENCE_DIR") {
++                    write_evidence(
++                        std::path::Path::new(&directory),
++                        &format!("{state}-34x9-integration"),
++                        buffer,
++                    );
++                }
++            }
++        }
++    }
++}
++
++#[test]
++fn render_long_frozen_source_and_details_at_all_review_sizes() {
++    for (width, height) in [(34, 12), (80, 24), (120, 40), (34, 9)] {
++        let mut frozen = source(93);
++        frozen.label = format!(
++            "Physical Pixel 界 · {} · ended success",
++            "long configuration segment ".repeat(4)
++        );
++        frozen.device =
++            Some("Physical Pixel 界 e\u{301} · development device identity suffix".into());
++        frozen.configuration =
++            Some("Development profile 界 · long configuration identity suffix".into());
++        frozen.outcome = Some("ended successfully".into());
++        frozen.captured_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
++        let mut view = SearchView::new(classify).unwrap();
++        view.capture(
++            frozen,
++            screen(
++                "ERROR first request\r\nWARN second request\r\nINFO third request",
++                24,
++                120,
++            ),
++        )
++        .unwrap();
++        view.set_query("request");
++        wait(&mut view);
++        let frame_height = if height == 9 { 12 } else { height };
++        let area = Rect::new(0, frame_height - height, width, height);
++        for state in [
++            "long-source-editing",
++            "long-source-reading",
++            "source-details-top",
++            "source-details-page",
++            "source-details-end",
++        ] {
++            match state {
++                "long-source-reading" => {
++                    view.handle_event(&key(KeyCode::Enter));
++                }
++                "source-details-top" => view.show_source_details(),
++                "source-details-page" => {
++                    view.handle_event(&key(KeyCode::PageDown));
++                }
++                "source-details-end" => {
++                    view.handle_event(&key(KeyCode::End));
++                }
++                _ => {}
++            }
++            let mut terminal = Terminal::new(TestBackend::new(width, frame_height)).unwrap();
++            let completed = terminal
++                .draw(|frame| {
++                    if height == 9 {
++                        frame.render_widget(
++                            Paragraph::new("Toolbar · sessions continue"),
++                            Rect::new(0, 0, 34, 1),
++                        );
++                        frame.render_widget(
++                            Paragraph::new("[Pixel] [Other live]"),
++                            Rect::new(0, 2, 34, 1),
++                        );
++                    }
++                    view.render(frame, area);
++                })
++                .unwrap();
++            let rendered = text(completed.buffer);
++            if state.starts_with("long-source") {
++                assert!(
++                    rendered
++                        .lines()
++                        .nth(usize::from(area.y))
++                        .unwrap()
++                        .contains('…'),
++                    "{rendered}"
++                );
++            } else {
++                assert!(rendered.contains("Frozen source details"), "{rendered}");
++                assert!(rendered.contains("Esc back"), "{rendered}");
++                if state == "source-details-top" {
++                    assert!(rendered.contains("Shortened:"), "{rendered}");
++                }
++                if state == "source-details-end" {
++                    assert!(rendered.contains("1700000000 s"), "{rendered}");
++                }
++            }
++            if let Some(directory) = std::env::var_os("FLIMRU_P3_EVIDENCE_DIR") {
++                let suffix = if height == 9 { "-integration" } else { "" };
++                write_evidence(
++                    std::path::Path::new(&directory),
++                    &format!("{state}-{width}x{height}{suffix}"),
++                    completed.buffer,
++                );
++            }
++        }
++    }
++}
++
++#[test]
++fn lowercase_expansion_and_other_matches_color_complete_original_cells() {
++    let mut view = view("İ i");
++    view.set_query("i");
++    wait(&mut view);
++    let buffer = draw(&mut view, 34, 12, Rect::new(0, 0, 34, 12));
++    assert_eq!(buffer[(1, 3)].symbol(), "İ");
++    assert_eq!(buffer[(1, 3)].bg, ACCENT);
++    assert_eq!(buffer[(3, 3)].bg, Color::Rgb(34, 64, 78));
++    view.next_match(false);
++    let buffer = draw(&mut view, 34, 12, Rect::new(0, 0, 34, 12));
++    assert_eq!(buffer[(1, 3)].bg, Color::Rgb(34, 64, 78));
++    assert_eq!(buffer[(3, 3)].bg, ACCENT);
++}
++
++#[test]
++fn horizontal_clip_drops_partial_wide_cell_and_preserves_following_combining_cell() {
++    let row = format!("{}界e\u{301}{}", "a".repeat(20), "z".repeat(90));
++    let mut view = view(&row);
++    view.set_query("\u{301}");
++    wait(&mut view);
++    draw(&mut view, 34, 12, Rect::new(0, 0, 34, 12));
++    view.handle_event(&key(KeyCode::Enter));
++    view.handle_event(&key(KeyCode::Home));
++    for _ in 0..21 {
++        view.handle_event(&key(KeyCode::Right));
++    }
++    assert_eq!(view.offsets().1, 21);
++    let buffer = draw(&mut view, 34, 12, Rect::new(0, 0, 34, 12));
++    assert_eq!(buffer[(1, 3)].symbol(), " ");
++    assert_eq!(buffer[(2, 3)].symbol(), "e\u{301}");
++    assert_eq!(buffer[(2, 3)].bg, ACCENT);
++    assert!(text(&buffer).contains("◌\u{301}"));
++}
++
++#[test]
++fn highlighted_wide_glyph_styles_both_cells_and_tiny_areas_are_safe() {
++    let mut view = view("界");
++    view.set_query("界");
++    wait(&mut view);
++    let buffer = draw(&mut view, 34, 12, Rect::new(0, 0, 34, 12));
++    assert_eq!(buffer[(1, 3)].symbol(), "界");
++    assert_eq!(buffer[(1, 3)].bg, ACCENT);
++    assert_eq!(buffer[(2, 3)].bg, ACCENT);
++    for width in 1..12 {
++        for height in 1..10 {
++            draw(&mut view, width, height, Rect::new(0, 0, width, height));
++        }
++    }
++}
++
++#[test]
++fn editing_keeps_the_end_of_a_long_query_visible() {
++    let mut view = view("log");
++    view.set_query(&("a".repeat(506) + "needle"));
++    let buffer = draw(&mut view, 34, 12, Rect::new(0, 0, 34, 12));
++    assert!(text(&buffer).lines().nth(1).unwrap().contains("needle"));
++    assert_eq!(view.query().chars().count(), 512);
++}
++
++fn long_overlapping_query_render(columns: u16) -> Duration {
++    let mut parser = vt100::Parser::new(24, columns, 20_000);
++    parser.process("a".repeat(12_000).as_bytes());
++    let mut view = SearchView::new(classify).unwrap();
++    view.capture(source(43), parser.screen().clone()).unwrap();
++    view.set_query(&"a".repeat(512));
++    wait(&mut view);
++    assert_eq!(view.data().unwrap().matches.matches.len(), 10_000);
++    assert!(view.data().unwrap().matches.capped);
++    let area = Rect::new(0, 0, 120, 40);
++    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
++    terminal.draw(|frame| view.render(frame, area)).unwrap();
++    view.handle_event(&key(KeyCode::Enter));
++    let target_row = 5_000 / usize::from(columns);
++    while view.offsets().0 < target_row {
++        view.handle_event(&key(KeyCode::PageDown));
++    }
++    while view.offsets().0 > target_row {
++        view.handle_event(&key(KeyCode::Up));
++    }
++    let top = view.offsets().0;
++    let started = Instant::now();
++    for _ in 0..10 {
++        terminal.draw(|frame| view.render(frame, area)).unwrap();
++    }
++    let elapsed = started.elapsed();
++    eprintln!(
++        "overlapping viewport: captured_columns={columns} top={top} matches=10000 query_chars=512 rendered=120x40 frames=10 elapsed={elapsed:?}"
++    );
++    // The current match is offscreen, but secondary matches cover every a.
++    for y in 3..37 {
++        for x in 1..1 + columns.min(118) {
++            assert_eq!(terminal.backend().buffer()[(x, y)].symbol(), "a");
++            assert_eq!(
++                terminal.backend().buffer()[(x, y)].bg,
++                Color::Rgb(34, 64, 78)
++            );
++        }
++    }
++    // Navigate far beyond the skipped candidates. Its original index must
++    // retain current styling while the preceding overlapping matches stay dim.
++    for _ in 0..5_000 {
++        view.next_match(false);
++    }
++    assert_eq!(view.current_match(), Some(5_000));
++    assert_eq!(
++        view.data().unwrap().matches.matches[5_000].bytes.start,
++        5_000
++    );
++    let buffer = draw(&mut view, 120, 40, area);
++    let snapshot = view.snapshot().unwrap();
++    let (top, left) = view.offsets();
++    let mut active_cells = 0;
++    let mut other_cells = 0;
++    for y in 3..37 {
++        let row = &snapshot.rows()[top + usize::from(y - 3)];
++        for column in 0..columns.saturating_sub(left).min(118) {
++            let cell = &buffer[(1 + column, y)];
++            let byte = row.bytes.start + usize::from(left + column);
++            let active = (5_000..5_512).contains(&byte);
++            assert_eq!(cell.symbol(), "a");
++            assert_eq!(
++                cell.bg,
++                if active {
++                    ACCENT
++                } else {
++                    Color::Rgb(34, 64, 78)
++                }
++            );
++            assert_eq!(cell.modifier.contains(Modifier::BOLD), active);
++            if active {
++                active_cells += 1;
++            } else {
++                other_cells += 1;
++            }
++        }
++    }
++    assert!(active_cells > 0);
++    assert!(other_cells > 0);
++    elapsed
++}
++
++#[test]
++fn long_overlapping_queries_highlight_visible_rows_with_bounded_debug_work() {
++    for columns in [1, 32, 120] {
++        // Deliberately loose for loaded debug builds; the former width-one
++        // traversal independently measured about 410 ms for a single frame.
++        assert!(
++            long_overlapping_query_render(columns) < Duration::from_secs(2),
++            "ten viewport frames exceeded the loaded-debug rendering budget at width {columns}"
++        );
++    }
++}
++
++#[test]
++fn wrapped_long_combining_query_keeps_complete_active_and_secondary_wide_cells() {
++    let mut parser = vt100::Parser::new(24, 3, 1_000);
++    parser.process("e\u{301}界".repeat(500).as_bytes());
++    let mut view = SearchView::new(classify).unwrap();
++    view.capture(source(44), parser.screen().clone()).unwrap();
++    // Begins inside the first cell and ends at a combining mark after more
++    // than 100 wrapped rows. Both boundaries must retain their owning cells.
++    view.set_query(&("\u{301}界".to_owned() + &"e\u{301}界".repeat(100) + "e\u{301}"));
++    wait(&mut view);
++    assert!(view.data().unwrap().matches.matches.len() > 300);
++    draw(&mut view, 34, 12, Rect::new(0, 0, 34, 12));
++    view.next_match(false);
++    assert_eq!(view.current_match(), Some(1));
++    let buffer = draw(&mut view, 34, 12, Rect::new(0, 0, 34, 12));
++    for y in 3..9 {
++        assert_eq!(buffer[(1, y)].symbol(), "e\u{301}");
++        assert_eq!(buffer[(2, y)].symbol(), "界");
++        let active = y > 3;
++        for x in 1..4 {
++            assert_eq!(
++                buffer[(x, y)].bg,
++                if active {
++                    ACCENT
++                } else {
++                    Color::Rgb(34, 64, 78)
++                }
++            );
++            assert_eq!(buffer[(x, y)].modifier.contains(Modifier::BOLD), active);
++        }
++    }
++    view.handle_event(&key(KeyCode::Enter));
++    for _ in 0..97 {
++        view.handle_event(&key(KeyCode::Down));
++    }
++    assert_eq!(view.offsets().0, 97);
++    let buffer = draw(&mut view, 34, 12, Rect::new(0, 0, 34, 12));
++    assert_eq!(buffer[(1, 8)].symbol(), "e\u{301}");
++    assert_eq!(buffer[(1, 8)].bg, ACCENT);
++    assert_eq!(buffer[(2, 8)].symbol(), "界");
++    for x in 2..4 {
++        assert_eq!(buffer[(x, 8)].bg, Color::Rgb(34, 64, 78));
++        assert!(!buffer[(x, 8)].modifier.contains(Modifier::BOLD));
++    }
++}
++
++/// Explicitly measure viewport rendering with wide retained physical rows.
++#[test]
++#[ignore]
++fn viewport_render_work_measurement() {
++    let mut view = SearchView::new(classify).unwrap();
++    view.capture(source(42), screen(&"a".repeat(1_200_000), 24, 60_000))
++        .unwrap();
++    wait(&mut view);
++    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
++    let start = Instant::now();
++    for _ in 0..10 {
++        terminal
++            .draw(|frame| view.render(frame, Rect::new(0, 0, 120, 40)))
++            .unwrap();
++    }
++    eprintln!(
++        "viewport rendering: text={} captured_columns={} rendered=120x40 frames=10 elapsed={:?}",
++        view.snapshot().unwrap().plain_text().len(),
++        view.snapshot().unwrap().columns(),
++        start.elapsed()
++    );
++    for columns in [1, 32, 120] {
++        long_overlapping_query_render(columns);
++    }
++}
++
++#[test]
++fn parent_focus_suppresses_native_query_cursor_without_changing_editing_state() {
++    let mut view = view("log");
++    let mut terminal = Terminal::new(TestBackend::new(34, 12)).unwrap();
++    terminal
++        .draw(|frame| view.render_with_focus(frame, Rect::new(0, 0, 34, 12), false))
++        .unwrap();
++    assert!(!terminal.backend().cursor_visible());
++    assert!(view.editing());
++    terminal
++        .draw(|frame| view.render(frame, Rect::new(0, 0, 34, 12)))
++        .unwrap();
++    assert!(terminal.backend().cursor_visible());
++}
+--- p2/tests/terminal_flow.rs
++++ p3/tests/terminal_flow.rs
+@@ -1997,3 +1997,151 @@
+     tui.until("Why blocked?");
+     tui.quit();
+ }
++
++#[test]
++fn console_search_control_shortcut_is_delivered_and_review_isolates_input_from_explicit_process_actions()
++ {
++    let project = project();
++    let log_path = project.path().join("session.log");
++    let mut tui = Terminal::start_with_refresh_interval(
++        project.path(),
++        &project.path().join("state.json"),
++        false,
++        3600,
++    );
++    tui.until("Demo phone");
++    tui.send(b"\r");
++    tui.until_control("Run");
++    tui.send(b"\r");
++    tui.until("SESSION READY");
++    tui.send(&[0x13]); // Ctrl+s must survive real terminal flow control/raw-mode delivery.
++    tui.until("Snapshot");
++    tui.until("Search");
++    tui.send(b"SESSION");
++    tui.until("1/1");
++    tui.send(b"rR\x01\x05\x18\x1a");
++    tui.send(b"\x1b[200~q\x1b[201~");
++    tui.until("No matches");
++    tui.mouse(0, 5, 8);
++    tui.mouse(32, 30, 12);
++    tui.send(b"\x1b[<0;31;13m");
++    thread::sleep(Duration::from_millis(80));
++    tui.read();
++    let log = std::fs::read_to_string(&log_path).unwrap();
++    assert!(!log.contains("key:"), "review input reached Flutter: {log}");
++    assert!(
++        !tui.raw_output.windows(5).any(|bytes| bytes == b"\x1b]52;"),
++        "review selection emitted a clipboard request"
++    );
++    tui.send(b"\x15SESSION\r");
++    tui.until("n/N matches");
++    tui.until("1/1");
++    tui.send(b"rR\x01\x05\x18");
++    thread::sleep(Duration::from_millis(80));
++    assert!(!std::fs::read_to_string(&log_path).unwrap().contains("key:"));
++    tui.menu_click("Hot reload");
++    tui.until("Hot reload requested");
++    tui.menu_click("Hot restart");
++    tui.until("Hot restart requested");
++    let deadline = Instant::now() + Duration::from_secs(3);
++    loop {
++        let log = std::fs::read_to_string(&log_path).unwrap();
++        if log.contains("key:r\n") && log.contains("key:R\n") {
++            break;
++        }
++        assert!(Instant::now() < deadline);
++        thread::sleep(Duration::from_millis(5));
++    }
++    tui.read();
++    assert!(tui.screen.screen().contents().contains("Snapshot"));
++    assert!(
++        !tui.screen.screen().contents().contains("shortcut:r"),
++        "process output replaced a frozen snapshot"
++    );
++    tui.menu_click("Refresh snapshot");
++    tui.until("1/1");
++    tui.menu_click("Snapshot source details");
++    tui.until("Frozen source details");
++    tui.send(b"\x1b");
++    tui.until("n/N matches");
++    tui.send(b"\x1b");
++    tui.until("Resumed live console");
++    let log = std::fs::read_to_string(&log_path).unwrap();
++    assert_eq!(log.matches("key:r\n").count(), 1);
++    assert_eq!(log.matches("key:R\n").count(), 1);
++    assert!(!log.contains("key:q\n"));
++    tui.send(b"r");
++    let deadline = Instant::now() + Duration::from_secs(3);
++    while std::fs::read_to_string(&log_path)
++        .unwrap()
++        .matches("key:r\n")
++        .count()
++        != 2
++    {
++        assert!(Instant::now() < deadline);
++        thread::sleep(Duration::from_millis(5));
++    }
++    tui.send(&[0x13]);
++    tui.until("Snapshot");
++    tui.send(&[0x11]);
++    tui.until("Quit Flimru?");
++    tui.send(b"\r");
++    tui.until("Snapshot");
++    tui.quit();
++}
++
++#[test]
++fn console_search_frozen_output_is_quiet_during_real_child_flood_and_refresh_observes_new_history()
++{
++    let project = project();
++    std::fs::write(project.path().join("fake-flutter"),r#"#!/bin/bash
++if [ "$1" = devices ]; then printf '[{"id":"demo-device","name":"Demo phone","targetPlatform":"ios","isSupported":true}]\n'; exit 0; fi
++printf '%s' "$$" > "$FAKE_PID"
++stty raw -echo
++printf 'ERROR: FLOOD READY\r\n'
++( while :; do printf 'ERROR: flood heartbeat\r\n'; printf x >> "$FAKE_LOG"; sleep 0.002; done ) &
++while :; do IFS= read -rsn1 key || continue; [ "$key" = q ] && exit 0; done
++"#).unwrap();
++    let mut tui = Terminal::start_with_refresh_interval(
++        project.path(),
++        &project.path().join("state.json"),
++        false,
++        3600,
++    );
++    tui.until("Demo phone");
++    tui.send(b"\r");
++    tui.until_control("Run");
++    tui.send(b"\r");
++    tui.until("FLOOD READY");
++    tui.send(&[0x13]);
++    tui.until("Snapshot");
++    tui.until("rows · col");
++    tui.read();
++    let screen = tui.screen.screen().contents();
++    tui.raw_output.clear();
++    let before = std::fs::metadata(project.path().join("session.log"))
++        .unwrap()
++        .len();
++    thread::sleep(Duration::from_millis(220));
++    tui.read();
++    let after = std::fs::metadata(project.path().join("session.log"))
++        .unwrap()
++        .len();
++    assert!(after > before, "frozen UI stopped draining the owned child");
++    assert_eq!(tui.screen.screen().contents(), screen);
++    assert!(
++        tui.raw_output.len() < 128,
++        "frozen output generated redundant terminal draws: {} bytes",
++        tui.raw_output.len()
++    );
++    tui.send(b"\r");
++    tui.send(b"r");
++    tui.until("rows · col");
++    tui.send(b"/heartbeat");
++    tui.until("1/");
++    tui.send(b"\x1b");
++    tui.until("n/N matches");
++    tui.send(b"\x1b");
++    tui.until("Resumed live console");
++    tui.quit();
++}
+--- p2/tests/support/console_search_app.rs
++++ p3/tests/support/console_search_app.rs
+@@ -0,0 +1,905 @@
++#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
++use super::*;
++use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
++use flimru::console_review::SeverityFilter;
++use ratatui::{
++    Terminal,
++    backend::TestBackend,
++    buffer::Buffer,
++    layout::Rect,
++    style::{Color, Modifier},
++};
++use std::path::Path;
++
++const AREA: Rect = Rect::new(0, 0, 80, 24);
++fn press(app: &mut App, code: KeyCode) {
++    assert!(
++        !app.key(KeyEvent::new(code, KeyModifiers::NONE), 80, 24)
++            .unwrap()
++    );
++}
++fn settle(app: &mut App) {
++    let deadline = Instant::now() + Duration::from_secs(5);
++    while app.review.as_ref().is_some_and(|view| view.is_pending()) {
++        app.tick().unwrap();
++        assert!(Instant::now() < deadline, "review did not settle");
++        std::thread::sleep(Duration::from_millis(1));
++    }
++    assert!(
++        app.review.as_ref().unwrap().error().is_none(),
++        "{:?}",
++        app.review.as_ref().unwrap().error()
++    );
++}
++fn ended(text: &str, rows: u16, cols: u16) -> runs::Run {
++    let mut run = runs::Run::failed(
++        Device {
++            id: "fixture".into(),
++            name: "Pixel 界".into(),
++            platform: "android".into(),
++            available: true,
++            favorite: false,
++        },
++        "development".into(),
++        "fixture".into(),
++        rows,
++        cols,
++    );
++    let mut parser = vt100::Parser::new(rows, cols, 100);
++    parser.process(text.as_bytes());
++    parser.screen_mut().set_scrollback(usize::MAX);
++    run.scrollback_len = parser.screen().scrollback();
++    parser.screen_mut().set_scrollback(0);
++    run.history_capacity = 100;
++    run.console = Some(parser);
++    run.outcome = Some("exited successfully".into());
++    run
++}
++fn fixture(text: &str) -> App {
++    let mut app = crate::tests::app();
++    app.page = Page::Console;
++    app.runs.push(ended(text, 24, 120));
++    app
++}
++fn open(app: &mut App) {
++    app.key(Shortcut::SearchConsole.key(), 80, 24).unwrap();
++    assert!(app.reviewing());
++    settle(app);
++}
++fn buffer(app: &mut App, width: u16, height: u16) -> Buffer {
++    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
++    terminal
++        .draw(|frame| app.draw(frame))
++        .unwrap()
++        .buffer
++        .clone()
++}
++fn text(buffer: &Buffer) -> String {
++    (0..buffer.area.height)
++        .map(|y| {
++            (0..buffer.area.width)
++                .map(|x| buffer[(x, y)].symbol())
++                .collect::<String>()
++        })
++        .collect::<Vec<_>>()
++        .join("\n")
++}
++
++#[test]
++fn console_review_unicode_filter_refresh_resume_and_complete_action_inventory() {
++    let mut app = fixture(
++        "\x1b[32mI/flutter: [Orders] SEVERE: 界e\u{301} needle\x1b[0m\r\nW/Tag: warning needle\r\n  stack needle",
++    );
++    let source = app.runs[0].id;
++    open(&mut app);
++    assert_eq!(app.reviewed_source(), Some(source));
++    app.paste("needle");
++    settle(&mut app);
++    let snapshot = app.review.as_ref().unwrap().snapshot().unwrap();
++    assert_eq!(
++        app.review
++            .as_ref()
++            .unwrap()
++            .data()
++            .unwrap()
++            .matches
++            .matches
++            .len(),
++        3
++    );
++    app.activate(ui::MouseAction::SearchFilter(SeverityFilter::Errors), AREA)
++        .unwrap();
++    settle(&mut app);
++    assert_eq!(
++        app.review
++            .as_ref()
++            .unwrap()
++            .data()
++            .unwrap()
++            .matches
++            .matches
++            .len(),
++        1
++    );
++    assert!(Arc::ptr_eq(
++        &snapshot,
++        &app.review.as_ref().unwrap().snapshot().unwrap()
++    ));
++    assert!(snapshot.plain_text().contains("stack needle"));
++    app.key(Shortcut::SearchConsole.key(), 80, 24).unwrap();
++    assert!(Arc::ptr_eq(
++        &snapshot,
++        &app.review.as_ref().unwrap().snapshot().unwrap()
++    ));
++
++    assert!(app.review.as_ref().unwrap().editing());
++    let actions = ui::available_actions(&app);
++    for action in [
++        ui::MouseAction::EditSearchQuery,
++        ui::MouseAction::NextSearchMatch,
++        ui::MouseAction::PreviousSearchMatch,
++        ui::MouseAction::CycleSearchFilter,
++        ui::MouseAction::RefreshSnapshot,
++        ui::MouseAction::SnapshotSource,
++        ui::MouseAction::ResumeLive,
++    ] {
++        assert!(actions.iter().any(|entry| entry.action == action));
++    }
++    assert!(
++        !actions
++            .iter()
++            .any(|entry| entry.action == ui::MouseAction::SelectText)
++    );
++    assert!(
++        actions
++            .iter()
++            .filter(|entry| matches!(
++                entry.action,
++                ui::MouseAction::RefreshSnapshot
++                    | ui::MouseAction::NextSearchMatch
++                    | ui::MouseAction::SnapshotSource
++            ))
++            .all(|entry| entry.shortcut.is_empty())
++    );
++    let query = app.review.as_ref().unwrap().query().to_owned();
++    app.activate(ui::MouseAction::NextSearchMatch, AREA)
++        .unwrap();
++    app.activate(ui::MouseAction::PreviousSearchMatch, AREA)
++        .unwrap();
++    app.activate(ui::MouseAction::CycleSearchFilter, AREA)
++        .unwrap();
++    settle(&mut app);
++    assert_eq!(app.review.as_ref().unwrap().query(), query);
++    assert_eq!(
++        app.review.as_ref().unwrap().filter(),
++        SeverityFilter::Warnings
++    );
++    app.activate(ui::MouseAction::EditSearchQuery, AREA)
++        .unwrap();
++    app.activate(ui::MouseAction::SnapshotSource, AREA).unwrap();
++    assert!(app.review.as_ref().unwrap().showing_source_details());
++    press(&mut app, KeyCode::Esc);
++    assert!(app.review.as_ref().unwrap().editing());
++    press(&mut app, KeyCode::Esc);
++    assert!(!app.review.as_ref().unwrap().editing());
++    let actions = ui::available_actions(&app);
++    assert_eq!(
++        actions
++            .iter()
++            .find(|entry| entry.action == ui::MouseAction::RefreshSnapshot)
++            .unwrap()
++            .shortcut,
++        "r"
++    );
++    assert_eq!(
++        actions
++            .iter()
++            .find(|entry| entry.action == ui::MouseAction::SnapshotSource)
++            .unwrap()
++            .shortcut,
++        "i"
++    );
++    app.runs[0]
++        .console
++        .as_mut()
++        .unwrap()
++        .process(b"\r\nWARN: later needle");
++    app.actions_open = true;
++    press(&mut app, KeyCode::Char('r'));
++    assert!(!app.actions_open);
++    settle(&mut app);
++    assert!(!Arc::ptr_eq(
++        &snapshot,
++        &app.review.as_ref().unwrap().snapshot().unwrap()
++    ));
++    assert_eq!(app.review.as_ref().unwrap().query(), query);
++    assert_eq!(
++        app.review
++            .as_ref()
++            .unwrap()
++            .data()
++            .unwrap()
++            .matches
++            .matches
++            .len(),
++        2
++    );
++    press(&mut app, KeyCode::Esc);
++    assert!(!app.reviewing());
++    assert_eq!(app.page, Page::Console);
++    assert!(app.runs[0].outcome.is_some());
++}
++
++#[test]
++fn console_review_run_ids_survive_neighbor_removal_and_clear_on_actual_replacement() {
++    let mut app = fixture("old first");
++    app.runs.push(ended("review second", 24, 80));
++    app.runs.push(ended("third", 24, 80));
++    app.switch_run(1);
++    open(&mut app);
++    let id = app.runs[1].id;
++    let snapshot = app.review.as_ref().unwrap().snapshot().unwrap();
++    app.close_ended_run(0);
++    assert_eq!(app.active_run, 0);
++    assert_eq!(app.runs[0].id, id);
++    assert_eq!(app.reviewed_source(), Some(id));
++    assert!(Arc::ptr_eq(
++        &snapshot,
++        &app.review.as_ref().unwrap().snapshot().unwrap()
++    ));
++    app.switch_run(0);
++    assert!(app.reviewing(), "same source switch is not replacement");
++    app.switch_run(1);
++    assert!(!app.reviewing());
++    open(&mut app);
++    let replaced = app.runs[1].id;
++    app.close_ended_run(1);
++    assert!(!app.reviewing());
++    app.runs.push(ended("new at recycled index", 24, 80));
++    assert_ne!(app.runs[1].id, replaced);
++    app.switch_run(1);
++    open(&mut app);
++    assert_eq!(
++        app.review
++            .as_ref()
++            .unwrap()
++            .snapshot()
++            .unwrap()
++            .plain_text(),
++        "new at recycled index"
++    );
++}
++
++#[test]
++fn console_review_preclone_bounds_accept_wide_normal_empty_and_reject_hidden_history() {
++    let mut app = crate::tests::app();
++    app.page = Page::Console;
++    let mut run = ended("", 24, 500);
++    run.history_capacity = Session::SCROLLBACK_CAPACITY;
++    app.runs.push(run);
++    open(&mut app);
++    assert_eq!(
++        app.review
++            .as_ref()
++            .unwrap()
++            .snapshot()
++            .unwrap()
++            .plain_text(),
++        ""
++    );
++    app.close_review();
++    app.runs[0]
++        .console
++        .as_mut()
++        .unwrap()
++        .process(b"\x1b[?1049h");
++    assert!(app.runs[0].screen().unwrap().alternate_screen());
++    app.capture_review(false);
++    assert!(app.reviewing());
++    assert!(!app.review.as_ref().unwrap().is_pending());
++    assert!(app.review.as_ref().unwrap().snapshot().is_none());
++    assert!(
++        app.review
++            .as_ref()
++            .unwrap()
++            .error()
++            .unwrap()
++            .contains("128 MiB")
++    );
++}
++
++#[test]
++fn console_review_retained_width_and_saved_source_metadata_remain_independent_of_launch_catalog() {
++    let mut app = crate::tests::app();
++    let mut run = ended("abcdefghijklmnopqrstuvwx\r\nTAIL\r\nEND", 2, 12);
++    let id = run.id;
++    run.console.as_mut().unwrap().screen_mut().set_size(2, 4);
++    app.last_log_source = Some(App::run_source(&run));
++    app.last_log_max_columns = run.historical_columns();
++    app.last_log_history_capacity = run.history_capacity;
++    app.last_log_scrollback = run.scrollback_len;
++    app.last_log = run.console.take();
++    app.active_config = "future catalog name".into();
++    app.page = Page::LastLog;
++    open(&mut app);
++    assert_eq!(app.reviewed_source(), Some(id));
++    assert_eq!(
++        app.review
++            .as_ref()
++            .unwrap()
++            .source()
++            .unwrap()
++            .configuration
++            .as_deref(),
++        Some("development")
++    );
++    assert_eq!(
++        app.review
++            .as_ref()
++            .unwrap()
++            .source()
++            .unwrap()
++            .device
++            .as_deref(),
++        Some("Pixel 界")
++    );
++    assert_eq!(
++        app.review
++            .as_ref()
++            .unwrap()
++            .snapshot()
++            .unwrap()
++            .plain_text(),
++        "abcdefghijklmnopqrstuvwx\nTAIL\nEND"
++    );
++    assert_eq!(
++        app.review.as_ref().unwrap().snapshot().unwrap().columns(),
++        12
++    );
++    app.close_last_log();
++    assert!(!app.reviewing());
++    assert!(app.last_log_source.is_none());
++}
++
++#[test]
++fn console_review_global_overlays_top_focus_and_direct_commands_do_not_edit_query() {
++    let mut app = fixture("ERROR needle");
++    open(&mut app);
++    app.paste("needle");
++    settle(&mut app);
++    let mut terminal = Terminal::new(TestBackend::new(34, 12)).unwrap();
++    terminal.draw(|frame| app.draw(frame)).unwrap();
++    assert!(terminal.backend().cursor_visible());
++    app.key(Shortcut::FocusActions.key(), 34, 12).unwrap();
++    terminal.draw(|frame| app.draw(frame)).unwrap();
++    assert!(!terminal.backend().cursor_visible());
++    app.key(Shortcut::Actions.key(), 34, 12).unwrap();
++    let rendered = terminal
++        .draw(|frame| app.draw(frame))
++        .unwrap()
++        .buffer
++        .clone();
++    assert!(text(&rendered).contains("Actions ·"));
++    assert!(!terminal.backend().cursor_visible());
++    app.action_index = ui::available_actions(&app)
++        .iter()
++        .position(|entry| entry.action == ui::MouseAction::EditSearchQuery)
++        .unwrap();
++    press(&mut app, KeyCode::Enter);
++    assert!(app.top_focus.is_none());
++    assert_eq!(app.review.as_ref().unwrap().query(), "needle");
++    app.actions_open = true;
++    app.key(Shortcut::SearchConsole.key(), 34, 12).unwrap();
++    assert!(!app.actions_open);
++    assert!(app.review.as_ref().unwrap().editing());
++    assert_eq!(app.review.as_ref().unwrap().query(), "needle");
++    app.help = true;
++    let rendered = terminal
++        .draw(|frame| app.draw(frame))
++        .unwrap()
++        .buffer
++        .clone();
++    assert!(text(&rendered).contains("Process controls: Actions"));
++    assert!(!terminal.backend().cursor_visible());
++    app.paste("not a query");
++    assert_eq!(app.review.as_ref().unwrap().query(), "needle");
++    press(&mut app, KeyCode::Esc);
++    assert!(!app.help);
++    app.key(
++        KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
++        34,
++        12,
++    )
++    .unwrap();
++    assert!(app.quit_confirmation);
++    let rendered = terminal
++        .draw(|frame| app.draw(frame))
++        .unwrap()
++        .buffer
++        .clone();
++    assert!(text(&rendered).contains("Quit Flimru?"));
++    assert!(!terminal.backend().cursor_visible());
++    press(&mut app, KeyCode::Enter);
++    assert!(!app.quit_confirmation);
++    assert!(app.reviewing());
++    assert!(app.review.as_ref().unwrap().editing());
++}
++
++#[cfg(unix)]
++fn live(log: &Path, script: &str) -> runs::Run {
++    let session = Session::start(
++        &flimru::tool::RunCommand {
++            capture_vm_service: false,
++            executable: "/bin/bash".into(),
++            args: vec!["-c".into(), script.into()],
++            cwd: log.parent().unwrap().into(),
++            env: std::collections::BTreeMap::from([(
++                "INPUT_LOG".into(),
++                log.to_string_lossy().into_owned(),
++            )]),
++        },
++        15,
++        120,
++    )
++    .unwrap();
++    runs::Run::running(
++        Device {
++            id: log.to_string_lossy().into_owned(),
++            name: "Live pixel".into(),
++            platform: "android".into(),
++            available: true,
++            favorite: false,
++        },
++        "Frozen launch-time config".into(),
++        session,
++    )
++}
++#[cfg(unix)]
++fn drain_until(app: &mut App, mut ready: impl FnMut(&App) -> bool) {
++    let deadline = Instant::now() + Duration::from_secs(5);
++    loop {
++        app.tick().unwrap();
++        if ready(app) {
++            return;
++        }
++        assert!(Instant::now() < deadline);
++        std::thread::sleep(Duration::from_millis(1));
++    }
++}
++#[cfg(unix)]
++fn log(path: &Path) -> String {
++    std::fs::read_to_string(path).unwrap_or_default()
++}
++
++#[test]
++#[cfg(unix)]
++fn console_review_blocks_pty_controls_selection_and_paste_but_explicit_actions_reach_only_chosen_child()
++ {
++    let directory = tempfile::tempdir().unwrap();
++    let first = directory.path().join("first");
++    let second = directory.path().join("second");
++    let script = "stty raw -echo; printf 'ERROR needle ready\\r\\n'; while :; do IFS= read -rsn1 key || continue; printf '%s' \"$key\" >> \"$INPUT_LOG\"; [ \"$key\" = q ] && exit 0; done";
++    let mut app = crate::tests::app();
++    app.page = Page::Console;
++    app.runs.push(live(&first, script));
++    app.runs.push(live(&second, script));
++    app.retain_consoles = true;
++    drain_until(&mut app, |app| {
++        app.runs
++            .iter()
++            .all(|run| run.screen().unwrap().contents().contains("ready"))
++    });
++    open(&mut app);
++    let frozen = app.review.as_ref().unwrap().snapshot().unwrap();
++    for key in [
++        KeyCode::Char('r'),
++        KeyCode::Char('R'),
++        KeyCode::Char('/'),
++        KeyCode::Char('q'),
++    ] {
++        press(&mut app, key);
++    }
++    app.paste("pasted qRr");
++    for ch in ['a', 'e', 'x', 'z'] {
++        app.key(
++            KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL),
++            80,
++            24,
++        )
++        .unwrap();
++    }
++    for kind in [
++        MouseEventKind::Down(MouseButton::Left),
++        MouseEventKind::Drag(MouseButton::Left),
++        MouseEventKind::Up(MouseButton::Left),
++    ] {
++        app.mouse(
++            MouseEvent {
++                kind,
++                column: 10,
++                row: 10,
++                modifiers: KeyModifiers::NONE,
++            },
++            AREA,
++        )
++        .unwrap();
++    }
++    app.activate(ui::MouseAction::SelectText, AREA).unwrap();
++    assert!(app.selection.is_none());
++    assert!(
++        app.runs
++            .iter()
++            .all(|run| run.session.as_ref().unwrap().stop_requested.is_none())
++    );
++    assert_eq!(log(&first), "");
++    assert_eq!(log(&second), "");
++    let query = app.review.as_ref().unwrap().query().to_owned();
++    for command in ['r', 'R'] {
++        app.actions_open = true;
++        let actions = ui::available_actions(&app);
++        assert_eq!(
++            actions
++                .iter()
++                .find(|item| item.action == ui::MouseAction::FlutterKey(command))
++                .unwrap()
++                .shortcut,
++            ""
++        );
++        app.action_index = actions
++            .iter()
++            .position(|item| item.action == ui::MouseAction::FlutterKey(command))
++            .unwrap();
++        press(&mut app, KeyCode::Enter);
++    }
++    drain_until(&mut app, |_| log(&first) == "rR");
++    assert_eq!(log(&second), "");
++    assert_eq!(app.review.as_ref().unwrap().query(), query);
++    assert!(Arc::ptr_eq(
++        &frozen,
++        &app.review.as_ref().unwrap().snapshot().unwrap()
++    ));
++    assert_eq!(app.review_notice.as_deref(), Some("Hot restart requested"));
++    assert!(text(&buffer(&mut app, 34, 12)).contains("Hot restart requested"));
++    press(&mut app, KeyCode::Enter);
++    let before = log(&first);
++    press(&mut app, KeyCode::Char('r'));
++    settle(&mut app);
++    assert_eq!(
++        log(&first),
++        before,
++        "reading r refreshes snapshot, never Flutter"
++    );
++    press(&mut app, KeyCode::Esc);
++    assert!(!app.reviewing());
++    press(&mut app, KeyCode::Char('r'));
++    drain_until(&mut app, |_| log(&first) == "rRr");
++    app.switch_run(1);
++    press(&mut app, KeyCode::Char('R'));
++    drain_until(&mut app, |_| log(&second) == "R");
++}
++
++#[test]
++#[cfg(unix)]
++fn console_review_flood_drains_hidden_and_active_sessions_without_output_only_redraw() {
++    let directory = tempfile::tempdir().unwrap();
++    let mut app = crate::tests::app();
++    app.page = Page::Console;
++    for name in ["first", "second"] {
++        app.runs.push(live(
++            &directory.path().join(name),
++            "while :; do printf 'ERROR flood needle\\r\\n'; sleep 0.002; done",
++        ));
++    }
++    drain_until(&mut app, |app| {
++        app.runs
++            .iter()
++            .all(|run| run.screen().unwrap().contents().contains("needle"))
++    });
++    open(&mut app);
++    let snapshot = app.review.as_ref().unwrap().snapshot().unwrap();
++    let revisions: Vec<_> = app
++        .runs
++        .iter()
++        .map(|run| run.session.as_ref().unwrap().visual_revision)
++        .collect();
++    let mut output = false;
++    for _ in 0..25 {
++        let update = app.tick().unwrap();
++        output |= update.output_received;
++        assert!(
++            !update.redraw,
++            "raw child output must not invalidate a frozen view"
++        );
++        std::thread::sleep(Duration::from_millis(2));
++    }
++    assert!(output);
++    for (run, revision) in app.runs.iter().zip(revisions) {
++        assert!(run.session.as_ref().unwrap().visual_revision > revision);
++    }
++    assert!(Arc::ptr_eq(
++        &snapshot,
++        &app.review.as_ref().unwrap().snapshot().unwrap()
++    ));
++}
++
++#[test]
++#[cfg(unix)]
++fn console_review_completion_retains_reviewed_source_and_normal_completion_transfers_id_and_width()
++{
++    let directory = tempfile::tempdir().unwrap();
++    for reviewed in [false, true] {
++        let mut app = crate::tests::app();
++        app.page = Page::Console;
++        app.runs.push(live(
++            &directory.path().join("child"),
++            "printf 'ERROR completion ready\\r\\n'; sleep 0.15; exit 0",
++        ));
++        let id = app.runs[0].id;
++        app.runs[0]
++            .session
++            .as_mut()
++            .unwrap()
++            .resize(15, 180)
++            .unwrap();
++        app.runs[0]
++            .session
++            .as_mut()
++            .unwrap()
++            .resize(15, 77)
++            .unwrap();
++        assert_eq!(app.runs[0].historical_columns(), 180);
++        drain_until(&mut app, |app| {
++            app.runs
++                .first()
++                .is_some_and(|run| run.screen().unwrap().contents().contains("ready"))
++        });
++        if reviewed {
++            open(&mut app);
++        }
++        drain_until(&mut app, |app| app.running_count() == 0);
++        if reviewed {
++            assert!(app.reviewing());
++            assert_eq!(app.reviewed_source(), Some(id));
++            assert_eq!(app.page, Page::Console);
++            assert_eq!(app.runs[0].id, id);
++            assert!(app.runs[0].session.is_none());
++            assert!(app.last_log.is_none());
++            assert!(
++                app.review_notice
++                    .as_deref()
++                    .unwrap()
++                    .starts_with("Console ended:")
++            );
++            let frozen = app.review.as_ref().unwrap().snapshot().unwrap();
++            app.capture_review(true);
++            settle(&mut app);
++            assert!(!Arc::ptr_eq(
++                &frozen,
++                &app.review.as_ref().unwrap().snapshot().unwrap()
++            ));
++            assert!(
++                app.review
++                    .as_ref()
++                    .unwrap()
++                    .source()
++                    .unwrap()
++                    .outcome
++                    .as_deref()
++                    .unwrap()
++                    .contains("Success")
++            );
++        } else {
++            assert!(app.runs.is_empty());
++            assert_eq!(app.last_log_source.as_ref().unwrap().id, id);
++            assert_eq!(app.last_log_max_columns, 180);
++            assert_eq!(
++                app.last_log_source
++                    .as_ref()
++                    .unwrap()
++                    .configuration
++                    .as_deref(),
++                Some("Frozen launch-time config")
++            );
++            app.page = Page::LastLog;
++            open(&mut app);
++            assert_eq!(app.reviewed_source(), Some(id));
++        }
++    }
++}
++
++fn escape(value: &str) -> String {
++    value
++        .replace('&', "&amp;")
++        .replace('<', "&lt;")
++        .replace('>', "&gt;")
++        .replace('"', "&quot;")
++}
++fn color(value: Color, fallback: &str) -> String {
++    match value {
++        Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
++        Color::Yellow => "#ffff00".into(),
++        _ => fallback.into(),
++    }
++}
++fn evidence(directory: &Path, stem: &str, buffer: &Buffer) {
++    std::fs::create_dir_all(directory).unwrap();
++    std::fs::write(directory.join(format!("{stem}.txt")), text(buffer) + "\n").unwrap();
++    let width = buffer.area.width;
++    let height = buffer.area.height;
++    let mut svg = format!(
++        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="0 0 {} {}"><rect width="100%" height="100%" fill="#101722"/>"##,
++        width * 10,
++        height * 20,
++        width * 10,
++        height * 20
++    );
++    for y in 0..height {
++        for x in 0..width {
++            let cell = &buffer[(x, y)];
++            if cell.bg != Color::Reset {
++                svg.push_str(&format!(
++                    r#"<rect x="{}" y="{}" width="10" height="20" fill="{}"/>"#,
++                    x * 10,
++                    y * 20,
++                    color(cell.bg, "#101722")
++                ));
++            }
++        }
++    }
++    for y in 0..height {
++        for x in 0..width {
++            let cell = &buffer[(x, y)];
++            if cell.symbol() != " " && !cell.symbol().is_empty() {
++                svg.push_str(&format!(r#"<text x="{}" y="{}" fill="{}" font-family="Menlo,monospace" font-size="15"{}>{}</text>"#,x*10,y*20+16,color(cell.fg,"#dce3ed"),if cell.modifier.contains(Modifier::BOLD){" font-weight=\"bold\""}else{""},escape(cell.symbol())));
++            }
++        }
++    }
++    svg.push_str("</svg>");
++    std::fs::write(directory.join(format!("{stem}.svg")), svg).unwrap();
++}
++
++/// Actual integrated App cells, not placeholders. Retain via FLIMRU_P3_APP_EVIDENCE_DIR.
++#[test]
++fn console_review_integrated_render_evidence_with_global_layers_and_source_details() {
++    for (width, height) in [(34, 12), (80, 24), (120, 40)] {
++        for state in [
++            "editing",
++            "reading",
++            "no-matches",
++            "empty-filter",
++            "empty",
++            "pending",
++            "error",
++            "wide-history",
++            "source-details",
++            "source-details-scrolled",
++            "actions",
++            "help",
++            "quit",
++            "operation-notice",
++            "operation-error",
++        ] {
++            let mut app = fixture(if state == "empty" {
++                ""
++            } else {
++                "I/flutter: [Orders] SEVERE: request failed 界e\u{301}\r\nW/Tag: retry scheduled\r\n  stack continuation\r\nINFO connected\r\nERROR: request failed again"
++            });
++            app.runs[0].device.name = format!(
++                "Physical Pixel 界 {} last-device-suffix",
++                "long device label ".repeat(8)
++            );
++            app.runs[0].config = format!(
++                "Development 界 {} last-config-suffix",
++                "configuration label ".repeat(8)
++            );
++            if state == "wide-history" {
++                app.runs[0] = ended(
++                    &format!("ERROR: {}界e\u{301} needle\r\nlive\r\nend", "a".repeat(130)),
++                    2,
++                    160,
++                );
++                app.runs[0]
++                    .console
++                    .as_mut()
++                    .unwrap()
++                    .screen_mut()
++                    .set_size(2, 4);
++            }
++            if state == "error" {
++                app.runs[0].history_capacity = Session::SCROLLBACK_CAPACITY;
++                app.runs[0].max_columns = 500;
++                app.runs[0]
++                    .console
++                    .as_mut()
++                    .unwrap()
++                    .process(b"\x1b[?1049h");
++            }
++            app.capture_review(false);
++            if !matches!(state, "pending" | "error") {
++                settle(&mut app);
++                if !matches!(state, "empty" | "empty-filter") {
++                    app.review
++                        .as_mut()
++                        .unwrap()
++                        .set_query(if state == "no-matches" {
++                            "missing"
++                        } else if state == "wide-history" {
++                            "\u{301}"
++                        } else {
++                            "request"
++                        });
++                    settle(&mut app);
++                }
++                if state == "empty-filter" {
++                    app.review
++                        .as_mut()
++                        .unwrap()
++                        .set_filter(SeverityFilter::Errors);
++                    app.runs[0]
++                        .console
++                        .as_mut()
++                        .unwrap()
++                        .process(b"\x1b[2J\x1b[HINFO only");
++                    app.capture_review(true);
++                    settle(&mut app);
++                }
++                if state != "editing" {
++                    press(&mut app, KeyCode::Enter);
++                }
++                match state {
++                    "source-details" | "source-details-scrolled" => {
++                        app.activate(
++                            ui::MouseAction::SnapshotSource,
++                            Rect::new(0, 0, width, height),
++                        )
++                        .unwrap();
++                    }
++                    "actions" => app.actions_open = true,
++                    "help" => app.help = true,
++                    "quit" => app.quit_confirmation = true,
++                    "operation-notice" => app.report_operation("Hot restart requested".into()),
++                    "operation-error" => app.report_operation(
++                        "Hot reload: Input queue is full; wait for Flutter to read input".into(),
++                    ),
++                    _ => {}
++                }
++            }
++            let area = Rect::new(0, 0, width, height);
++            ui::update_top_viewport(&mut app, area);
++            if app.actions_open {
++                ui::update_action_viewport(&mut app, area);
++            }
++            if state == "source-details-scrolled" {
++                buffer(&mut app, width, height);
++                press(&mut app, KeyCode::End);
++            }
++            let rendered = buffer(&mut app, width, height);
++            let shown = text(&rendered);
++            assert!(shown.contains("Flimru"), "{state}: {shown}");
++            match state {
++                "source-details" | "source-details-scrolled" => {
++                    assert!(shown.contains("Frozen source details"), "{shown}")
++                }
++                "actions" => assert!(shown.contains("Actions ·")),
++                "help" => assert!(shown.contains("Process controls: Actions")),
++                "quit" => assert!(shown.contains("Quit Flimru?")),
++                "operation-notice" => assert!(shown.contains("Hot restart requested")),
++                "operation-error" => assert!(shown.contains("Hot reload: Input queue is full")),
++                "pending" => assert!(shown.contains("Capturing")),
++                "error" => assert!(shown.contains("128 MiB") || shown.contains("128")),
++                "empty-filter" => assert!(shown.contains("No lines in this filter"), "{shown}"),
++                "empty" => assert!(shown.contains("Snapshot is empty")),
++                "no-matches" => assert!(shown.contains("No matches")),
++                _ => assert!(shown.contains("Search")),
++            }
++            assert!(!shown.contains("Drag to copy"));
++            if let Some(output) = std::env::var_os("FLIMRU_P3_APP_EVIDENCE_DIR") {
++                evidence(
++                    Path::new(&output),
++                    &format!("{state}-{width}x{height}"),
++                    &rendered,
++                );
++            }
++        }
++    }
++}

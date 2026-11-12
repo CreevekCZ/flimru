@@ -1,0 +1,12 @@
+Toolbar · sessions continue       
+                                  
+[Pixel] [Other live]              
+┌ Snapshot · Pixel 界  · developme┐
+│Search ▸ request                │
+│All · 1/2 · col 1 ↔             │
+│ERROR request failed 界  é       │
+│WARN retry scheduled            │
+│  stack continuation            │
+│Enter read · Esc stop editing   │
+│Snapshot · live output continues│
+└────────────────────────────────┘

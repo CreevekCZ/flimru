@@ -1,0 +1,12 @@
+ Flimru · Config error   3 devices
+ ┌ Diagnostics ─────────────────┐ 
+ │Configuration reload error:   │ 
+┌│Launch configuration file     │┐
+││contains invalid JSONC or an  ││
+││invalid catalog structure.    ││
+││                              ││
+└│Using the last good catalog.  │┘
+ │Correct the file; reload      │]
+s│↑↓ scroll · Esc close         │ 
+ └──────────────────────────────┘ 
+ u unavailable · / filter · r relo

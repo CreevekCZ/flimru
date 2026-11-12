@@ -1,0 +1,24 @@
+ Flimru / T                                                            3 devices
+  Close┌ Actions · Ctrl+p / Esc close ──────────────────────────────────┐  Quit 
+ 1○ Phy│› Add session                                           Ctrl+n █│       
+┌ Snaps│  Device picker                                         Ctrl+d █│evice…┐
+│Search│  Close ended session                                   Ctrl+w █│      │
+│All · │  Back to devices                                              █│      │
+│I/flut│  Edit console query                                    Ctrl+s █│      │
+│W/Tag:│  Next console match                                         n █│      │
+│  stac│  Previous console match                                     N █│      │
+│INFO c│  Cycle console severity                                     f █│      │
+│ERROR:│  Console severity: All                                        █│      │
+│      │  Console severity: Errors                                     █│      │
+│      │  Console severity: Warnings                                   ║│      │
+│      │  Console severity: Errors + warnings                          ║│      │
+│      │  Refresh snapshot                                           r ║│      │
+│      │  Snapshot source details                                    i ║│      │
+│      │  Resume live console                                      Esc ║│      │
+│      │  Previous console                                      Ctrl+b ║│      │
+│      │  Next console                                          Ctrl+f ║│      │
+│      │  Console 1: Physical Pixel 界  long device label long device   ║│      │
+│      │  Launcher help                                                ║│      │
+│n/N ma│↑↓ / wheel · Enter / click                                      │      │
+│r refr└────────────────────────────────────────────────────────────────┘      │
+└ i source ────────────────────────────────────────────────────────────────────┘

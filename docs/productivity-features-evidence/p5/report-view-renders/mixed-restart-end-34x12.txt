@@ -1,0 +1,12 @@
+LIVE FLUTTER · active tabs keep em
+ ┌ Hot restart delivery report ─┐ 
+ │ Requested/queued: 2          │ 
+ │ Skipped: 4 · Failed: 2       │ 
+ │ Flutter completion is        │ 
+ │ unconfirmed.                 │ 
+ │                              │ 
+ │ Device 8 界  é 🧑‍💻              │ 
+ │ Requested/queued             │ 
+ │ [Close] Esc ↑↓ Pg 27-29/29   │ 
+ └──────────────────────────────┘ 
+                                  

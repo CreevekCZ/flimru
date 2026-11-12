@@ -1,0 +1,24 @@
+ Flimru / Example                                                      0 devices
+  Checking…   Show unavailable   Back   Reload          │ Actions   Help   Quit 
+ Devices   › Configuration   › Console                                          
+┌ Configs · 1 checking / 1 ready ──────────────────────────────────────────────┐
+│ Stable 界  é                                                                  │
+│ ready                                                                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+  Unrelated session status remains available.                         [Filter /]
+                                                                                
+ Checking selected availability                                                 
+ ↑↓ choose · u unavailable · / filter                                           

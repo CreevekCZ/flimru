@@ -1,0 +1,36 @@
+class Flimru < Formula
+  desc "Interactive Flutter launcher with device selection and separate consoles"
+  homepage "https://github.com/CreevekCZ/flimru"
+  url "https://github.com/CreevekCZ/flimru/releases/download/v@VERSION@/flimru-v@VERSION@-darwin-arm64.tar.gz"
+  sha256 "@SHA256@"
+  license "MIT"
+
+  depends_on arch: :arm64
+  depends_on :macos
+
+  def install
+    bin.install "flimru"
+    doc.install "README.md", "docs/usage.md"
+  end
+
+  test do
+    (testpath/".vscode/launch.json").write <<~JSON
+      {
+        // Check the actual JSONC configuration parser without a Flutter SDK.
+        "configurations": [{
+          "name": "Homebrew smoke test",
+          "type": "dart",
+          "request": "launch",
+          "program": "lib/main.dart",
+        }],
+      }
+    JSON
+    flutter = testpath/"flutter"
+    flutter.write "#!/bin/sh\nexit 99\n"
+    flutter.chmod 0755
+    output = shell_output("#{bin}/flimru #{testpath} --check --flutter #{flutter}")
+    assert_match "1 launch configurations", output
+    assert_match "Homebrew smoke test", output
+    assert_match "flimru #{version}", shell_output("#{bin}/flimru --version")
+  end
+end

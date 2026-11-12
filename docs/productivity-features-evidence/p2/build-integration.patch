@@ -1,0 +1,1246 @@
+--- p1-complete/src/main.rs
++++ src/main.rs
+@@ -21,6 +21,7 @@
+ use flimru::{
+     availability::{self, Assessment},
+     config::{LaunchFile, SourceEntry},
++    config_reload::{self, ConfigReloader, ReloadError, ReloadResult, ReloadSource},
+     device::{Device, Discovery, DiscoveryEvent, merge_devices},
+     session::Session,
+     state::{self, State},
+@@ -202,6 +203,10 @@
+     top_focus: Option<ui::TopFocus>,
+     toolbar_offset: usize,
+     launch: Arc<LaunchFile>,
++    config_reloader: Option<ConfigReloader>,
++    reload_generation: u64,
++    manual_reload_pending: Option<u64>,
++    reload_error: Option<ReloadError>,
+     availability_view: std::cell::RefCell<AvailabilityView>,
+     tool: FlutterTool,
+     discovery: Discovery,
+@@ -240,6 +245,48 @@
+     dragging_scrollbar: Option<ScrollDrag>,
+ }
+ 
++/// Catalog positions are not identities. A unique name can survive edits; a
++/// repeated name needs one identical entry in BOTH catalogs to prove identity.
++fn preserve_config_source(
++    old: &LaunchFile,
++    new: &LaunchFile,
++    source: Option<usize>,
++) -> Option<usize> {
++    let selected = old.entries.get(source?)?;
++    let named = |entry: &&SourceEntry| entry.name == selected.name;
++    let old_names = old.entries.iter().filter(named).take(2).count();
++    let mut new_names = new.entries.iter().filter(named);
++    let first = new_names.next()?;
++    if old_names == 1 && new_names.next().is_none() {
++        return Some(first.source_index);
++    }
++    let selected_config = selected
++        .configuration
++        .and_then(|index| old.configurations.get(index));
++    let matches = |catalog: &LaunchFile, entry: &SourceEntry| {
++        entry.name == selected.name
++            && entry.diagnostics == selected.diagnostics
++            && entry.warnings == selected.warnings
++            && entry
++                .configuration
++                .and_then(|index| catalog.configurations.get(index))
++                == selected_config
++    };
++    if old
++        .entries
++        .iter()
++        .filter(|entry| matches(old, entry))
++        .take(2)
++        .count()
++        != 1
++    {
++        return None;
++    }
++    let mut matching = new.entries.iter().filter(|entry| matches(new, entry));
++    let matched = matching.next()?;
++    matching.next().is_none().then_some(matched.source_index)
++}
++
+ fn paths(options: &Options) -> Result<(PathBuf, PathBuf)> {
+     let start = std::fs::canonicalize(options.project.clone().unwrap_or(std::env::current_dir()?))
+         .context("Project directory not found")?;
+@@ -269,7 +316,7 @@
+ fn main() -> Result<()> {
+     let options = Options::parse();
+     let (workspace, path) = paths(&options)?;
+-    let launch = LaunchFile::load(&path, &workspace)?;
++    let launch = config_reload::load_bounded(&path, &workspace)?;
+     let tool = FlutterTool::resolve(&workspace, options.flutter.as_deref(), options.fvm)?;
+     if options.check {
+         println!(
+@@ -328,6 +375,10 @@
+         action_scroll_drag: false,
+         top_focus: None,
+         toolbar_offset: 0,
++        config_reloader: Some(ConfigReloader::new(path, workspace)?),
++        reload_generation: 0,
++        manual_reload_pending: None,
++        reload_error: None,
+         launch: Arc::new(launch),
+         availability_view: Default::default(),
+         tool,
+@@ -670,6 +721,10 @@
+     }
+ 
+     fn start_batch(&mut self, cols: u16, rows: u16) {
++        if self.manual_reload_pending.is_some() {
++            self.status = "Reloading configurations. Wait, then choose Run explicitly.".into();
++            return;
++        }
+         let Some(entry) = self.visible_entries().get(self.config_index) else {
+             self.status = "Select a configuration first.".into();
+             return;
+@@ -794,12 +849,88 @@
+         ids
+     }
+ 
++    // A source can be deliberately retained while absent from a partial visible
++    // list. That deferred source is the logical selection during catalog edits.
++    fn selected_config_source(&self) -> Option<usize> {
++        let visible = self.visible_entries();
++        self.availability_view.borrow().desired_source.or_else(|| {
++            visible
++                .get(self.config_index)
++                .map(|entry| entry.source_index)
++        })
++    }
++
++    fn request_config_reload(&mut self) {
++        if self.config_reloader.is_none() {
++            match ConfigReloader::new(self.launch.path.clone(), self.launch.workspace.clone()) {
++                Ok(reloader) => self.config_reloader = Some(reloader),
++                Err(_) => {
++                    self.reload_error = Some(ReloadError::ReadFailed);
++                    self.status =
++                        "Reload failed: Could not start the configuration reload worker.".into();
++                    return;
++                }
++            }
++        }
++        if let Some(reloader) = &self.config_reloader {
++            let generation = reloader.request_reload();
++            self.reload_generation = generation;
++            self.manual_reload_pending = Some(generation);
++            self.status = "Reloading launch configurations…".into();
++        }
++    }
++
++    fn advance_config_reload(&mut self) -> bool {
++        let result = self.config_reloader.as_mut().and_then(ConfigReloader::poll);
++        result.is_some_and(|result| self.apply_config_reload(result))
++    }
++
++    fn apply_config_reload(&mut self, result: ReloadResult) -> bool {
++        if result.generation < self.reload_generation {
++            return false;
++        }
++        self.reload_generation = result.generation;
++        // A newer automatic version may coalesce an unread manual completion.
++        // Its completed read also supersedes that explicit request's version.
++        let completing_manual = self
++            .manual_reload_pending
++            .is_some_and(|generation| result.generation >= generation);
++        let manual = result.source == ReloadSource::Manual || completing_manual;
++        if completing_manual {
++            self.manual_reload_pending = None;
++        }
++        match result.result {
++            Err(error) => {
++                let changed = self.reload_error != Some(error);
++                self.reload_error = Some(error);
++                if manual {
++                    self.status = format!("Reload failed: {error}");
++                }
++                changed || manual
++            }
++            Ok(launch) => {
++                let previous_error = self.reload_error.take();
++                let recovering = previous_error.is_some();
++                let resolving_status = previous_error
++                    .is_some_and(|error| self.status == format!("Reload failed: {error}"));
++                if !manual && !recovering && self.launch.as_ref() == &launch {
++                    return false;
++                }
++                let source =
++                    preserve_config_source(&self.launch, &launch, self.selected_config_source());
++                self.launch = Arc::new(launch);
++                self.set_config_source_selection(source);
++                self.merge();
++                if manual || resolving_status {
++                    self.status = "Launch configurations reloaded.".into();
++                }
++                true
++            }
++        }
++    }
++
+     fn merge(&mut self) {
+-        let config_source = self
+-            .visible_entries()
+-            .get(self.config_index)
+-            .map(|c| c.source_index)
+-            .or(self.availability_view.borrow().desired_source);
++        let config_source = self.selected_config_source();
+         let selected = self
+             .selected_device
+             .as_ref()
+@@ -1090,6 +1221,17 @@
+ 
+     fn diagnostics_lines(&self) -> Vec<String> {
+         let mut lines = Vec::new();
++        if let Some(error) = self.reload_error {
++            lines.push(format!("Configuration reload error: {error}"));
++            lines.push(
++                "Using the last good catalog. Correct the file; reload retries automatically."
++                    .into(),
++            );
++            lines.push(String::new());
++        }
++        if self.manual_reload_pending.is_some() {
++            lines.push("Reloading configurations. Wait, then choose Run explicitly.".into());
++        }
+         let entry = self.visible_entries().get(self.config_index).or_else(|| {
+             self.availability_view
+                 .borrow()
+@@ -1162,7 +1304,7 @@
+     }
+ 
+     fn tick(&mut self) -> Result<Update> {
+-        let mut changed = false;
++        let mut changed = self.advance_config_reload();
+         let mut output_received = false;
+         if let Some(selection) = &mut self.selection {
+             changed |= selection.tick(Instant::now());
+@@ -1647,17 +1789,7 @@
+                 self.diagnostics_offset = 0;
+             }
+             KeyCode::Char('r') if self.page == Page::Devices => self.discovery.refresh(),
+-            KeyCode::Char('r' | 'c') => {
+-                match LaunchFile::load(&self.launch.path, &self.launch.workspace) {
+-                    Ok(launch) => {
+-                        self.launch = Arc::new(launch);
+-                        self.set_config_selection(0);
+-                        self.merge();
+-                        self.status = "Launch configurations reloaded.".into();
+-                    }
+-                    Err(error) => self.status = format!("Reload failed: {error:#}"),
+-                }
+-            }
++            KeyCode::Char('r' | 'c') => self.request_config_reload(),
+             KeyCode::Char('l') if self.last_log.is_some() => self.page = Page::LastLog,
+             KeyCode::Char('f') if self.page == Page::Devices => {
+                 if let Some(device) = self
+@@ -2140,8 +2272,8 @@
+                 KeyCode::Char('r')
+             }
+             MouseAction::ReloadConfigs => {
+-                self.searching = false;
+-                KeyCode::Char('c')
++                self.request_config_reload();
++                return Ok(false);
+             }
+             MouseAction::LastLog => {
+                 if self.last_log.is_some() {
+@@ -2335,6 +2467,10 @@
+             top_focus: None,
+             toolbar_offset: 0,
+             launch: Arc::new(launch),
++            config_reloader: None,
++            reload_generation: 0,
++            manual_reload_pending: None,
++            reload_error: None,
+             availability_view: Default::default(),
+             tool,
+             discovery,
+@@ -2375,6 +2511,477 @@
+         app.merge();
+         app.settle_availability();
+         app
++    }
++
++    fn reload_test_app(raw: &str) -> App {
++        let mut app = app();
++        app.ownit = false;
++        app.launch =
++            Arc::new(LaunchFile::parse(raw, &app.launch.path, &app.launch.workspace).unwrap());
++        app.selected_device = Some(app.devices[0].clone());
++        app.page = Page::Configs;
++        app.merge();
++        app.settle_availability();
++        app
++    }
++
++    fn catalog_result(app: &App, raw: &str, generation: u64, source: ReloadSource) -> ReloadResult {
++        ReloadResult {
++            generation,
++            source,
++            result: LaunchFile::parse(raw, &app.launch.path, &app.launch.workspace)
++                .map_err(|_| ReloadError::InvalidConfiguration),
++        }
++    }
++
++    #[test]
++    fn reload_preserves_only_unambiguous_names_and_content_in_both_catalogs() {
++        let cases = [
++            (
++                r#"[{"name":"Alpha"},{"name":"Beta"}]"#,
++                1,
++                r#"[{"name":"Beta","args":["--verbose"]},{"name":"Alpha"}]"#,
++                Some(0),
++            ),
++            (
++                r#"[{"name":"Same","args":["a"]},{"name":"Same","args":["b"]}]"#,
++                1,
++                r#"[{"name":"Same","args":["b"]},{"name":"Same","args":["a"]}]"#,
++                Some(0),
++            ),
++            (
++                r#"[{"name":"Same","args":["a"]},{"name":"Same","args":["b"]}]"#,
++                1,
++                r#"[{"name":"Same","args":["a"]}]"#,
++                None,
++            ),
++            (
++                r#"[{"name":"Same"},{"name":"Same"}]"#,
++                1,
++                r#"[{"name":"Same"}]"#,
++                None,
++            ),
++            (
++                r#"[{"name":"Same"}]"#,
++                0,
++                r#"[{"name":"Same"},{"name":"Same"}]"#,
++                None,
++            ),
++            (r#"[{"name":"Gone"}]"#, 0, r#"[{"name":"Other"}]"#, None),
++        ];
++        for (old, selected, new, expected) in cases {
++            let mut app = reload_test_app(&format!(r#"{{"configurations":{old}}}"#));
++            app.set_config_source_selection(Some(selected));
++            let result = catalog_result(
++                &app,
++                &format!(r#"{{"configurations":{new}}}"#),
++                1,
++                ReloadSource::Automatic,
++            );
++            assert!(app.apply_config_reload(result));
++            app.settle_availability();
++            assert_eq!(app.selected_config_source(), expected, "{old} -> {new}");
++            app.merge();
++            assert_eq!(app.selected_config_source(), expected);
++            if expected.is_none() {
++                assert_eq!(app.config_index, usize::MAX);
++                app.start_batch(80, 24);
++                assert!(app.runs.is_empty());
++                assert_eq!(app.status, "Select a configuration first.");
++            }
++        }
++    }
++
++    #[test]
++    fn reload_captures_deferred_selection_and_preserves_explicitly_cleared_selection() {
++        let mut app =
++            reload_test_app(r#"{"configurations":[{"name":"First"},{"name":"Selected"}]}"#);
++        app.set_config_selection(1);
++        app.selected_device
++            .as_mut()
++            .unwrap()
++            .name
++            .push_str(" updated");
++        app.ensure_availability_context();
++        app.restore_deferred_config_selection();
++        assert_eq!(app.config_index, usize::MAX);
++        assert_eq!(app.selected_config_source(), Some(1));
++        let result = catalog_result(
++            &app,
++            r#"{"configurations":[{"name":"Selected"},{"name":"First"}]}"#,
++            1,
++            ReloadSource::Automatic,
++        );
++        app.apply_config_reload(result);
++        assert_eq!(app.selected_config_source(), Some(0));
++        app.settle_availability();
++        assert_eq!(app.visible_entries()[app.config_index].name, "Selected");
++        app.set_config_source_selection(None);
++        let result = catalog_result(
++            &app,
++            r#"{"configurations":[{"name":"Selected","args":["--verbose"]},{"name":"First"}]}"#,
++            2,
++            ReloadSource::Automatic,
++        );
++        app.apply_config_reload(result);
++        app.settle_availability();
++        app.merge();
++        assert_eq!(app.selected_config_source(), None);
++        assert_eq!(app.config_index, usize::MAX);
++    }
++
++    #[test]
++    fn reload_last_good_errors_stale_results_and_semantic_duplicate_recovery() {
++        let raw = r#"{"configurations":[{"name":"Stable"}]}"#;
++        let mut app = reload_test_app(raw);
++        app.status = "Unrelated status".into();
++        let original = app.launch.clone();
++        let availability_generation = app.availability_view.borrow().generation;
++        assert!(!app.apply_config_reload(catalog_result(&app, raw, 1, ReloadSource::Automatic)));
++        assert!(Arc::ptr_eq(&original, &app.launch));
++        assert_eq!(
++            app.availability_view.borrow().generation,
++            availability_generation
++        );
++        assert!(app.apply_config_reload(ReloadResult {
++            generation: 2,
++            source: ReloadSource::Automatic,
++            result: Err(ReloadError::Missing)
++        }));
++        assert_eq!(app.status, "Unrelated status");
++        assert!(Arc::ptr_eq(&original, &app.launch));
++        assert!(!app.apply_config_reload(ReloadResult {
++            generation: 3,
++            source: ReloadSource::Automatic,
++            result: Err(ReloadError::Missing)
++        }));
++        assert!(
++            app.diagnostics_lines()
++                .join("\n")
++                .contains("last good catalog")
++        );
++        app.reload_generation = 5;
++        app.manual_reload_pending = Some(5);
++        assert!(!app.apply_config_reload(catalog_result(
++            &app,
++            r#"{"configurations":[]}"#,
++            4,
++            ReloadSource::Manual
++        )));
++        assert_eq!(app.manual_reload_pending, Some(5));
++        assert_eq!(app.reload_error, Some(ReloadError::Missing));
++        // An automatic completion may coalesce an unread, older manual result.
++        assert!(app.apply_config_reload(catalog_result(&app, raw, 6, ReloadSource::Automatic)));
++        assert_eq!(app.manual_reload_pending, None);
++        assert_eq!(app.reload_error, None);
++        assert!(!Arc::ptr_eq(&original, &app.launch));
++        app.settle_availability();
++        assert!(app.availability_view.borrow().generation > availability_generation);
++        assert_eq!(app.selected_config_source(), Some(0));
++        assert_eq!(app.status, "Launch configurations reloaded.");
++        app.status = "Keep on automatic recovery".into();
++        app.apply_config_reload(ReloadResult {
++            generation: 7,
++            source: ReloadSource::Automatic,
++            result: Err(ReloadError::InvalidConfiguration),
++        });
++        let before_recovery = app.launch.clone();
++        assert!(app.apply_config_reload(catalog_result(&app, raw, 8, ReloadSource::Automatic)));
++        assert!(!Arc::ptr_eq(&before_recovery, &app.launch));
++        assert_eq!(app.reload_error, None);
++        assert_eq!(app.status, "Keep on automatic recovery");
++        app.apply_config_reload(ReloadResult {
++            generation: 9,
++            source: ReloadSource::Manual,
++            result: Err(ReloadError::Missing),
++        });
++        assert!(app.status.starts_with("Reload failed:"));
++        app.apply_config_reload(catalog_result(&app, raw, 10, ReloadSource::Automatic));
++        assert_eq!(app.status, "Launch configurations reloaded.");
++    }
++
++    #[test]
++    fn unchanged_manual_reload_refreshes_external_metadata_and_gates_run_until_completion() {
++        let fixture = tempfile::tempdir().unwrap();
++        let cwd = fixture.path().join("created-later");
++        let raw =
++            serde_json::json!({"configurations":[{"name":"Metadata", "cwd":cwd}]}).to_string();
++        let mut app = reload_test_app(&raw);
++        app.show_unavailable = true;
++        app.set_config_source_selection(Some(0));
++        assert!(!app.assessment(&app.launch.entries[0]).runnable());
++        std::fs::create_dir(&cwd).unwrap();
++        app.manual_reload_pending = Some(10);
++        app.reload_generation = 10;
++        app.start_batch(80, 24);
++        assert!(app.runs.is_empty());
++        assert!(app.status.contains("Reloading configurations"));
++        assert!(
++            !ui::available_actions(&app)
++                .iter()
++                .any(|item| item.label == "Run configuration")
++        );
++        app.apply_config_reload(catalog_result(&app, &raw, 10, ReloadSource::Manual));
++        app.settle_availability();
++        assert!(app.assessment(&app.launch.entries[0]).runnable());
++        assert!(app.runs.is_empty()); // Completion never queues an implicit Run.
++        assert_eq!(app.selected_config_source(), Some(0));
++        assert_eq!(app.status, "Launch configurations reloaded.");
++        app.manual_reload_pending = Some(11);
++        app.reload_generation = 11;
++        app.apply_config_reload(ReloadResult {
++            generation: 11,
++            source: ReloadSource::Manual,
++            result: Err(ReloadError::Missing),
++        });
++        assert_eq!(app.manual_reload_pending, None);
++        assert_eq!(app.reload_error, Some(ReloadError::Missing));
++    }
++
++    #[test]
++    fn reload_accepts_empty_and_rejected_catalogs_without_changing_page_or_modal_state() {
++        let mut app = reload_test_app(r#"{"configurations":[{"name":"Stable"}]}"#);
++        app.page = Page::LastLog;
++        app.search = Some("Sta".into());
++        app.searching = true;
++        app.actions_open = true;
++        app.help = true;
++        app.diagnostics_open = true;
++        app.diagnostics_offset = 3;
++        app.multi = true;
++        app.marked_devices = vec![app.selected_device.clone().unwrap()];
++        let marked_id = app.marked_devices[0].id.clone();
++        app.saved.favorites.push(app.marked_devices[0].saved());
++        app.status = "Keep this status".into();
++        for (generation, raw) in [
++            (1, r#"{"configurations":[]}"#),
++            (
++                2,
++                r#"{"configurations":[{"name":"Rejected","type":"SECRET"}]}"#,
++            ),
++        ] {
++            app.apply_config_reload(catalog_result(
++                &app,
++                raw,
++                generation,
++                ReloadSource::Automatic,
++            ));
++            app.settle_availability();
++            assert_eq!(app.page, Page::LastLog);
++            assert_eq!(app.search.as_deref(), Some("Sta"));
++            assert!(app.searching && app.actions_open && app.help && app.diagnostics_open);
++            assert_eq!(app.diagnostics_offset, 3);
++            assert_eq!(app.marked_devices[0].id, marked_id);
++            assert_eq!(app.saved.favorites.len(), 1);
++            assert_eq!(app.status, "Keep this status");
++            assert_eq!(app.selected_config_source(), None);
++            assert_eq!(app.launch.entries.len(), generation as usize - 1);
++        }
++        assert_eq!(app.launch.configurations.len(), 0);
++        assert_eq!(app.launch.entries[0].name, "Rejected");
++        assert!(!app.diagnostics_lines().join("\n").contains("SECRET"));
++    }
++
++    #[test]
++    fn manual_reload_keyboard_toolbar_and_menu_request_one_shared_async_policy() {
++        let fixture = tempfile::tempdir().unwrap();
++        let raw = r#"{"configurations":[{"name":"Ready"}]}"#;
++        let path = fixture.path().join("launch.json");
++        std::fs::write(&path, raw).unwrap();
++        for route in ["r", "c", "device-c", "toolbar", "menu"] {
++            let mut app = reload_test_app(raw);
++            app.launch = Arc::new(LaunchFile::parse(raw, &path, fixture.path()).unwrap());
++            app.merge();
++            app.settle_availability();
++            let area = ratatui::layout::Rect::new(0, 0, 80, 24);
++            match route {
++                "toolbar" => {
++                    app.activate(ui::MouseAction::ReloadConfigs, area).unwrap();
++                }
++                "menu" => {
++                    app.actions_open = true;
++                    app.action_index = ui::available_actions(&app)
++                        .iter()
++                        .position(|item| item.action == ui::MouseAction::ReloadConfigs)
++                        .unwrap();
++                    app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 80, 24)
++                        .unwrap();
++                }
++                key => {
++                    if key == "device-c" {
++                        app.page = Page::Devices;
++                    }
++                    app.key(
++                        KeyEvent::new(
++                            KeyCode::Char(if key == "r" { 'r' } else { 'c' }),
++                            KeyModifiers::NONE,
++                        ),
++                        80,
++                        24,
++                    )
++                    .unwrap();
++                }
++            }
++            assert!(app.manual_reload_pending.is_some(), "{route}");
++            assert_eq!(app.status, "Reloading launch configurations…");
++            if app.page == Page::Configs {
++                app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 80, 24)
++                    .unwrap();
++                assert!(app.runs.is_empty(), "{route}");
++            }
++            let deadline = Instant::now() + Duration::from_secs(3);
++            while app.manual_reload_pending.is_some() {
++                assert!(Instant::now() < deadline, "{route}");
++                app.advance_config_reload();
++                std::thread::sleep(Duration::from_millis(1));
++            }
++            app.settle_availability();
++            assert_eq!(app.reload_error, None, "{route}");
++            assert_eq!(app.status, "Launch configurations reloaded.");
++            assert!(app.runs.is_empty());
++        }
++    }
++
++    #[test]
++    #[cfg(unix)]
++    fn reload_keeps_owned_live_session_and_selection_snapshot_while_output_drains() {
++        let mut app = reload_test_app(r#"{"configurations":[{"name":"Live original"}]}"#);
++        let session = Session::start(
++            &flimru::tool::RunCommand {
++                capture_vm_service: false,
++                executable: "/bin/sh".into(),
++                args: vec![
++                    "-c".into(),
++                    "while :; do printf 'reload-heartbeat\\r\\n'; sleep 0.01; done".into(),
++                ],
++                cwd: app.launch.workspace.clone(),
++                env: Default::default(),
++            },
++            15,
++            77,
++        )
++        .unwrap();
++        app.runs.push(runs::Run::running(
++            app.selected_device.clone().unwrap(),
++            "Launch-time original".into(),
++            session,
++        ));
++        app.page = Page::Console;
++        app.active_config = "Launch-time original".into();
++        let identity = std::ptr::from_ref(app.runs[0].session.as_ref().unwrap());
++        let deadline = Instant::now() + Duration::from_secs(3);
++        while !app.runs[0]
++            .screen()
++            .unwrap()
++            .contents()
++            .contains("reload-heartbeat")
++        {
++            assert!(Instant::now() < deadline);
++            app.tick().unwrap();
++            std::thread::sleep(Duration::from_millis(1));
++        }
++        app.begin_text_selection(ratatui::layout::Rect::new(0, 0, 80, 24));
++        assert!(app.selection.is_some());
++        app.apply_config_reload(catalog_result(
++            &app,
++            r#"{"configurations":[{"name":"Future","deviceId":"new-pinned"}]}"#,
++            1,
++            ReloadSource::Automatic,
++        ));
++        assert_eq!(app.page, Page::Console);
++        assert_eq!(app.active_run, 0);
++        assert_eq!(app.active_config, "Launch-time original");
++        assert_eq!(app.runs[0].config, "Launch-time original");
++        assert_eq!(
++            std::ptr::from_ref(app.runs[0].session.as_ref().unwrap()),
++            identity
++        );
++        assert!(app.selection.is_some());
++        assert!(app.devices.iter().any(|device| device.id == "new-pinned"));
++        let revision = app.runs[0].session.as_ref().unwrap().visual_revision;
++        let deadline = Instant::now() + Duration::from_secs(3);
++        while app.runs[0].session.as_ref().unwrap().visual_revision == revision {
++            assert!(Instant::now() < deadline);
++            app.tick().unwrap();
++            std::thread::sleep(Duration::from_millis(1));
++        }
++        assert_eq!(app.running_count(), 1);
++    }
++
++    #[test]
++    #[cfg(unix)]
++    fn reload_large_catalog_apply_stays_within_the_interactive_budget() {
++        let raw = format!(
++            "{{\"configurations\":[{}]}}",
++            (0..100_000)
++                .map(|index| format!("{{\"name\":\"Config {index}\"}}"))
++                .collect::<Vec<_>>()
++                .join(",")
++        );
++        assert!(raw.len() < config_reload::MAX_LAUNCH_FILE_BYTES);
++        let mut app = reload_test_app(&raw);
++        let session = Session::start(
++            &flimru::tool::RunCommand {
++                capture_vm_service: false,
++                executable: "/bin/sh".into(),
++                args: vec![
++                    "-c".into(),
++                    "while :; do printf 'apply-heartbeat\\r\\n'; sleep 0.01; done".into(),
++                ],
++                cwd: app.launch.workspace.clone(),
++                env: Default::default(),
++            },
++            15,
++            77,
++        )
++        .unwrap();
++        app.runs.push(runs::Run::running(
++            app.selected_device.clone().unwrap(),
++            "Unchanged live child".into(),
++            session,
++        ));
++        app.set_config_source_selection(Some(99_999));
++        let duplicate = catalog_result(&app, &raw, 1, ReloadSource::Automatic);
++        let started = Instant::now();
++        assert!(!app.apply_config_reload(duplicate));
++        let duplicate_time = started.elapsed();
++        let reversed = format!(
++            "{{\"configurations\":[{}]}}",
++            (0..100_000)
++                .rev()
++                .map(|index| format!("{{\"name\":\"Config {index}\"}}"))
++                .collect::<Vec<_>>()
++                .join(",")
++        );
++        let mut changed =
++            LaunchFile::parse(&reversed, &app.launch.path, &app.launch.workspace).unwrap();
++        changed.configurations[0].args.push("--verbose".into());
++        let started = Instant::now();
++        assert!(app.apply_config_reload(ReloadResult {
++            generation: 2,
++            source: ReloadSource::Automatic,
++            result: Ok(changed)
++        }));
++        let changed_time = started.elapsed();
++        assert_eq!(app.selected_config_source(), Some(0));
++        let started = Instant::now();
++        app.tick().unwrap();
++        let drain_time = started.elapsed();
++        assert!(
++            app.runs[0]
++                .screen()
++                .unwrap()
++                .contents()
++                .contains("apply-heartbeat")
++        );
++        assert_eq!(app.runs[0].config, "Unchanged live child");
++        assert_eq!(app.running_count(), 1);
++        eprintln!(
++            "P2 100000-entry apply: semantic duplicate {duplicate_time:?}; reversed/changed catalog + identity/merge {changed_time:?}; following heartbeat-draining tick {drain_time:?}"
++        );
++        assert!(duplicate_time < Duration::from_millis(100));
++        assert!(changed_time < Duration::from_millis(100));
++        assert!(drain_time < Duration::from_millis(100));
+     }
+ 
+     #[test]
+--- p1-complete/src/ui.rs
++++ src/ui.rs
+@@ -94,10 +94,11 @@
+                 add("Back to devices", "Esc", MouseAction::Back);
+             }
+             if app.page != Page::Configs
+-                || app
+-                    .visible_entries()
+-                    .get(app.config_index)
+-                    .is_some_and(|entry| app.assessment(entry).runnable())
++                || (app.manual_reload_pending.is_none()
++                    && app
++                        .visible_entries()
++                        .get(app.config_index)
++                        .is_some_and(|entry| app.assessment(entry).runnable()))
+             {
+                 add(
+                     if app.page == Page::Devices {
+@@ -478,7 +479,9 @@
+             }
+         }
+         Page::Configs => {
+-            if app
++            if app.manual_reload_pending.is_some() {
++                add("Reloading…".into(), MouseAction::ExplainConfiguration);
++            } else if app
+                 .visible_entries()
+                 .get(app.config_index)
+                 .is_some_and(|entry| app.assessment(entry).runnable())
+@@ -1119,6 +1122,16 @@
+     frame.render_widget(
+         Paragraph::new(Line::from(vec![
+             Span::styled(" Flimru", Style::default().bold()),
++            Span::styled(
++                if app.reload_error.is_some() {
++                    " · Config error"
++                } else if app.manual_reload_pending.is_some() {
++                    " · Reloading"
++                } else {
++                    ""
++                },
++                Style::default().fg(Color::Yellow),
++            ),
+             Span::styled(format!(" / {project}"), Style::default().fg(ACCENT)),
+         ])),
+         header[0],
+@@ -1380,7 +1393,9 @@
+                 }
+             }
+             Page::Configs => {
+-                if app.config_index == usize::MAX {
++                if app.manual_reload_pending.is_some() {
++                    " Reloading configurations…\n Wait, then choose Run explicitly"
++                } else if app.config_index == usize::MAX {
+                     if app.availability_counts().2 > 0 {
+                         " Checking selected availability\n ↑↓ choose · u unavailable · / filter"
+                     } else {
+@@ -2700,6 +2715,215 @@
+         assert_eq!(snapshot.size(), original.size());
+         assert_eq!(snapshot.contents(), original.contents());
+     }
++    /// Actual cell renders, retained when FLIMRU_P2_EVIDENCE_DIR is set.
++    #[test]
++    fn configuration_reload_render_evidence_and_run_gating() {
++        use flimru::config::LaunchFile;
++        use flimru::config_reload::{ReloadError, ReloadResult, ReloadSource};
++        use std::sync::Arc;
++
++        fn escape(value: &str) -> String {
++            value
++                .replace('&', "&amp;")
++                .replace('<', "&lt;")
++                .replace('>', "&gt;")
++                .replace('"', "&quot;")
++        }
++        fn color(value: Color) -> String {
++            match value {
++                Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
++                Color::Yellow => "#ffff00".into(),
++                Color::White => "#ffffff".into(),
++                _ => "#e0e8f0".into(),
++            }
++        }
++        let fixture = tempfile::tempdir().unwrap();
++        let workspace = fixture.path().join("Example");
++        std::fs::create_dir(&workspace).unwrap();
++        for (width, height) in [(34, 12), (80, 24), (120, 40)] {
++            for state in [
++                "reload-error",
++                "reload-error-filter",
++                "reload-error-details",
++                "recovered",
++                "empty",
++                "no-selection",
++                "manual-pending",
++                "selected-pending",
++            ] {
++                let mut app = crate::tests::app();
++                app.ownit = false;
++                app.selected_device = Some(Device {
++                    id: "selected-target".into(),
++                    name: "Selected phone 界".into(),
++                    platform: "ios".into(),
++                    available: true,
++                    favorite: false,
++                });
++                let raw = r#"{"configurations":[{"name":"Stable 界 é"},{"name":"Other"}]}"#;
++                app.launch = Arc::new(
++                    LaunchFile::parse(raw, &workspace.join("launch.json"), &workspace).unwrap(),
++                );
++                app.page = Page::Configs;
++                app.status = "Unrelated session status remains available.".into();
++                app.settle_availability();
++                app.set_config_source_selection(Some(0));
++                let make_result = |app: &App, raw, generation| ReloadResult {
++                    generation,
++                    source: ReloadSource::Automatic,
++                    result: LaunchFile::parse(raw, &app.launch.path, &app.launch.workspace)
++                        .map_err(|_| ReloadError::InvalidConfiguration),
++                };
++                if state.starts_with("reload-error") || state == "recovered" {
++                    app.apply_config_reload(ReloadResult {
++                        generation: 1,
++                        source: ReloadSource::Automatic,
++                        result: Err(ReloadError::InvalidConfiguration),
++                    });
++                }
++                match state {
++                    "reload-error-filter" => {
++                        app.search = Some("Stable".into());
++                        app.searching = true;
++                    }
++                    "reload-error-details" => {
++                        app.diagnostics_open = true;
++                    }
++                    "recovered" => {
++                        app.apply_config_reload(make_result(&app, raw, 2));
++                        app.settle_availability();
++                    }
++                    "empty" => {
++                        app.apply_config_reload(make_result(&app, r#"{"configurations":[]}"#, 1));
++                        app.settle_availability();
++                    }
++                    "no-selection" => {
++                        app.apply_config_reload(make_result(
++                            &app,
++                            r#"{"configurations":[{"name":"Replacement 界 é"}]}"#,
++                            1,
++                        ));
++                        app.settle_availability();
++                    }
++                    "manual-pending" => {
++                        app.manual_reload_pending = Some(1);
++                        app.reload_generation = 1;
++                    }
++                    "selected-pending" => {
++                        app.set_config_selection(1);
++                        app.selected_device
++                            .as_mut()
++                            .unwrap()
++                            .name
++                            .push_str(" updated");
++                        app.ensure_availability_context();
++                        app.restore_deferred_config_selection();
++                        app.apply_config_reload(make_result(
++                            &app,
++                            r#"{"configurations":[{"name":"Other"},{"name":"Stable 界 é"}]}"#,
++                            1,
++                        ));
++                        let mut results = crate::tests::take_queued_previews(&app);
++                        results.retain(|(source, _)| *source == 1); // Keep selected source 0 pending.
++                        app.apply_availability_results(results);
++                    }
++                    _ => {}
++                }
++                let area = Rect::new(0, 0, width, height);
++                update_picker_viewport(&mut app, area);
++                update_top_viewport(&mut app, area);
++                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
++                terminal.draw(|frame| draw(frame, &app)).unwrap();
++                let buffer = terminal.backend().buffer();
++                let text = (0..height)
++                    .map(|y| row_text(buffer, area, y))
++                    .collect::<Vec<_>>()
++                    .join("\n");
++                assert!(!text.contains("SECRET"), "{state}: {text}");
++                if state.starts_with("reload-error") {
++                    assert!(text.contains("Config error"), "{state}: {text}");
++                }
++                if state == "reload-error-details" {
++                    assert!(text.contains("last good catalog"), "{text}");
++                }
++                if state == "recovered" {
++                    assert!(!text.contains("Config error"));
++                    assert_eq!(app.selected_config_source(), Some(0));
++                }
++                if state == "empty" {
++                    assert!(text.contains("Empty configurations array."), "{text}");
++                }
++                if state == "no-selection" || state == "selected-pending" {
++                    assert_eq!(app.config_index, usize::MAX);
++                    assert!(
++                        !available_actions(&app)
++                            .iter()
++                            .any(|item| item.label == "Run configuration")
++                    );
++                }
++                if state == "manual-pending" {
++                    assert!(text.contains("Reloading"), "{text}");
++                    assert!(
++                        !available_actions(&app)
++                            .iter()
++                            .any(|item| item.label == "Run configuration")
++                    );
++                    assert!(
++                        !toolbar_buttons(&app, true)
++                            .iter()
++                            .any(|item| item.label == "Run")
++                    );
++                }
++                if state == "no-selection" {
++                    assert_eq!(app.availability_counts(), (1, 0, 0));
++                    assert!(text.contains("Replacement"), "{text}");
++                }
++                if state == "selected-pending" {
++                    assert_eq!(app.availability_counts(), (1, 0, 1));
++                    assert_eq!(app.selected_config_source(), Some(0));
++                    assert!(text.contains("Checking selected availability"), "{text}");
++                }
++                if let Some(output) = std::env::var_os("FLIMRU_P2_EVIDENCE_DIR") {
++                    let output = std::path::PathBuf::from(output);
++                    std::fs::create_dir_all(&output).unwrap();
++                    let stem = format!("{state}-{width}x{height}");
++                    std::fs::write(output.join(format!("{stem}.txt")), format!("{text}\n"))
++                        .unwrap();
++                    let mut svg = format!(
++                        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="0 0 {} {}"><rect width="100%" height="100%" fill="#0e131b"/>"##,
++                        width * 10,
++                        height * 20,
++                        width * 10,
++                        height * 20
++                    );
++                    for y in 0..height {
++                        for x in 0..width {
++                            let cell = &buffer[(x, y)];
++                            if cell.bg != Color::Reset {
++                                svg.push_str(&format!(
++                                    r#"<rect x="{}" y="{}" width="10" height="20" fill="{}"/>"#,
++                                    x * 10,
++                                    y * 20,
++                                    color(cell.bg)
++                                ));
++                            }
++                        }
++                    }
++                    for y in 0..height {
++                        for x in 0..width {
++                            let cell = &buffer[(x, y)];
++                            if cell.symbol() != " " && !cell.symbol().is_empty() {
++                                svg.push_str(&format!(r#"<text x="{}" y="{}" fill="{}" font-family="Menlo,monospace" font-size="15"{}>{}</text>"#, x*10,y*20+16,color(cell.fg),if cell.modifier.contains(Modifier::BOLD) { " font-weight=\"bold\"" } else { "" },escape(cell.symbol())));
++                            }
++                        }
++                    }
++                    svg.push_str("</svg>");
++                    std::fs::write(output.join(format!("{stem}.svg")), svg).unwrap();
++                }
++            }
++        }
++    }
++
+     /// Set FLIMRU_P1_EVIDENCE_DIR to retain these actual TestBackend cells.
+     #[test]
+     fn configuration_diagnostics_render_evidence_and_minimum_size_interactions() {
+--- p1-complete/src/config_reload.rs
++++ src/config_reload.rs
+@@ -59,6 +59,13 @@
+     pub generation: u64,
+     pub source: ReloadSource,
+     pub result: Result<LaunchFile, ReloadError>,
++}
++
++/// Startup and `--check` use the same bounded reader and safe parser errors as
++/// background reloads. Call before entering the interactive UI.
++pub fn load_bounded(path: &Path, workspace: &Path) -> Result<LaunchFile, ReloadError> {
++    let observation = read_observation(path, || false).ok_or(ReloadError::ReadFailed)?;
++    parse_observation(observation, path, workspace)
+ }
+ 
+ /// Owns one worker. Dropping this handle wakes and joins it; regular-file reads
+--- p1-complete/tests/terminal_flow.rs
++++ tests/terminal_flow.rs
+@@ -35,6 +35,16 @@
+         state: &Path,
+         multi: bool,
+         refresh_interval: u64,
++    ) -> Self {
++        Self::start_configured(project, state, multi, refresh_interval, None)
++    }
++
++    fn start_configured(
++        project: &Path,
++        state: &Path,
++        multi: bool,
++        refresh_interval: u64,
++        launch: Option<&Path>,
+     ) -> Self {
+         let pair = native_pty_system()
+             .openpty(PtySize {
+@@ -66,6 +76,10 @@
+         ]);
+         if multi {
+             command.arg("--multi");
++        }
++        if let Some(launch) = launch {
++            command.arg("--launch");
++            command.arg(launch);
+         }
+         command.env("TERM", "xterm-256color");
+         // Reproduce launchers/shells which suppress color. Always-enabled colors must
+@@ -559,6 +573,10 @@
+     .unwrap();
+     tui.click_control("Reload");
+     tui.until("Button config");
++    // The former selected configuration was removed, so reload requires an
++    // explicit selection rather than silently activating the replacement row.
++    tui.send(b"\x1b[B");
++    tui.until_control("Run");
+     tui.send(b"\r");
+     tui.until("SESSION READY");
+     let log = std::fs::read_to_string(project.path().join("session.log")).unwrap();
+@@ -566,6 +584,174 @@
+     tui.send(b"r");
+     tui.until("shortcut:r");
+     tui.quit();
++}
++
++#[test]
++fn automatic_reload_watches_explicit_path_atomic_saves_and_recovers_last_good() {
++    let project = project();
++    let custom = project.path().join("custom-launch.json");
++    let catalog = |name| format!(r#"{{"configurations":[{{"name":"{name}"}}]}}"#);
++    std::fs::write(&custom, catalog("Custom initial")).unwrap();
++    let mut tui = Terminal::start_configured(
++        project.path(),
++        &project.path().join("state.json"),
++        false,
++        3600,
++        Some(Path::new("custom-launch.json")),
++    );
++    tui.until("Demo phone");
++    tui.send(b"\r");
++    tui.until("Custom initial");
++    tui.until_control("Run");
++    // Writes to the conventional path are unrelated to the explicitly selected file.
++    std::fs::write(
++        project.path().join(".vscode/launch.json"),
++        catalog("Wrong path"),
++    )
++    .unwrap();
++    let replacement = project.path().join("atomic-save.json");
++    std::fs::write(&replacement, catalog("Atomic replacement 界")).unwrap();
++    std::fs::rename(&replacement, &custom).unwrap();
++    tui.until("Atomic replacement 界");
++    assert!(!tui.screen.screen().contents().contains("Wrong path"));
++    tui.until("Select a configuration to run");
++    tui.send(b"\r");
++    tui.until("Select a configuration first.");
++    assert!(!project.path().join("session.log").exists());
++    std::fs::write(&custom, "{PRIVATE_SECRET_INVALID_JSON").unwrap();
++    tui.until("Config error");
++    assert!(
++        tui.screen
++            .screen()
++            .contents()
++            .contains("Atomic replacement 界")
++    );
++    tui.send(b"i");
++    tui.until("last good catalog");
++    assert!(!tui.screen.screen().contents().contains("PRIVATE_SECRET"));
++    tui.send(b"\x1b");
++    // Delete/recreate with identical accepted content still clears the error.
++    std::fs::remove_file(&custom).unwrap();
++    tui.send(b"c");
++    tui.until("not found");
++    std::fs::write(&custom, catalog("Atomic replacement 界")).unwrap();
++    let deadline = Instant::now() + Duration::from_secs(6);
++    loop {
++        tui.read();
++        if !tui.screen.screen().contents().contains("Config error") {
++            break;
++        }
++        assert!(
++            Instant::now() < deadline,
++            "recovery left the persistent error marker"
++        );
++        thread::sleep(Duration::from_millis(15));
++    }
++    tui.send(b"\x1b[B");
++    tui.until_control("Run");
++    tui.send(b"\r");
++    tui.until("SESSION READY");
++    let pid_before = std::fs::read_to_string(project.path().join("child.pid")).unwrap();
++    let log_before = std::fs::read_to_string(project.path().join("session.log")).unwrap();
++    std::fs::write(&custom, catalog("Future launches only")).unwrap();
++    // A failed update is visible in the console while its existing child stays alive.
++    std::fs::write(&custom, "{broken").unwrap();
++    tui.until("Config error");
++    tui.send(b"r");
++    tui.until("shortcut:r");
++    assert_eq!(
++        std::fs::read_to_string(project.path().join("child.pid")).unwrap(),
++        pid_before
++    );
++    let log = std::fs::read_to_string(project.path().join("session.log")).unwrap();
++    assert!(log.starts_with(&log_before));
++    assert_eq!(log.matches("--device-id\n").count(), 1);
++    std::fs::write(&custom, catalog("Future launches only")).unwrap();
++    tui.send(b"\x04"); // Ctrl+d: the running session survives browsing the new catalog.
++    tui.until("Demo phone");
++    tui.send(b"\r");
++    tui.until("Future launches only");
++    assert_eq!(
++        std::fs::read_to_string(project.path().join("child.pid")).unwrap(),
++        pid_before
++    );
++    tui.quit();
++}
++
++#[test]
++fn manual_reload_enter_burst_never_launches_old_arguments_and_menu_uses_same_path() {
++    let project = project();
++    let path = project.path().join(".vscode/launch.json");
++    let mut tui = Terminal::start(project.path(), &project.path().join("state.json"));
++    tui.until("Demo phone");
++    tui.send(b"\r");
++    tui.until_control("Run");
++    std::fs::write(
++        &path,
++        r#"{"configurations":[{"name":"Demo debug","args":["--flavor","fresh-after-manual"]}]}"#,
++    )
++    .unwrap();
++    tui.send(b"r\r");
++    tui.until("Launch configurations reloaded.");
++    tui.until_control("Run");
++    assert!(
++        !project.path().join("session.log").exists(),
++        "r+Enter launched a child before an explicit post-reload Run"
++    );
++    // Menu reload also completes immediately without the automatic debounce.
++    std::fs::write(
++        &path,
++        r#"{"configurations":[{"name":"Demo debug","args":["--flavor","menu-version"]}]}"#,
++    )
++    .unwrap();
++    tui.menu_click("Reload configs");
++    tui.until("Launch configurations reloaded.");
++    tui.until_control("Run");
++    assert!(!project.path().join("session.log").exists());
++    tui.send(b"\r");
++    tui.until("SESSION READY");
++    let log = std::fs::read_to_string(project.path().join("session.log")).unwrap();
++    assert!(log.contains("--flavor\nmenu-version\n"), "{log}");
++    assert!(
++        !log.contains("GREETING=hello world"),
++        "old launch arguments escaped the manual guard: {log}"
++    );
++    tui.quit();
++}
++
++#[test]
++fn initial_check_and_reload_share_the_bounded_safe_loader() {
++    let project = project();
++    let path = project.path().join("custom-launch.json");
++    let check = || {
++        std::process::Command::new(env!("CARGO_BIN_EXE_flimru"))
++            .arg(project.path())
++            .args(["--check", "--launch", "custom-launch.json", "--flutter"])
++            .arg(project.path().join("fake-flutter"))
++            .output()
++            .unwrap()
++    };
++    std::fs::write(
++        &path,
++        vec![b' '; flimru::config_reload::MAX_LAUNCH_FILE_BYTES + 1],
++    )
++    .unwrap();
++    let oversized = check();
++    assert!(!oversized.status.success());
++    assert!(String::from_utf8_lossy(&oversized.stderr).contains("4 MiB input limit"));
++    std::fs::write(&path, "{PRIVATE_SECRET_FROM_INVALID_SOURCE").unwrap();
++    let invalid = check();
++    assert!(!invalid.status.success());
++    let message = String::from_utf8_lossy(&invalid.stderr);
++    assert!(message.contains("invalid JSONC"));
++    assert!(!message.contains("PRIVATE_SECRET"));
++    std::fs::write(&path, r#"{"configurations":[],"compounds":[{}]}"#).unwrap();
++    let empty = check();
++    assert!(empty.status.success());
++    let output = String::from_utf8_lossy(&empty.stdout);
++    assert!(output.contains("0 launch configurations"));
++    assert!(output.contains("Compound launch configurations"));
++    assert!(!project.path().join("session.log").exists());
+ }
+ 
+ #[test]

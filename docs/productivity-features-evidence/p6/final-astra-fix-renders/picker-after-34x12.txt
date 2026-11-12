@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+  Next      ›│ Menu   Help   Quit 
+ 1○ android-devi×  2○ android-dev×
+┌ Devices (3) ───────────────────┐
+│›  ☆ android-device             │
+│     custom · configured · try n│
+│                                │
+└────────────────────────────────┘
+                        [Filter /]
+                                  
+ ↑↓ select · Enter next           
+ d diagnostics · Tab actions      

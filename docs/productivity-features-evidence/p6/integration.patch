@@ -1,0 +1,458 @@
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -2146,19 +2146,27 @@
+         if matches!(key.code, KeyCode::F(_)) {
+             return Ok(false);
+         }
+-        if self.batch_report.is_some() && !self.quit_confirmation {
+-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+-                self.quit_confirmation = true;
+-            } else {
+-                self.batch_report_event(&Event::Key(key));
++        // Global quit owns input before every modal and text selection.
++        if self.quit_confirmation {
++            match key.code {
++                KeyCode::Char('y' | 'Y') => return Ok(true),
++                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('n' | 'N') => {
++                    self.quit_confirmation = false
++                }
++                _ => {}
+             }
+             return Ok(false);
+         }
+-        if self.export_dialog_open() && !self.quit_confirmation {
+-            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+-                self.quit_confirmation = true;
+-                return Ok(false);
+-            }
++        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
++            self.actions_open = false;
++            self.quit_confirmation = true;
++            return Ok(false);
++        }
++        if self.batch_report.is_some() {
++            self.batch_report_event(&Event::Key(key));
++            return Ok(false);
++        }
++        if self.export_dialog_open() {
+             self.export_event(&Event::Key(key));
+             return Ok(false);
+         }
+@@ -2212,21 +2220,6 @@
+             }
+         }
+         if !self.console_ui_owned() && self.selection.take().is_some() && key.code == KeyCode::Esc {
+-            return Ok(false);
+-        }
+-        if self.quit_confirmation {
+-            match key.code {
+-                KeyCode::Char('y' | 'Y') => return Ok(true),
+-                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('n' | 'N') => {
+-                    self.quit_confirmation = false
+-                }
+-                _ => {}
+-            }
+-            return Ok(false);
+-        }
+-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+-            self.actions_open = false;
+-            self.quit_confirmation = true;
+             return Ok(false);
+         }
+         let shortcut = Shortcut::from_key(key);
+@@ -2736,7 +2729,15 @@
+     }
+ 
+     fn mouse(&mut self, event: MouseEvent, area: ratatui::layout::Rect) -> Result<bool> {
+-        if self.batch_report.is_some() && !self.quit_confirmation {
++        if self.quit_confirmation {
++            if let Some(action @ (ui::MouseAction::ConfirmQuit | ui::MouseAction::CancelQuit)) =
++                ui::mouse_action(self, area, event)
++            {
++                return self.activate(action, area);
++            }
++            return Ok(false);
++        }
++        if self.batch_report.is_some() {
+             if ui::mouse_action(self, area, event) == Some(ui::MouseAction::Quit)
+                 && self
+                     .batch_report
+@@ -2749,7 +2750,7 @@
+             self.batch_report_event(&Event::Mouse(event));
+             return Ok(false);
+         }
+-        if self.export_dialog_open() && !self.quit_confirmation {
++        if self.export_dialog_open() {
+             // Quit is application-wide, but an obscured toolbar cell still
+             // belongs to the export modal. All other background actions stay
+             // consumed, including ordinary toolbar controls.
+@@ -2771,6 +2772,16 @@
+             && !self.help
+             && !self.quit_confirmation
+         {
++            // Details own the body, while the supported-size header Quit
++            // remains visible. Other covered/background controls stay inert.
++            if area.width >= 34
++                && area.height >= 12
++                && !ui::review_area(area).contains((event.column, event.row).into())
++                && ui::mouse_action(self, area, event) == Some(ui::MouseAction::Quit)
++            {
++                self.top_focus = None;
++                return self.activate(ui::MouseAction::Quit, area);
++            }
+             self.review_event(&Event::Mouse(event));
+             return Ok(false);
+         }
+@@ -5799,3 +5810,7 @@
+ #[cfg(test)]
+ #[path = "../tests/support/batch_commands_app.rs"]
+ mod batch_commands_app_tests;
++
++#[cfg(test)]
++#[path = "../tests/support/productivity_workflow_app.rs"]
++mod productivity_workflow_app_tests;
+--- a/tests/terminal_flow.rs
++++ b/tests/terminal_flow.rs
+@@ -2268,3 +2268,6 @@
+     tui.until("Snapshot");
+     tui.quit();
+ }
++
++#[path = "support/productivity_workflow_pty.rs"]
++mod productivity_workflow_pty;
+--- a/tests/support/productivity_workflow_pty.rs
++++ b/tests/support/productivity_workflow_pty.rs
+@@ -200,7 +200,7 @@
+     assert_eq!(key_count(&log, "beta", 'r'), 1);
+     assert_eq!(key_count(&log, "alpha", 'R'), 1);
+     assert_eq!(key_count(&log, "beta", 'R'), 1);
+-    tui.send(b"\x1b");
++    // Quit is global even while the configuration explanation owns input.
+     tui.quit();
+     assert_multi_children_reaped(project.path());
+ }
+--- a/tests/support/productivity_workflow_app.rs
++++ b/tests/support/productivity_workflow_app.rs
+@@ -0,0 +1,322 @@
++#![allow(clippy::unwrap_used, clippy::panic)]
++use super::*;
++use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, layout::Rect, style::Color};
++
++fn fixture(area: Rect) -> App {
++    let mut app = crate::tests::app();
++    app.ownit = false;
++    app.page = Page::Configs;
++    app.show_unavailable = true;
++    app.selected_device = Some(app.devices[0].clone());
++    let mut blocked =
++        serde_json::json!({"name":"Blocked diagnostic source", "preLaunchTask":"build"});
++    for index in 0..40 {
++        blocked[format!("unknown{index:02}")] = true.into();
++    }
++    app.launch = Arc::new(
++        LaunchFile::parse(
++            &serde_json::json!({"configurations":[{"name":"Ready"},blocked]}).to_string(),
++            &app.launch.path,
++            &app.launch.workspace,
++        )
++        .unwrap(),
++    );
++    app.settle_availability();
++    app.set_config_source_selection(Some(1));
++    app.diagnostics_open = true;
++    for _ in 0..3 {
++        assert!(
++            !app.key(
++                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
++                area.width,
++                area.height
++            )
++            .unwrap()
++        );
++    }
++    assert!(app.diagnostics_offset > 0);
++    app
++}
++
++fn render(app: &mut App, area: Rect) -> Buffer {
++    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
++    terminal.draw(|frame| app.draw(frame)).unwrap();
++    terminal.backend().buffer().clone()
++}
++
++fn text(buffer: &Buffer) -> String {
++    (0..buffer.area.height)
++        .map(|row| {
++            (0..buffer.area.width)
++                .map(|col| buffer[(col, row)].symbol())
++                .collect::<String>()
++        })
++        .collect::<Vec<_>>()
++        .join("\n")
++}
++
++fn click(column: u16, row: u16) -> MouseEvent {
++    MouseEvent {
++        kind: MouseEventKind::Down(MouseButton::Left),
++        column,
++        row,
++        modifiers: KeyModifiers::NONE,
++    }
++}
++
++fn control(app: &App, area: Rect, action: ui::MouseAction) -> MouseEvent {
++    (0..area.height)
++        .flat_map(|row| (0..area.width).map(move |col| click(col, row)))
++        .find(|event| ui::mouse_action(app, area, *event) == Some(action))
++        .unwrap()
++}
++
++fn open_quit(app: &mut App, area: Rect) {
++    assert!(
++        !app.key(
++            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
++            area.width,
++            area.height
++        )
++        .unwrap()
++    );
++    assert!(app.quit_confirmation && app.diagnostics_open);
++}
++
++#[test]
++fn global_quit_keys_precede_diagnostics_and_restore_its_scroll_and_source() {
++    for (width, height) in [(80, 24), (34, 12), (30, 10)] {
++        let area = Rect::new(0, 0, width, height);
++        let mut app = fixture(area);
++        let initial = render(&mut app, area);
++        let offset = app.diagnostics_offset;
++        let source = app.selected_config_source();
++        for cancel in [
++            KeyCode::Enter,
++            KeyCode::Esc,
++            KeyCode::Char('n'),
++            KeyCode::Char('N'),
++        ] {
++            open_quit(&mut app, area);
++            let quit = render(&mut app, area);
++            assert!(text(&quit).contains("Quit Flimru?"));
++            for key in [KeyCode::F(1), KeyCode::Down, KeyCode::Char('i')] {
++                assert!(
++                    !app.key(KeyEvent::new(key, KeyModifiers::NONE), width, height)
++                        .unwrap()
++                );
++                assert!(app.quit_confirmation && app.diagnostics_open);
++                assert_eq!(app.diagnostics_offset, offset);
++            }
++            assert!(
++                !app.key(KeyEvent::new(cancel, KeyModifiers::NONE), width, height)
++                    .unwrap()
++            );
++            assert!(!app.quit_confirmation && app.diagnostics_open);
++            assert_eq!(app.selected_config_source(), source);
++            assert_eq!(app.diagnostics_offset, offset);
++            assert_eq!(render(&mut app, area), initial);
++        }
++        for confirm in ['y', 'Y'] {
++            open_quit(&mut app, area);
++            assert!(
++                app.key(
++                    KeyEvent::new(KeyCode::Char(confirm), KeyModifiers::NONE),
++                    width,
++                    height
++                )
++                .unwrap()
++            );
++            app.quit_confirmation = false;
++        }
++        assert!(
++            !app.key(
++                KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE),
++                width,
++                height
++            )
++            .unwrap()
++        );
++        assert!(app.diagnostics_open);
++        assert_eq!(app.diagnostics_offset, offset);
++    }
++}
++
++#[test]
++fn global_quit_pointer_precedes_diagnostics_without_activating_hidden_parent_controls() {
++    for (width, height) in [(80, 24), (34, 12), (30, 10)] {
++        let area = Rect::new(0, 0, width, height);
++        let mut app = fixture(area);
++        app.diagnostics_open = false;
++        let parent_quit = control(&app, area, ui::MouseAction::Quit);
++        app.diagnostics_open = true;
++        assert!(!app.mouse(parent_quit, area).unwrap());
++        assert!(!app.quit_confirmation, "hidden parent Quit activated");
++        app.diagnostics_open = true;
++        let initial = render(&mut app, area);
++        let offset = app.diagnostics_offset;
++        let source = app.selected_config_source();
++        open_quit(&mut app, area);
++        let quit = render(&mut app, area);
++        if let Some(directory) = std::env::var_os("FLIMRU_P6_APP_EVIDENCE_DIR") {
++            write_evidence(
++                std::path::Path::new(&directory),
++                &format!("diagnostics-global-quit-{width}x{height}"),
++                &quit,
++            );
++        }
++        for action in [ui::MouseAction::ConfirmQuit, ui::MouseAction::CancelQuit] {
++            let event = control(&app, area, action);
++            assert_ne!(quit[(event.column, event.row)].symbol(), " ");
++        }
++        assert!(!app.mouse(click(0, 0), area).unwrap());
++        assert!(
++            !app.mouse(
++                MouseEvent {
++                    kind: MouseEventKind::ScrollDown,
++                    ..click(2, 2)
++                },
++                area
++            )
++            .unwrap()
++        );
++        assert!(app.quit_confirmation && app.diagnostics_open);
++        assert_eq!(app.diagnostics_offset, offset);
++        let cancel = control(&app, area, ui::MouseAction::CancelQuit);
++        assert!(!app.mouse(cancel, area).unwrap());
++        assert!(!app.quit_confirmation && app.diagnostics_open);
++        assert_eq!(app.selected_config_source(), source);
++        assert_eq!(app.diagnostics_offset, offset);
++        assert_eq!(render(&mut app, area), initial);
++        open_quit(&mut app, area);
++        let confirm = control(&app, area, ui::MouseAction::ConfirmQuit);
++        assert!(app.mouse(confirm, area).unwrap());
++    }
++}
++
++#[test]
++fn global_quit_confirmation_precedes_keyboard_selection_without_copying_or_dropping_it() {
++    let area = Rect::new(0, 0, 80, 24);
++    let mut app = crate::tests::app();
++    let mut parser = vt100::Parser::new(2, 12, 0);
++    parser.process(b"selection");
++    let mut selection =
++        selection::Selection::capture(parser.screen(), 0, Rect::new(0, 0, 12, 2), (0, 0).into())
++            .unwrap();
++    selection.keyboard = true;
++    selection.move_end(4, 0, true);
++    let original = selection.selected_text();
++    app.selection = Some(selection);
++    for cancel in [KeyCode::Esc, KeyCode::Enter] {
++        assert!(
++            !app.key(
++                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
++                area.width,
++                area.height
++            )
++            .unwrap()
++        );
++        assert!(app.quit_confirmation);
++        assert!(app.selection.is_some());
++        assert!(
++            !app.key(
++                KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT),
++                area.width,
++                area.height
++            )
++            .unwrap()
++        );
++        assert_eq!(app.selection.as_mut().unwrap().selected_text(), original);
++        assert!(
++            !app.key(
++                KeyEvent::new(cancel, KeyModifiers::NONE),
++                area.width,
++                area.height
++            )
++            .unwrap()
++        );
++        assert!(!app.quit_confirmation);
++        assert_eq!(app.selection.as_mut().unwrap().selected_text(), original);
++    }
++}
++
++#[test]
++fn visible_quit_toolbar_remains_clickable_from_operation_details_after_resume() {
++    for (width, height) in [(80, 24), (120, 40)] {
++        let area = Rect::new(0, 0, width, height);
++        let mut app = crate::tests::app();
++        app.page = Page::Console;
++        app.runs.push(runs::Run::failed(
++            app.devices[0].clone(),
++            "Original console".into(),
++            "ended".into(),
++            height,
++            width,
++        ));
++        app.activate(ui::MouseAction::SearchConsole, area).unwrap();
++        assert!(app.reviewing());
++        app.activate(ui::MouseAction::ResumeLive, area).unwrap();
++        assert!(!app.reviewing());
++        app.report_operation("Hot reload outcome details".into());
++        app.activate(ui::MouseAction::OperationDetails, area)
++            .unwrap();
++        assert!(app.showing_operation_details());
++        let initial = render(&mut app, area);
++        let actions = control(&app, area, ui::MouseAction::Actions);
++        assert!(!app.mouse(actions, area).unwrap());
++        assert!(!app.actions_open && app.showing_operation_details());
++        let quit = control(&app, area, ui::MouseAction::Quit);
++        assert!(!ui::review_area(area).contains((quit.column, quit.row).into()));
++        assert!(text(&initial).contains("Quit"));
++        assert!(!app.mouse(quit, area).unwrap());
++        assert!(
++            app.quit_confirmation,
++            "visible Quit was consumed by operation details"
++        );
++        assert!(app.showing_operation_details());
++        render(&mut app, area);
++        let cancel = control(&app, area, ui::MouseAction::CancelQuit);
++        assert!(!app.mouse(cancel, area).unwrap());
++        assert!(!app.quit_confirmation && app.showing_operation_details());
++        assert_eq!(render(&mut app, area), initial);
++    }
++}
++
++fn write_evidence(directory: &std::path::Path, stem: &str, buffer: &Buffer) {
++    std::fs::create_dir_all(directory).unwrap();
++    std::fs::write(directory.join(format!("{stem}.txt")), text(buffer) + "\n").unwrap();
++    let color = |value: Color| match value {
++        Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
++        Color::Yellow => "#ffff00".into(),
++        _ => "#dce3ed".into(),
++    };
++    let escape = |value: &str| {
++        value
++            .replace('&', "&amp;")
++            .replace('<', "&lt;")
++            .replace('>', "&gt;")
++    };
++    let mut svg = format!(
++        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}"><rect width="100%" height="100%" fill="#0e131b"/>"##,
++        buffer.area.width * 10,
++        buffer.area.height * 20
++    );
++    for row in 0..buffer.area.height {
++        for col in 0..buffer.area.width {
++            let cell = &buffer[(col, row)];
++            if cell.bg != Color::Reset {
++                svg.push_str(&format!(
++                    r#"<rect x="{}" y="{}" width="10" height="20" fill="{}"/>"#,
++                    col * 10,
++                    row * 20,
++                    color(cell.bg)
++                ));
++            }
++            if cell.symbol() != " " && !cell.symbol().is_empty() {
++                svg.push_str(&format!(r#"<text x="{}" y="{}" fill="{}" font-family="Menlo,monospace" font-size="15">{}</text>"#,col*10,row*20+16,color(cell.fg),escape(cell.symbol())));
++            }
++        }
++    }
++    svg.push_str("</svg>");
++    std::fs::write(directory.join(format!("{stem}.svg")), svg).unwrap();
++}

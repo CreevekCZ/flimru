@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+ ┌ Actions · Ctrl+p / Esc close ┐ 
+ │› Add session         Ctrl+n █│×
+┌│  Device picker       Ctrl+d █│┐
+││  Close ended sessio  Ctrl+w ║││
+││  Back to devices            ║││
+││  Edit console query  Ctrl+s ║││
+││  Next console match       n ║││
+││  Previous console match   N ║││
+││↑↓ / wheel · Enter / click    ││
+│└──────────────────────────────┘│
+└ i source ──────────────────────┘

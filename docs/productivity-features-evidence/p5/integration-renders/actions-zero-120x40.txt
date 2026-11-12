@@ -1,0 +1,40 @@
+ Flimru / T                                                                                                    3 devices
+  Close   Add session                                                                           │ Actions   Help   Quit 
+ 1○ android-device · Frozen original   ×  2○ android-device · Frozen original   ×                                       
+┌ Frozen original · android-device · ended (failed: ended) ────────────────────────────────────────────────────────────┐
+│ERROR: needle 077 界 é                                                                                                ││
+│ERROR: needle 078 界 é                                                                                                ││
+│ERROR: needle 079 界 é                                                                                                ││
+│ERROR: needle 080 界 é                                                                                                ││
+│ERROR: needle 081 界 é                                                                                                ││
+│ERROR: needle 082 界 é                                                                                                ││
+│ERROR: needle 083 界 é     ┌ Actions · Ctrl+p / Esc close ──────────────────────────────────┐                         ││
+│ERROR: needle 084 界 é     │  Add session                                           Ctrl+n  │                         ││
+│ERROR: needle 085 界 é     │  Device picker                                         Ctrl+d  │                         ││
+│ERROR: needle 086 界 é     │  Close ended session                                   Ctrl+w  │                         ││
+│ERROR: needle 087 界 é     │  Oldest output                                           Home  │                         ││
+│ERROR: needle 088 界 é     │  Follow output                                            End  │                         ││
+│ERROR: needle 089 界 é     │  Back to devices                                      q / Esc  │                         ││
+│ERROR: needle 090 界 é     │  Export retained console log                                   │                         ││
+│ERROR: needle 091 界 é     │  Search console                                        Ctrl+s  │                         ││
+│ERROR: needle 092 界 é     │  Select text                                           Ctrl+e  │                         ││
+│ERROR: needle 093 界 é     │  Reload all eligible (0)                                       │                         ││
+│ERROR: needle 094 界 é     │› Restart all eligible (0)                                      │                         ││
+│ERROR: needle 095 界 é     │  Previous console                                      Ctrl+b  │                         ││
+│ERROR: needle 096 界 é     │  Next console                                          Ctrl+f  │                         ││
+│ERROR: needle 097 界 é     │  Console 1: android-device · Frozen original (ended)           │                         ││
+│ERROR: needle 098 界 é     │  Console 2: android-device · Frozen original (ended)           │                         ││
+│ERROR: needle 099 界 é     │  Launcher help                                                 │                         ││
+│                          │  Quit launcher                                         Ctrl+q  │                         ││
+│                          │Hot restart · input requests                                    │                         █│
+│                          └────────────────────────────────────────────────────────────────┘                         █│
+│                                                                                                                     █│
+│                                                                                                                     █│
+│                                                                                                                     █│
+│                                                                                                                     █│
+│                                                                                                                     █│
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+  Device discovery failed: Could not start Flutter device discovery: No such file or directory (os error 2). Press r to 
+retry.                                                                                                                  
+ Ctrl+w / × close ended tab                                                                                             
+ Ctrl+g actions · Esc devices                                                                                           

@@ -1,0 +1,12 @@
+ Flimru / Example        3 devices
+ ┌ Diagnostics ─────────────────┐ 
+ │Select a configuration to see │ 
+┌│details.                      │┐
+││                              ││
+││Catalog: 0 ready / 2 blocked /││
+││0 checking. Select an entry to││
+└│inspect its reasons and       │┘
+ │warnings.                     │]
+ │↑↓ scroll · Esc close         │ 
+ └──────────────────────────────┘ 
+ ↑↓ choose · u unavailable · / fil

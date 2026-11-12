@@ -1,0 +1,12 @@
+ Flimru / T              3 devices
+ ┌ Actions · Ctrl+p / Esc close ┐ 
+ │  Reload all eligible (0)    ║│×
+┌│› Restart all eligible (0)   ║│┐
+││  Previous console    Ctrl+b ║││
+││  Next console        Ctrl+f █││
+││  Console 1: android-devic   █││
+└│  Console 2: android-devic   ║│┘
+ │  Launcher help              ║│ 
+n│Hot restart · input requests  │ 
+ └──────────────────────────────┘ 
+ Ctrl+g actions · Esc devices     

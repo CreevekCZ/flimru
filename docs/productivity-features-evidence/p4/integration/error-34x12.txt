@@ -1,0 +1,12 @@
+ ┌ Export retained console log ─┐s
+ │ Source: android-device · fr… │ 
+ │ Full snapshot, including     │×
+ │ query/filter-hidden lines.   │ 
+ │ Destination (no overwrite)   │ 
+ │ ‹-frozen-config-53318-1.txt  │ 
+ │ Error: Destination exists.   │ 
+ │ Choose another filename;     │ 
+ │ [ Export ]  [ Cancel ]       │ 
+ │ Enter Export; Esc Cancel     │ 
+ │ ←→ Home End edit · Tab focus │ 
+ └──────────────────────────────┘ 

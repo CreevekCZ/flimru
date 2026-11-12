@@ -1,0 +1,24 @@
+ Flimru / T                                                            3 devices
+  Close   Add session                                   │ Actions   Help   Quit 
+ 1○ Physical Pixel 界  long device label×                                        
+┌ Frozen source details ───────────────────────────────────────────────────────┐
+│Frozen source ID: 26                                                          │
+│Shortened: label 96; fields 128.                                              │
+│… marks omitted characters.                                                   │
+│Label: Physical Pixel 界  long device label long device label long device label│
+│ long device label long d…                                                    │
+│Device: Physical Pixel 界  long device label long device label long device labe│
+│l long device label long device label long device label lo…                   │
+│Configuration: Development 界  configuration label configuration label configur│
+│ation label configuration label configuration label configuration…            │
+│Outcome: exited successfully                                                  │
+│Captured: Unix UTC 1793997445 s                                               │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│↑↓ PgUp/PgDn · Esc back                                                       │
+└──────────────────────────────────────────────────────────────────────────────┘

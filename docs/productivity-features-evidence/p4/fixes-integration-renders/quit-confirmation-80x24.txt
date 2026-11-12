@@ -1,0 +1,24 @@
+ Flimru / .tmpJ7lw78                                                   3 devices
+  Close   Add session                                   │ Actions   Help   Quit 
+ 1○ android-device · frozen config     ×                                        
+                                                                                
+                                                                                
+                                                                                
+ ┌ Export retained console log ───────────────────────────────────────────────┐ 
+ │ Source: android-device · frozen config                                     │ 
+ │ Full snaps┌ Quit Flimru? ──────────────────────────────────────┐           │ 
+ │ query/filt│ Close the launcher?                                │           │ 
+ │ Destinatio│                                                    │           │ 
+ │ ‹8/flimru-│                                                    │173-9.txt  │ 
+ │ Ready · 13│                                                    │           │ 
+ │ May contai│               [ Quit ]   [ Cancel ]                │           │ 
+ │ [ Export ]│ y quit · Enter/Esc cancel                          │           │ 
+ │ Enter Expo└────────────────────────────────────────────────────┘           │ 
+ │ ←→ Home End edit · Tab focus                                               │ 
+ └────────────────────────────────────────────────────────────────────────────┘ 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                

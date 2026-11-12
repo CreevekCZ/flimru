@@ -1,0 +1,12 @@
+┌ Frozen source details ─────────┐
+│guration segment long configurat│
+│ion seg…                        │
+│Device: Physical Pixel 界  é · de│
+│velopment device identity suffix│
+│Configuration: Development profi│
+│le 界  · long configuration ident│
+│ity suffix                      │
+│Outcome: ended successfully     │
+│Captured: Unix UTC 1700000000 s │
+│↑↓ PgUp/PgDn · Esc back         │
+└────────────────────────────────┘
