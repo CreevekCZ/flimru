@@ -310,9 +310,7 @@ tests, and dependency advisories (including warnings). Rust's `rustfmt` and
 `clippy` components are required. The lint configuration denies production
 `unwrap`/`expect`, explicit panics, undocumented unsafe blocks,
 `std::sync::mpsc::channel`, `std::mem::forget`, and direct process exit.
-See the [development standards](https://github.com/CreevekCZ/flimru/blob/main/CONTRIBUTING.md) for the
-ownership, error-handling, and review rules. All checks run locally; GitHub
-Actions is disabled for this repository.
+All checks run locally. GitHub Actions is disabled for this repository.
 
 The optional real Dart VM Service test can also be run with:
 
