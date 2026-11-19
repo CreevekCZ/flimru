@@ -17,6 +17,8 @@ use url::Url;
 
 const EXTENSION: &str = "ext.flutter.timeDilation";
 const AUTH_PATH: &str = "/authCode=/";
+const BACKGROUND: &str = "isolates/background";
+const COLLECTED: &str = "isolates/collected";
 
 #[derive(Clone)]
 struct ServiceState {
@@ -26,6 +28,8 @@ struct ServiceState {
     reject_writes: bool,
     fail_all: bool,
     stall: bool,
+    other_isolates: bool,
+    large_isolate: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +67,8 @@ impl Service {
             reject_writes: false,
             fail_all: false,
             stall: false,
+            other_isolates: false,
+            large_isolate: false,
         }));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let stopped = Arc::new(AtomicBool::new(false));
@@ -186,14 +192,40 @@ fn response(request: &Request, state: &mut ServiceState) -> Value {
         return error();
     };
     let result = match method {
+        "getVM" if state.other_isolates => json!({"isolates": [
+            {"id": BACKGROUND}, {"id": COLLECTED}, {"id": state.isolate}
+        ]}),
         "getVM" => json!({"isolates":[{"id":state.isolate}]}),
+        "getIsolate" if request.parameter("isolateId") == Some(BACKGROUND) => {
+            json!({"extensionRPCs": []})
+        }
+        "getIsolate" | EXTENSION if request.parameter("isolateId") == Some(COLLECTED) => {
+            json!({"type": "Sentinel", "kind": "Collected", "valueAsString": "<collected>"})
+        }
         "getIsolate" if request.parameter("isolateId") == Some(&state.isolate) => {
             let extensions = if state.extension_available {
                 vec![EXTENSION]
             } else {
                 vec!["ext.dart.io.getOpenFiles"]
             };
-            json!({"extensionRPCs":extensions})
+            let mut isolate = json!({"extensionRPCs": extensions});
+            if state.large_isolate {
+                let path = "nested_flutter_feature/".repeat(8);
+                let libraries: Vec<_> = (0..4500)
+                    .map(|i| {
+                        json!({"type": "@Library", "id": format!("libraries/{i}"),
+                        "uri": format!("package:large_app/{path}module_{i}.dart")})
+                    })
+                    .collect();
+                isolate["libraries"] = json!(libraries);
+                assert!(isolate.to_string().len() > 1024 * 1024);
+            }
+            isolate
+        }
+        EXTENSION
+            if request.parameter("isolateId") == Some(BACKGROUND) || !state.extension_available =>
+        {
+            return json!({"error": {"code": -32601, "message": "Unknown method"}});
         }
         EXTENSION if request.parameter("isolateId") == Some(&state.isolate) => {
             if let Some(value) = request.parameter("timeDilation") {
@@ -325,6 +357,43 @@ fn toggles_use_authenticated_endpoint_and_confirm_actual_factors() {
         .filter_map(|request| request.parameter("timeDilation"))
         .collect();
     assert_eq!(writes, ["5.0", "1.0"]);
+}
+
+#[test]
+fn large_app_animation_control_skips_background_and_collected_isolates() {
+    let service = Service::new(true);
+    {
+        let mut state = service.state.lock().unwrap();
+        state.other_isolates = true;
+        state.large_isolate = true;
+    }
+    let mut control = AnimationControl::new(true);
+    service.connect(&mut control);
+    confirmed(&control, 1.0);
+    control.toggle().unwrap();
+    confirmed(&control, 5.0);
+
+    let requests = service.requests();
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.path.ends_with("getIsolate"))
+    );
+    for id in [BACKGROUND, COLLECTED] {
+        let mut probes = requests
+            .iter()
+            .filter(|request| request.parameter("isolateId") == Some(id));
+        assert!(probes.any(|request| request.path.ends_with(EXTENSION)));
+    }
+    let writes: Vec<_> = requests
+        .iter()
+        .filter_map(|request| {
+            request
+                .parameter("timeDilation")
+                .map(|value| (request.parameter("isolateId"), value))
+        })
+        .collect();
+    assert_eq!(writes, [(Some("isolates/first Flutter app"), "5.0")]);
 }
 
 #[test]
@@ -513,7 +582,7 @@ fn missing_flutter_extension_is_unavailable_without_sending_toggle() {
         service
             .requests()
             .iter()
-            .all(|request| !request.path.ends_with(EXTENSION))
+            .all(|request| request.parameter("timeDilation").is_none())
     );
 }
 

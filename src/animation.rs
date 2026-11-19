@@ -459,26 +459,53 @@ fn rpc(
     }
     let mut url = endpoint.join(method)?;
     url.query_pairs_mut().extend_pairs(params.iter().copied());
-    let response: Value = agent
+    agent
         .get(url.as_str())
         .call()
         .map_err(|error| match error {
-            ureq::Error::Timeout(_) => anyhow::anyhow!("VM Service request timed out"),
-            ureq::Error::StatusCode(code) => anyhow::anyhow!("VM Service returned HTTP {code}"),
-            _ => anyhow::anyhow!("Could not connect to VM Service"),
+            ureq::Error::Timeout(_) => anyhow::anyhow!("VM Service {method} request timed out"),
+            ureq::Error::StatusCode(code) => {
+                anyhow::anyhow!("VM Service {method} returned HTTP {code}")
+            }
+            _ => anyhow::anyhow!("Could not reach VM Service for {method}"),
         })?
         .body_mut()
         .with_config()
         .limit(1024 * 1024)
         .read_json()
-        .map_err(|_| anyhow::anyhow!("Invalid VM Service response"))?;
-    if response.get("error").is_some() {
-        bail!("VM Service rejected the request");
+        .map_err(|_| anyhow::anyhow!("Invalid VM Service {method} response"))
+}
+
+fn rpc_result(mut response: Value, method: &str) -> Result<Value> {
+    if let Some(error) = response.get("error") {
+        if let Some(code) = error.get("code").and_then(Value::as_i64) {
+            bail!("VM Service rejected the {method} request ({code})");
+        }
+        bail!("VM Service rejected the {method} request");
     }
     response
-        .get("result")
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("Invalid VM Service response"))
+        .get_mut("result")
+        .map(Value::take)
+        .ok_or_else(|| anyhow::anyhow!("Missing result in VM Service {method} response"))
+}
+
+fn animation_factor(
+    agent: &ureq::Agent,
+    endpoint: &Url,
+    params: &[(&str, &str)],
+    cancelled: &AtomicBool,
+) -> Result<Option<f64>> {
+    let response = rpc(agent, endpoint, EXTENSION, params, cancelled)?;
+    // Dart reports Method Not Found while an isolate has no such extension.
+    if response["error"]["code"].as_i64() == Some(-32601) {
+        return Ok(None);
+    }
+    let result = rpc_result(response, EXTENSION)?;
+    // An isolate can exit between getVM and an extension request.
+    if result["type"].as_str() == Some("Sentinel") && result["kind"].as_str() == Some("Collected") {
+        return Ok(None);
+    }
+    factor(&result).map(Some)
 }
 
 fn factor(result: &Value) -> Result<f64> {
@@ -500,7 +527,7 @@ fn read_factor(
     preference: &mut Preference,
     cancelled: &AtomicBool,
 ) -> Result<Option<f64>> {
-    let vm = rpc(agent, endpoint, "getVM", &[], cancelled)?;
+    let vm = rpc_result(rpc(agent, endpoint, "getVM", &[], cancelled)?, "getVM")?;
     let isolates = vm
         .get("isolates")
         .and_then(Value::as_array)
@@ -516,31 +543,12 @@ fn read_factor(
         let Some(id) = isolate.get("id").and_then(Value::as_str) else {
             continue;
         };
-        let isolate = rpc(
-            agent,
-            endpoint,
-            "getIsolate",
-            &[("isolateId", id)],
-            cancelled,
-        )?;
-        if !isolate
-            .get("extensionRPCs")
-            .and_then(Value::as_array)
-            .is_some_and(|extensions| {
-                extensions
-                    .iter()
-                    .any(|value| value.as_str() == Some(EXTENSION))
-            })
-        {
+        // Without a timeDilation parameter this call only reads the factor.
+        // Using it directly avoids getIsolate's full library list on large apps.
+        let Some(current) = animation_factor(agent, endpoint, &[("isolateId", id)], cancelled)?
+        else {
             continue;
-        }
-        let current = factor(&rpc(
-            agent,
-            endpoint,
-            EXTENSION,
-            &[("isolateId", id)],
-            cancelled,
-        )?)?;
+        };
         let replaced = preference
             .isolate
             .as_deref()
@@ -568,13 +576,15 @@ fn read_factor(
             } else {
                 target.to_string()
             };
-            let actual = factor(&rpc(
+            let Some(actual) = animation_factor(
                 agent,
                 endpoint,
-                EXTENSION,
                 &[("isolateId", id), ("timeDilation", &target_value)],
                 cancelled,
-            )?)?;
+            )?
+            else {
+                return Ok(None);
+            };
             if (actual - target).abs() >= 0.001 {
                 bail!("Flutter did not confirm the selected animation speed");
             }
