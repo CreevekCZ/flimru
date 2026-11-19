@@ -51,34 +51,44 @@ configuration, or `--help` for all options.
 
 ## Share sessions with an agent
 
-On macOS or Linux, open `flimru /absolute/path/to/project` in a terminal and
-leave it running. The window owns every Flutter process started through it,
-including agent launches. A client can disconnect while Flutter keeps running.
-The first window for a checkout owns its private local socket. A second window
-can still be used interactively. To switch the owner, close and reopen the window
-you want to share after closing the first one.
+### One-time MCP setup
 
-### MCP in T3 Code
-
-Build with `cargo build --locked --release` to get `target/release/flimru`.
-Use the same build for the launcher and MCP server. In T3 Code, select a local
-provider running as your user on the machine with Flimru. Register the following
-stdio command in that provider's configuration. Use the exact checkout open in
-Flimru, including its worktree path if applicable.
+On macOS or Linux, register Flimru once at the user level for your local agent.
+Use the absolute path to the same Flimru binary you use to open the launcher.
+To build it from source, run `cargo build --locked --release` for
+`target/release/flimru`. Run the command for your provider.
 
 ```sh
-/absolute/path/to/flimru mcp --project /absolute/path/to/project
+# Codex
+codex mcp add flimru -- /absolute/path/to/flimru mcp
+
+# Claude Code
+claude mcp add --scope user --transport stdio flimru -- /absolute/path/to/flimru mcp
+
+# OpenCode V2
+opencode mcp add flimru --global -- /absolute/path/to/flimru mcp
 ```
 
-- For an installed Codex provider, run `codex mcp add flimru -- /absolute/path/to/flimru mcp --project /absolute/path/to/project` using that provider's Codex executable and config home. You can also put a `[mcp_servers.flimru]` table with `command` and `args` in a trusted project config. [T3 Code’s Codex setup](https://github.com/pingdotgg/t3code/blob/main/docs/user/providers-codex.md), [Codex MCP configuration](https://developers.openai.com/codex/mcp)
-- For a Claude provider, run `claude mcp add --scope local --transport stdio flimru -- /absolute/path/to/flimru mcp --project /absolute/path/to/project` from the checkout using that provider's Claude executable and config directory. [T3 Code’s Claude setup](https://github.com/pingdotgg/t3code/blob/main/docs/user/providers-claude.md), [Claude Code MCP configuration](https://code.claude.com/docs/en/mcp)
+Open `flimru` in the Flutter checkout and start your local agent in that same
+checkout or worktree. The MCP server finds the nearest `.vscode/launch.json`
+starting from its working directory and searching upward. If it finds none,
+it uses the working directory itself. To pin the MCP server to a fixed checkout,
+register it with `mcp --project /absolute/path/to/project`.
 
-Start a fresh T3 agent session or use **Restart agent session**. Check for
-`flimru_targets`, `flimru_sessions`, `flimru_start`, `flimru_logs`, and
+In T3 Code, use the executable and configuration for the selected local provider
+running as your user on the same machine. Start a fresh session or use
+**Restart agent session** after registration. [Codex MCP setup](https://developers.openai.com/codex/mcp), [Claude Code MCP setup](https://code.claude.com/docs/en/mcp), [OpenCode V2 MCP setup](https://opencode.ai/docs/mcp-servers/), [T3 Code’s composer guide](https://github.com/pingdotgg/t3code/blob/main/docs/user/composer.md)
+
+Leave the Flimru window open while using its tools. The first window for a
+checkout owns its private local socket and runs started through it continue
+after a client disconnects. A second window can still be used interactively.
+To switch the owner, close the first window, then reopen the one you want to share.
+
+Check for `flimru_targets`, `flimru_sessions`, `flimru_start`, `flimru_logs`, and
 `flimru_control`. The tools can be discovered before the Flimru window opens.
 Use exact device IDs and configuration names from `flimru_targets`. If a name
 is repeated, use its one-based `config_index`. Save the full ID from
-`flimru_start` or `flimru_sessions` for later calls. [T3 Code’s composer guide](https://github.com/pingdotgg/t3code/blob/main/docs/user/composer.md)
+`flimru_start` or `flimru_sessions` for later calls.
 
 `flimru_logs` returns up to 8 KiB by default. Omit `cursor` for recent output,
 use `0` for the earliest retained output, then pass the returned `cursor` to
@@ -88,14 +98,17 @@ while the console is retained. Session inspection reports which controls are
 available. Hot reload and restart acknowledge input delivery. Check subsequent
 logs for Flutter's result.
 
-Example instruction for a Flutter project's `AGENTS.md` or `CLAUDE.md`.
+Use this instruction in the Flutter project's `AGENTS.md` or `CLAUDE.md`.
 
-> Use Flimru MCP for Flutter runs in this checkout. Check `flimru_sessions`
-> for an existing run first. Use `flimru_targets` and `flimru_start` when a new
-> run is needed. Read `flimru_logs` with the previous cursor and use
-> `flimru_control` for reload, restart, and explicit stop. Keep runs active for
-> the user unless asked to stop. If Flimru is closed, ask me to open it in this
-> checkout. Use `flimru session` as the shell equivalent when MCP is unavailable.
+> Use Flimru first for Flutter app runs in this checkout. Check `flimru_sessions`
+> and reuse a matching run. For a new run, select the target and configuration
+> with `flimru_targets` and launch with `flimru_start`. Use `flimru_logs` and
+> `flimru_control` for output, hot reload, restart, and stop.
+>
+> Use T3 Code's Device panel, `agent-device`, or Mobile MCP to open or watch the
+> device and interact with the running app. Use Flimru to launch, relaunch, and
+> control the app. If MCP is unavailable, use `flimru session` from this checkout.
+> If Flimru is closed, ask me to open it in this checkout or worktree.
 
 ### Shell commands
 
@@ -143,10 +156,11 @@ Use `--project /absolute/path/to/project` to select a checkout explicitly.
 | Console / saved output | `Ctrl+e`, arrows, `Shift+arrows`, `Enter` | Position, select, copy text (`Esc` clears) |
 | Console | `q` / `Esc` | Stop session and return to the picker |
 | Picker | `?` | Open help (also available from Help or Actions everywhere) |
-| Anywhere | `Ctrl+q` | Confirm launcher exit |
+| Anywhere | `Ctrl+q` | Open quit confirmation |
+| Quit confirmation | `Enter` / `Y` | Quit Flimru and stop its sessions |
+| Quit confirmation | `Escape` / `N` | Cancel and return to the previous view |
 
-Prompts and review views handle their own keys; use the controls shown there.
-`Ctrl+q` opens launcher exit confirmation from any view.
+Prompts and review views handle their own keys. Use the controls shown there.
 
 Function keys are not used. `Ctrl` means Control, not Command (⌘).
 Mouse controls are enabled by default. Use `--no-mouse` for terminal text
