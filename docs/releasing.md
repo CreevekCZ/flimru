@@ -45,9 +45,10 @@ contents of a published archive need to change.
 
 Copy the generated `flimru.rb` to the root of the local tap checkout. To test
 before public distribution, use a temporary copy of the formula in a local
-test tap. Replace only the URL with a `file://` URL for the archive and keep
-the generated checksum. Run `brew style --formula`, `brew install --skip-link`,
-and `brew test` on the test formula. Verify `flimru --version` from its keg.
+test tap. Use a `file://` URL for the archive, set `version "0.1.0"`, and
+keep the generated checksum. The explicit version lets Homebrew resolve the
+local filename correctly. Run `brew style --formula`, `brew install --skip-link`,
+and `brew test --force` on the test formula. Verify `flimru --version` from its keg.
 
 The formula's GitHub URL needs an anonymously downloadable asset for a public
 install. Keep the formula local until an approved public binary URL exists.
