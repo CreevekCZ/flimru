@@ -373,8 +373,12 @@ impl Terminal {
     fn quit(&mut self) {
         self.send(&[0x11]);
         self.until("Quit Flimru?");
+        self.confirm_quit(b"y");
+    }
+
+    fn confirm_quit(&mut self, key: &[u8]) {
         assert!(self.child.try_wait().unwrap().is_none());
-        self.send(b"y");
+        self.send(key);
         let deadline = Instant::now() + Duration::from_secs(4);
         loop {
             self.read();
@@ -1362,7 +1366,7 @@ fn multi_device_quit_and_terminal_loss_reap_every_instance() {
         } else {
             tui.send(&[0x11]);
             tui.until("All active Flutter sessions");
-            tui.send(b"\r"); // Cancel preserves both children.
+            tui.send(b"n"); // Cancel preserves both children.
             tui.send(b"\x06h");
             tui.until("shortcut:beta:h");
             tui.quit();
@@ -1480,9 +1484,8 @@ fn compact_actions_support_pointer_commands_and_keyboard_navigation() {
     tui.until("Quit launcher");
     tui.send(b"\r");
     tui.until("Quit Flimru?");
-    tui.send(b"\r"); // Safe default remains Cancel.
-    tui.until_control("Menu");
-    tui.quit();
+    tui.until("Enter/Y Quit  Esc/N Cancel");
+    tui.confirm_quit(b"\r");
 }
 
 #[test]
@@ -1594,7 +1597,7 @@ fn mouse_controls_scrollbar_and_quit_confirmation_in_real_tui() {
     tui.until("Quit Flimru?");
     tui.until("active Flutter session");
     assert!(tui.child.try_wait().unwrap().is_none());
-    tui.send(b"\r"); // Enter cancels by default
+    tui.send(b"n");
     tui.send(b"h");
     tui.until("shortcut:h");
     tui.quit();
@@ -2147,7 +2150,7 @@ fn console_search_control_shortcut_is_delivered_and_review_isolates_input_from_e
     tui.until("Snapshot");
     tui.send(&[0x11]);
     tui.until("Quit Flimru?");
-    tui.send(b"\r");
+    tui.send(b"n");
     tui.until("Snapshot");
     tui.quit();
 }

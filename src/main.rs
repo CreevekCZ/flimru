@@ -2223,6 +2223,7 @@ impl App {
         if self.quit_confirmation {
             match key.code {
                 KeyCode::Char('y' | 'Y') => return Ok(true),
+                KeyCode::Enter if key.modifiers == KeyModifiers::NONE => return Ok(true),
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('n' | 'N') => {
                     self.quit_confirmation = false
                 }
@@ -4210,7 +4211,7 @@ mod tests {
         press(&mut app, KeyCode::End);
         press(&mut app, KeyCode::Enter);
         assert!(app.quit_confirmation);
-        assert!(!press(&mut app, KeyCode::Enter));
+        assert!(!press(&mut app, KeyCode::Esc));
         assert!(!app.quit_confirmation);
         assert_eq!(app.top_focus, origin);
         press(&mut app, KeyCode::Esc);
@@ -4691,36 +4692,23 @@ mod tests {
     }
 
     #[test]
-    fn quit_requires_explicit_confirmation_and_enter_cancels() {
-        let mut app = app();
-        assert!(
-            !app.key(
-                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
-                100,
-                30
-            )
-            .unwrap()
-        );
-        assert!(app.quit_confirmation);
-        assert!(
-            !app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 100, 30)
-                .unwrap()
-        );
-        assert!(!app.quit_confirmation);
-        app.key(
-            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
-            100,
-            30,
-        )
-        .unwrap();
-        assert!(
-            app.key(
-                KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
-                100,
-                30
-            )
-            .unwrap()
-        );
+    fn quit_requires_confirmation_and_accepts_enter_or_y() {
+        for (quit_modifiers, confirm) in [
+            (KeyModifiers::CONTROL, KeyCode::Enter),
+            (KeyModifiers::NONE, KeyCode::Char('y')),
+            (KeyModifiers::NONE, KeyCode::Char('Y')),
+        ] {
+            let mut app = app();
+            assert!(
+                !app.key(KeyEvent::new(KeyCode::Char('q'), quit_modifiers), 100, 30)
+                    .unwrap()
+            );
+            assert!(app.quit_confirmation);
+            assert!(
+                app.key(KeyEvent::new(confirm, KeyModifiers::NONE), 100, 30)
+                    .unwrap()
+            );
+        }
     }
 
     #[test]
@@ -4806,8 +4794,12 @@ mod tests {
         );
         assert!(app.quit_confirmation && !app.actions_open);
         assert!(
-            !app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 34, 12)
-                .unwrap()
+            !app.key(
+                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+                34,
+                12
+            )
+            .unwrap()
         );
         assert!(!app.quit_confirmation);
     }

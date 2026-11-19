@@ -418,7 +418,7 @@ fn batch_hot_modal_owns_live_and_query_cursor_input_and_keeps_global_quit_above_
         app.mouse(event, area).unwrap();
         assert_eq!(app.quit_confirmation, !covered);
         if app.quit_confirmation {
-            press(&mut app, KeyCode::Enter);
+            press(&mut app, KeyCode::Esc);
         }
     }
     app.batch_report_event(&Event::Resize(80, 24));
@@ -447,7 +447,7 @@ fn batch_hot_modal_owns_live_and_query_cursor_input_and_keeps_global_quit_above_
     assert!(app.quit_confirmation);
     terminal.draw(|frame| app.draw(frame)).unwrap();
     assert!(!terminal.backend().cursor_visible());
-    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Esc);
     assert!(app.batch_report.is_some());
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Char('z'));
@@ -512,7 +512,7 @@ fn batch_hot_tiny_global_quit_is_visible_above_batch_export_and_operation_detail
             );
             assert!(!app.mouse(hidden_quit, area).unwrap());
             assert!(!app.quit_confirmation, "{modal} must consume obscured Quit");
-            for cancel in [KeyCode::Enter, KeyCode::Esc] {
+            for cancel in [KeyCode::Char('n'), KeyCode::Esc] {
                 let (open_width, open_height) = if cancel == KeyCode::Esc {
                     render(&mut app, 80, 24);
                     (80, 24)
@@ -537,7 +537,8 @@ fn batch_hot_tiny_global_quit_is_visible_above_batch_export_and_operation_detail
                 let buffer = terminal.backend().buffer();
                 let rendered = text(buffer);
                 assert!(rendered.contains("Quit Flimru?"), "{modal}: {rendered}");
-                assert!(rendered.contains("y quits"), "{modal}: {rendered}");
+                assert!(rendered.contains("Enter/Y Quit"), "{modal}: {rendered}");
+                assert!(rendered.contains("Esc/N Cancel"), "{modal}: {rendered}");
                 // Every actionable confirmation/cancellation cell must display
                 // the exact corresponding button, never a blank modal layer.
                 for (action, expected) in [

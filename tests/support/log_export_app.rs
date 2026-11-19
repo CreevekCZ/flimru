@@ -396,7 +396,7 @@ fn log_export_live_modal_owns_input_selection_and_cursor_while_global_quit_remai
     assert!(app.quit_confirmation);
     assert!(!terminal.backend().cursor_visible());
     app.paste("quit overlay input");
-    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Esc);
     assert!(!app.quit_confirmation);
     press(&mut app, KeyCode::Esc);
     assert!(!app.console_ui_owned());
@@ -503,7 +503,7 @@ fn log_export_only_visible_quit_opens_confirmation_and_cancel_retains_the_modal(
             // retain the normal global confirmation semantics.
             assert!(
                 !app.key(
-                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
                     width,
                     height
                 )

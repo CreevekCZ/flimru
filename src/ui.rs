@@ -1203,7 +1203,11 @@ pub fn draw_content(frame: &mut Frame, app: &App) {
     if area.width < 34 || area.height < 12 {
         frame.render_widget(
             Paragraph::new(if app.quit_confirmation {
-                "Quit Flimru?\ny quits · Enter/Esc cancels"
+                if area.width < 26 {
+                    "Quit Flimru?\nEnter/Y Quit\nEsc/N Cancel"
+                } else {
+                    "Quit Flimru?\nEnter/Y Quit  Esc/N Cancel"
+                }
             } else {
                 "Enlarge the terminal to at least 34 × 12.\nCtrl+q opens quit confirmation."
             })
@@ -2202,7 +2206,7 @@ fn quit_overlay(frame: &mut Frame, app: &App) {
         cancel,
     );
     frame.render_widget(
-        Paragraph::new("y quit · Enter/Esc cancel").style(Style::default().fg(MUTED)),
+        Paragraph::new("Enter/Y Quit  Esc/N Cancel").style(Style::default().fg(MUTED)),
         Rect::new(inner.x, modal.bottom().saturating_sub(2), inner.width, 1),
     );
 }

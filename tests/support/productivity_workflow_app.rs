@@ -92,14 +92,16 @@ fn global_quit_keys_precede_diagnostics_and_restore_its_scroll_and_source() {
         let offset = app.diagnostics_offset;
         let source = app.selected_config_source();
         for cancel in [
-            KeyCode::Enter,
-            KeyCode::Esc,
-            KeyCode::Char('n'),
-            KeyCode::Char('N'),
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('N'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
         ] {
             open_quit(&mut app, area);
             let quit = render(&mut app, area);
-            assert!(text(&quit).contains("Quit Flimru?"));
+            let rendered = text(&quit);
+            assert!(rendered.contains("Quit Flimru?"));
+            assert!(rendered.contains("Enter/Y Quit  Esc/N Cancel"));
             for key in [KeyCode::F(1), KeyCode::Down, KeyCode::Char('i')] {
                 assert!(
                     !app.key(KeyEvent::new(key, KeyModifiers::NONE), width, height)
@@ -108,24 +110,17 @@ fn global_quit_keys_precede_diagnostics_and_restore_its_scroll_and_source() {
                 assert!(app.quit_confirmation && app.diagnostics_open);
                 assert_eq!(app.diagnostics_offset, offset);
             }
-            assert!(
-                !app.key(KeyEvent::new(cancel, KeyModifiers::NONE), width, height)
-                    .unwrap()
-            );
+            assert!(!app.key(cancel, width, height).unwrap());
             assert!(!app.quit_confirmation && app.diagnostics_open);
             assert_eq!(app.selected_config_source(), source);
             assert_eq!(app.diagnostics_offset, offset);
             assert_eq!(render(&mut app, area), initial);
         }
-        for confirm in ['y', 'Y'] {
+        for confirm in [KeyCode::Enter, KeyCode::Char('y'), KeyCode::Char('Y')] {
             open_quit(&mut app, area);
             assert!(
-                app.key(
-                    KeyEvent::new(KeyCode::Char(confirm), KeyModifiers::NONE),
-                    width,
-                    height
-                )
-                .unwrap()
+                app.key(KeyEvent::new(confirm, KeyModifiers::NONE), width, height)
+                    .unwrap()
             );
             app.quit_confirmation = false;
         }
@@ -207,7 +202,7 @@ fn global_quit_confirmation_precedes_keyboard_selection_without_copying_or_dropp
     selection.move_end(4, 0, true);
     let original = selection.selected_text();
     app.selection = Some(selection);
-    for cancel in [KeyCode::Esc, KeyCode::Enter] {
+    for cancel in [KeyCode::Esc, KeyCode::Char('n')] {
         assert!(
             !app.key(
                 KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
@@ -494,7 +489,7 @@ fn ordinary_navigation_keys_and_overlay_cancellation_keep_operation_details_owne
         assert!(app.showing_operation_details() && !app.help);
         menu_action(&mut app, ui::MouseAction::Quit);
         assert!(app.showing_operation_details() && app.quit_confirmation);
-        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 80, 24)
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 80, 24)
             .unwrap();
         assert!(app.showing_operation_details() && !app.quit_confirmation);
         assert_eq!(render(&mut app, NAV_AREA), initial);

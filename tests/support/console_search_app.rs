@@ -301,7 +301,7 @@ fn console_review_operation_details_preserve_review_and_remain_reachable_after_r
         app.quit_confirmation,
         "global quit stays available over details"
     );
-    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Esc);
     assert!(!app.quit_confirmation);
     assert!(app.showing_operation_details());
     press(&mut app, KeyCode::Esc);
@@ -749,7 +749,7 @@ fn console_review_global_overlays_top_focus_and_direct_commands_do_not_edit_quer
         .clone();
     assert!(text(&rendered).contains("Quit Flimru?"));
     assert!(!terminal.backend().cursor_visible());
-    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Esc);
     assert!(!app.quit_confirmation);
     assert!(app.reviewing());
     assert!(app.review.as_ref().unwrap().editing());

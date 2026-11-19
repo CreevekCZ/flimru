@@ -53,9 +53,10 @@ unavailable entry also opens its explanation. Unavailable entries cannot run.
 Press `d` on the device screen for **Configuration diagnostics**, even when no
 device is selected; some compatibility reasons need a target selection.
 `Esc` goes back or requests exit from the device screen. `Ctrl+q` and the Quit
-button open a confirmation: `y` or clicking Quit confirms; `Enter`, `n`, or
-`Esc` cancels. Confirming also stops an active session. `?` opens help in pickers;
-the Help button and Actions menu work everywhere.
+button open a confirmation. Press `Enter` or `y`, or click Quit to confirm.
+Press `Esc` or `n`, or click Cancel to dismiss it. Confirming also stops an
+active session. `?` opens help in pickers. The Help button and Actions menu
+work everywhere.
 Drag across console text and release to automatically copy the highlighted range.
 This works in live output, scrollback, and saved consoles. New logs continue to be
 processed while the selected viewport stays stable. Esc clears selection without
