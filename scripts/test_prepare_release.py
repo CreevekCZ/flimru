@@ -53,8 +53,9 @@ class ReleaseTests(unittest.TestCase):
     def test_release_input_digest_detects_code_and_documentation_changes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            names = ["Cargo.toml", "Cargo.lock", "LICENSE", "README.md", "docs/usage.md",
-                     "packaging/release-notes.md", "packaging/homebrew/flimru.rb.in", "src/main.rs"]
+            names = ["Cargo.toml", "Cargo.lock", *release.ARCHIVE_DOCS,
+                     "packaging/release-notes.md", "packaging/homebrew/flimru.rb.in",
+                     "scripts/prepare_release.py", "src/main.rs"]
             for name in names:
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,6 +66,9 @@ class ReleaseTests(unittest.TestCase):
             source_changed = release.input_digest(root)
             (root / "README.md").write_text("changed documentation")
             self.assertNotEqual(source_changed, release.input_digest(root))
+            docs_changed = release.input_digest(root)
+            (root / "docs/agents.md").write_text("changed agent setup")
+            self.assertNotEqual(docs_changed, release.input_digest(root))
 
     @patch.dict("os.environ", {}, clear=True)
     @patch.object(release.platform, "machine", return_value="arm64")

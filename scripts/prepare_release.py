@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TARGET = "aarch64-apple-darwin"
 DEPLOYMENT_TARGET = "11.0"
 REPOSITORY = "https://github.com/CreevekCZ/flimru"
+ARCHIVE_DOCS = ("LICENSE", "README.md", "docs/usage.md", "docs/agents.md", "examples/launch.json")
 
 
 def run(*args, cwd=ROOT, env=None):
@@ -54,8 +55,10 @@ def formula(version, checksum):
 
 
 def input_digest(root):
-    paths = [root / name for name in ("Cargo.toml", "Cargo.lock", "LICENSE", "README.md",
-             "docs/usage.md", "packaging/release-notes.md", "packaging/homebrew/flimru.rb.in")]
+    paths = [root / name for name in (
+        "Cargo.toml", "Cargo.lock", *ARCHIVE_DOCS, "packaging/release-notes.md",
+        "packaging/homebrew/flimru.rb.in", "scripts/prepare_release.py",
+    )]
     paths.extend((root / "src").rglob("*.rs"))
     digest = hashlib.sha256()
     for path in sorted(paths):
@@ -134,9 +137,7 @@ def prepare(output=None, allow_dirty=False):
         stage = Path(temporary) / "assets"
         stage.mkdir()
         archive_name = f"flimru-v{version}-darwin-arm64.tar.gz"
-        payload = archive_bytes({"flimru": binary, "LICENSE": ROOT / "LICENSE",
-                                 "README.md": ROOT / "README.md",
-                                 "docs/usage.md": ROOT / "docs/usage.md"}, epoch)
+        payload = archive_bytes({"flimru": binary, **{name: ROOT / name for name in ARCHIVE_DOCS}}, epoch)
         checksum = hashlib.sha256(payload).hexdigest()
         (stage / archive_name).write_bytes(payload)
         (stage / "SHA256SUMS").write_text(f"{checksum}  {archive_name}\n")

@@ -8,21 +8,54 @@ Linux. Windows support is currently unqualified.
 Flimru was previously named `flutter-run-tui`. Favorites and last selections
 keep their original configuration location, so the rename preserves them.
 
-Install it from this checkout with:
+## Install
+
+For Apple Silicon, sign in to GitHub with access to Flimru and download the
+`flimru-v0.1.0-darwin-arm64.tar.gz` archive and `SHA256SUMS` from
+[Releases](https://github.com/CreevekCZ/flimru/releases). Draft releases are
+visible to maintainers. In the download directory, run:
+
+```sh
+shasum -a 256 -c SHA256SUMS &&
+  mkdir flimru-v0.1.0 &&
+  tar -xzf flimru-v0.1.0-darwin-arm64.tar.gz -C flimru-v0.1.0 &&
+  mkdir -p "$HOME/.local/bin" &&
+  install -m 755 flimru-v0.1.0/flimru "$HOME/.local/bin/flimru"
+"$HOME/.local/bin/flimru" --version
+```
+
+This updates any existing Flimru binary in `~/.local/bin`. Add
+`export PATH="$HOME/.local/bin:$PATH"` to your shell startup file if needed.
+
+To build from a source checkout on macOS or Linux, install Rust and run:
 
 ```sh
 cargo install --path . --locked
 ```
 
-Start the picker in a project with:
+## Run Flutter
 
-```sh
-flimru /path/to/project
-cargo run -- /path/to/flutter/project
+Install Flutter and the tooling for your target device. If your Flutter
+checkout needs a `.vscode/launch.json`, start with this file:
+
+```json
+{
+  "configurations": [
+    {"name": "Flutter debug", "type": "dart", "request": "launch", "program": "lib/main.dart"}
+  ]
+}
 ```
 
-The project argument is optional when run inside a project or one of its child
-directories. `--check` validates launch configuration and Flutter SDK
+See the [example file](../examples/launch.json) for flavors and additional targets.
+From the Flutter checkout, run:
+
+```sh
+flimru --check
+flimru
+```
+
+From elsewhere, use `flimru /path/to/flutter/project`. `--check` validates launch
+configuration and Flutter SDK
 resolution without starting Flutter or entering the TUI. Use `--flutter
 /path/to/flutter` to select an executable explicitly, or `--fvm` to force the
 FVM wrapper. A project with `.fvmrc` or `.fvm/fvm_config.json` uses its FVM SDK
@@ -298,7 +331,7 @@ tests, and dependency advisories (including warnings). Rust's `rustfmt` and
 `clippy` components are required. The lint configuration denies production
 `unwrap`/`expect`, explicit panics, undocumented unsafe blocks,
 `std::sync::mpsc::channel`, `std::mem::forget`, and direct process exit.
-See [development standards](../CONTRIBUTING.md) for the
+See the [development standards](https://github.com/CreevekCZ/flimru/blob/main/CONTRIBUTING.md) for the
 ownership, error-handling, and review rules. All checks run locally; GitHub
 Actions is disabled for this repository.
 

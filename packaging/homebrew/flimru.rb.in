@@ -10,7 +10,7 @@ class Flimru < Formula
 
   def install
     bin.install "flimru"
-    doc.install "README.md", "docs/usage.md"
+    doc.install "LICENSE", "README.md", "docs", "examples"
   end
 
   test do
