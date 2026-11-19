@@ -8,5 +8,7 @@ pub mod console_snapshot;
 pub mod device;
 pub mod log_export;
 pub mod session;
+#[cfg(unix)]
+pub mod session_log;
 pub mod state;
 pub mod tool;

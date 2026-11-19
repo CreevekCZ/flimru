@@ -6,6 +6,8 @@ mod console_style;
 pub mod export_dialog;
 mod runs;
 mod selection;
+#[cfg(unix)]
+mod shared;
 mod shortcuts;
 mod terminal_input;
 mod ui;
@@ -48,9 +50,13 @@ use std::{
 #[derive(Parser, Debug)]
 #[command(
     version,
+    args_conflicts_with_subcommands = true,
     about = "Persistent Flutter launcher using .vscode/launch.json"
 )]
 struct Options {
+    #[cfg(unix)]
+    #[command(subcommand)]
+    command: Option<shared::Command>,
     /// Flutter workspace (defaults to current directory; searches parent directories).
     #[arg(value_name = "PROJECT")]
     project: Option<PathBuf>,
@@ -257,6 +263,9 @@ pub(crate) struct App {
     pending_export: Option<PendingExport>,
     last_operation: Option<String>,
     last_log: Option<vt100::Parser>,
+    // The last single run moves to the saved console without losing its ID or transcript.
+    #[cfg(unix)]
+    last_session: Option<runs::Run>,
     last_log_source: Option<console_search::SearchSource>,
     last_log_max_columns: u16,
     last_log_history_capacity: usize,
@@ -349,6 +358,10 @@ fn paths(options: &Options) -> Result<(PathBuf, PathBuf)> {
 
 fn main() -> Result<()> {
     let options = Options::parse();
+    #[cfg(unix)]
+    if let Some(command) = options.command {
+        return shared::run(command);
+    }
     let (workspace, path) = paths(&options)?;
     let launch = config_reload::load_bounded(&path, &workspace)?;
     let tool = FlutterTool::resolve(&workspace, options.flutter.as_deref(), options.fvm)?;
@@ -409,7 +422,7 @@ fn main() -> Result<()> {
         action_scroll_drag: false,
         top_focus: None,
         toolbar_offset: 0,
-        config_reloader: Some(ConfigReloader::new(path, workspace)?),
+        config_reloader: Some(ConfigReloader::new(path, workspace.clone())?),
         reload_generation: 0,
         manual_reload_pending: None,
         reload_input_drain_pending: false,
@@ -449,6 +462,8 @@ fn main() -> Result<()> {
         pending_export: None,
         last_operation: None,
         last_log: None,
+        #[cfg(unix)]
+        last_session: None,
         last_log_source: None,
         last_log_max_columns: 1,
         last_log_history_capacity: Session::SCROLLBACK_CAPACITY,
@@ -480,6 +495,14 @@ fn main() -> Result<()> {
     let restore_terminal = RestoreTerminal;
     crossterm::style::force_color_output(true);
     let mut terminal = ratatui::try_init()?;
+    #[cfg(unix)]
+    let mut shared = match shared::Server::bind(&workspace) {
+        Ok(server) => Some(server),
+        Err(error) => {
+            app.status = format!("Shared sessions unavailable: {error:#}");
+            None
+        }
+    };
     // ratatui's panic hook restores raw mode and the alternate screen.
     let result = (|| -> Result<()> {
         execute!(std::io::stdout(), EnableBracketedPaste, DisableLineWrap)?;
@@ -518,6 +541,13 @@ fn main() -> Result<()> {
                 }
             }
             let area = terminal.size()?;
+            #[cfg(unix)]
+            if let Some(server) = &mut shared {
+                server.accept();
+                server.service(|request| {
+                    app.handle_shared(request, &server.instance, area, &mut redraw)
+                });
+            }
             if area != previous_size {
                 app.selection = None;
             }
@@ -636,6 +666,8 @@ fn main() -> Result<()> {
     })();
     // Stop owned children before restoring the user's terminal, even on errors.
     app.runs.clear();
+    #[cfg(unix)]
+    drop(shared);
     app.review.take();
     let final_export = app.shutdown_export();
     let disconnected = !terminal_input::connected().unwrap_or(false);
@@ -1389,6 +1421,10 @@ impl App {
             self.close_review();
         }
         self.last_log = None;
+        #[cfg(unix)]
+        {
+            self.last_session = None;
+        }
         self.last_log_source = None;
         self.last_log_max_columns = 1;
         self.last_log_offset = 0;
@@ -1441,27 +1477,39 @@ impl App {
             return;
         };
         let devices: Vec<_> = self.targets().into_iter().cloned().collect();
+        if let Err(error) = self.launch_runs(config, devices, assessment.plans, (cols, rows), false)
+        {
+            self.status = error.to_string();
+        }
+    }
+
+    fn launch_runs(
+        &mut self,
+        config: flimru::config::LaunchConfig,
+        devices: Vec<Device>,
+        plans: Vec<flimru::tool::RunCommand>,
+        (cols, rows): (u16, u16),
+        shared: bool,
+    ) -> Result<runs::RunId> {
         let running = self.running_count();
         if running + devices.len() > runs::MAX_RUNS {
-            self.status = format!(
+            bail!(
                 "Only {} session slot(s) free. Select fewer devices or stop a session.",
                 runs::MAX_RUNS - running
             );
-            return;
         }
         if let Some(device) = devices.iter().find(|device| {
             self.runs.iter().any(|run| {
                 run.session.is_some() && run.device.id == device.id && run.config == config.name
             })
         }) {
-            self.status = format!(
+            bail!(
                 "Already running: {} on {}. Choose another device or configuration.",
-                config.name, device.name
+                config.name,
+                device.name
             );
-            return;
         }
         // Availability and launch share this all-target preflight and its plans.
-        let plans = assessment.plans;
         let mut next_runs = Vec::with_capacity(devices.len());
         for (device, plan) in devices.into_iter().zip(plans) {
             let run = match Session::start(&plan, rows.saturating_sub(9), cols.saturating_sub(3)) {
@@ -1481,13 +1529,16 @@ impl App {
             };
             next_runs.push(run);
         }
-        if !self.multi
-            && let Some(error) = next_runs.first().and_then(|r| r.outcome.as_ref())
+        let first = next_runs
+            .first()
+            .context("Select at least one launch target.")?;
+        if (shared || !self.multi)
+            && let Some(error) = &first.outcome
         {
-            self.status = format!("Cannot start: {error}");
-            return;
+            bail!("Cannot start: {error}");
         }
-        let added_device = next_runs.first().map(|r| r.device.id.clone());
+        let first_id = first.id;
+        let added_device = first.device.id.clone();
         if running == 0 {
             self.runs.clear();
         } else {
@@ -1499,25 +1550,29 @@ impl App {
                 } else {
                     // Capacity was checked before spawning. New children are
                     // still owned locally and are cleaned up on this return.
-                    self.status = "No console slots available.".into();
-                    return;
+                    bail!("No console slots available.");
                 }
             }
         }
         let first_new = self.runs.len();
         self.runs.extend(next_runs);
-        self.retain_consoles = self.multi || running > 0;
+        self.retain_consoles = (!shared && self.multi) || running > 0;
         self.last_log.take();
+        #[cfg(unix)]
+        {
+            self.last_session = None;
+        }
         self.last_log_source = None;
         self.last_log_max_columns = 1;
         self.last_log_scrollback = 0;
         self.last_log_offset = 0;
-        self.saved.last_device = added_device;
+        self.saved.last_device = Some(added_device);
         self.saved.last_config = Some(config.name.clone());
         self.active_config = config.name;
         self.save();
         self.status = format!("{} session(s) running.", self.running_count());
         self.switch_run(first_new);
+        Ok(first_id)
     }
 
     fn pinned(&self) -> Vec<String> {
@@ -2110,12 +2165,16 @@ impl App {
                 self.last_log = run.console.take();
                 self.last_log_scrollback = run.scrollback_len;
                 self.last_log_offset = 0;
-                self.active_config = run.config;
+                self.active_config.clone_from(&run.config);
                 self.status = format!(
                     "{} ended ({}).",
                     self.active_config,
                     run.outcome.as_deref().unwrap_or("finished")
                 );
+                #[cfg(unix)]
+                {
+                    self.last_session = Some(run);
+                }
                 self.back();
                 self.merge();
             }
@@ -3526,6 +3585,8 @@ mod tests {
             pending_export: None,
             last_operation: None,
             last_log: None,
+            #[cfg(unix)]
+            last_session: None,
             last_log_source: None,
             last_log_max_columns: 1,
             last_log_history_capacity: Session::SCROLLBACK_CAPACITY,

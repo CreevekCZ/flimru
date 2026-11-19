@@ -24,6 +24,8 @@ pub struct Run {
     pub hot_capabilities: HotCapabilities,
     pub session: Option<Session>,
     pub console: Option<vt100::Parser>,
+    #[cfg(unix)]
+    pub ended_log: Option<flimru::session_log::SessionLog>,
     pub scrollback_len: usize,
     pub outcome: Option<String>,
     pub offset: usize,
@@ -46,6 +48,8 @@ impl Run {
             hot_capabilities,
             session: Some(session),
             console: None,
+            #[cfg(unix)]
+            ended_log: None,
             scrollback_len: 0,
             outcome: None,
             offset: 0,
@@ -57,7 +61,15 @@ impl Run {
         let mut console = vt100::Parser::new(rows.max(1), cols.max(1), 0);
         // Render errors as data, never as terminal escape instructions.
         let message: String = error.chars().filter(|c| !c.is_control()).collect();
-        console.process(format!("Cannot start: {message}").as_bytes());
+        let diagnostic = format!("Cannot start: {message}");
+        console.process(diagnostic.as_bytes());
+        #[cfg(unix)]
+        let ended_log = {
+            let mut log = flimru::session_log::SessionLog::default();
+            log.feed(diagnostic.as_bytes());
+            log.feed(b"\n");
+            Some(log)
+        };
         Self {
             id: next_id(),
             max_columns: cols.max(1),
@@ -67,6 +79,8 @@ impl Run {
             hot_capabilities: HotCapabilities::Unsupported(HotExclusion::CustomRunner),
             session: None,
             console: Some(console),
+            #[cfg(unix)]
+            ended_log,
             scrollback_len: 0,
             outcome: Some(format!("failed: {message}")),
             offset: 0,
@@ -85,6 +99,14 @@ impl Run {
                 .as_ref()
                 .is_some_and(|session| session.stop_requested.is_some()),
         }
+    }
+
+    #[cfg(unix)]
+    pub fn log(&self) -> Option<&flimru::session_log::SessionLog> {
+        self.session
+            .as_ref()
+            .map(|session| &session.log)
+            .or(self.ended_log.as_ref())
     }
 
     pub fn screen(&self) -> Option<&vt100::Screen> {
@@ -164,6 +186,10 @@ impl Run {
         };
         let changed = revision != session.visual_revision;
         if let Some(outcome) = outcome {
+            #[cfg(unix)]
+            {
+                self.ended_log = Some(session.take_log());
+            }
             self.offset = session.parser.screen().scrollback();
             self.scrollback_len = session.scrollback_len;
             self.max_columns = self.max_columns.max(session.max_columns);

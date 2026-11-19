@@ -228,6 +228,11 @@ impl AnimationControl {
         }
     }
 
+    #[cfg(unix)]
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     /// Transport diagnostics never include the authenticated service URL.
     pub fn connection_error(&self) -> Option<String> {
         if self.state() != AnimationState::Disconnected {

@@ -2271,3 +2271,6 @@ fn console_export_real_binary_saves_full_filtered_snapshot_and_isolates_modal_in
 
 #[path = "support/productivity_workflow_pty.rs"]
 mod productivity_workflow_pty;
+
+#[path = "support/shared_sessions_pty.rs"]
+mod shared_sessions_pty;

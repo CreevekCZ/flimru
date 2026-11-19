@@ -77,6 +77,10 @@ impl EscapedSgr {
 
 pub struct Session {
     pub parser: vt100::Parser,
+    #[cfg(unix)]
+    pub log: crate::session_log::SessionLog,
+    #[cfg(unix)]
+    pub interactive_flutter: bool,
     pub animations: AnimationControl,
     pub scrollback_len: usize,
     /// Lifetime width bound: vt100 retains old scrollback rows across resize.
@@ -259,6 +263,21 @@ impl Session {
         });
         Ok(Self {
             parser: vt100::Parser::new(rows.max(1), cols.max(1), Self::SCROLLBACK_CAPACITY),
+            #[cfg(unix)]
+            log: Default::default(),
+            #[cfg(unix)]
+            interactive_flutter: !matches!(
+                plan.hot_capabilities,
+                crate::batch_commands::HotCapabilities::Unsupported(
+                    crate::batch_commands::HotExclusion::Test
+                        | crate::batch_commands::HotExclusion::CustomRunner
+                )
+            ) && !plan.args.iter().any(|arg| {
+                matches!(
+                    arg.as_str(),
+                    "--machine" | "--machine=true" | "--no-resident" | "--resident=false"
+                )
+            }),
             animations: match &service_directory {
                 Some(directory) => {
                     AnimationControl::with_service_file(directory.path().join("service-uri"))
@@ -372,16 +391,16 @@ impl Session {
                 Ok(Output::Bytes(bytes)) => {
                     had_output = true;
                     self.animations.feed(&bytes);
-                    self.parser.process(&self.escaped_sgr.feed(&bytes, false));
+                    self.process_output(&bytes, false);
                     self.visual_revision = self.visual_revision.wrapping_add(1);
                 }
                 Ok(Output::Closed) => {
-                    self.parser.process(&self.escaped_sgr.feed(&[], true));
+                    self.process_output(&[], true);
                     self.closed = true;
                 }
                 Ok(Output::Error(error)) => {
                     self.read_error = Some(error);
-                    self.parser.process(&self.escaped_sgr.feed(&[], true));
+                    self.process_output(&[], true);
                     self.closed = true;
                 }
                 Err(_) => break,
@@ -428,6 +447,20 @@ impl Session {
             return Ok(Some(status.clone()));
         }
         Ok(None)
+    }
+
+    fn process_output(&mut self, bytes: &[u8], end: bool) {
+        let normalized = self.escaped_sgr.feed(bytes, end);
+        self.parser.process(&normalized);
+        #[cfg(unix)]
+        self.log.feed(&normalized);
+    }
+
+    #[cfg(unix)]
+    pub fn take_log(&mut self) -> crate::session_log::SessionLog {
+        self.process_output(&[], true);
+        self.log.finish();
+        std::mem::take(&mut self.log)
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
