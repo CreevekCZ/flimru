@@ -19,7 +19,10 @@ ROOT = Path(__file__).resolve().parents[1]
 TARGET = "aarch64-apple-darwin"
 DEPLOYMENT_TARGET = "11.0"
 REPOSITORY = "https://github.com/CreevekCZ/flimru"
-ARCHIVE_DOCS = ("LICENSE", "README.md", "docs/usage.md", "docs/agents.md", "examples/launch.json")
+ARCHIVE_DOCS = (
+    "LICENSE", "README.md", "docs/usage.md", "docs/agents.md", "examples/launch.json",
+    "docs/screenshots/device-picker.png", "docs/screenshots/live-console.png",
+)
 
 
 def run(*args, cwd=ROOT, env=None):

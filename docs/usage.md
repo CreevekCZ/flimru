@@ -10,28 +10,7 @@ keep their original configuration location, so the rename preserves them.
 
 ## Install
 
-For Apple Silicon, sign in to GitHub with access to Flimru and download the
-`flimru-v0.1.0-darwin-arm64.tar.gz` archive and `SHA256SUMS` from
-[Releases](https://github.com/CreevekCZ/flimru/releases). Draft releases are
-visible to maintainers. In the download directory, run:
-
-```sh
-shasum -a 256 -c SHA256SUMS &&
-  mkdir flimru-v0.1.0 &&
-  tar -xzf flimru-v0.1.0-darwin-arm64.tar.gz -C flimru-v0.1.0 &&
-  mkdir -p "$HOME/.local/bin" &&
-  install -m 755 flimru-v0.1.0/flimru "$HOME/.local/bin/flimru"
-"$HOME/.local/bin/flimru" --version
-```
-
-This updates any existing Flimru binary in `~/.local/bin`. Add
-`export PATH="$HOME/.local/bin:$PATH"` to your shell startup file if needed.
-
-To build from a source checkout on macOS or Linux, install Rust and run:
-
-```sh
-cargo install --path . --locked
-```
+See [Install in the README](../README.md#install).
 
 ## Run Flutter
 
