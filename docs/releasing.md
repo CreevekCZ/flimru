@@ -1,6 +1,6 @@
 # Release Flimru
 
-Flimru's source repository is private. The public Homebrew tap is
+Flimru's source and releases are hosted at `CreevekCZ/flimru`. The Homebrew tap is
 `CreevekCZ/homebrew-tap`, with its local checkout at `~/Developer/homebrew-tap`.
 The tap keeps formulas at its root.
 
@@ -28,7 +28,7 @@ It contains the CLI, MIT license, README with screenshots, guides, and an exampl
 
 ## GitHub draft
 
-Push the exact build commit to `main` in the private Flimru repo.
+Push the exact build commit to `main`.
 From the output directory, create the draft targeting the `source_revision`
 recorded in `build-info.json`.
 

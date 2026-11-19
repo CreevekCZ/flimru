@@ -6,14 +6,14 @@ Pick a device, run a Flutter launch configuration, and hot reload from your term
 
 ## Install
 
-**With an agent:** Copy this prompt into your coding assistant from your Flutter project. The private preview requires GitHub access.
+**With an agent:** Copy this prompt into your coding assistant from your Flutter project.
 
 ```text
-Set up Flimru in this Flutter checkout. On Apple Silicon, download the
-darwin-arm64 archive and SHA256SUMS with gh release download v0.1.0 -R CreevekCZ/flimru.
-Verify the checksum and install the binary on PATH. Otherwise, clone
-CreevekCZ/flimru separately from its v0.1.0 tag if available, or main, and
-install with cargo install --locked --path /path/to/flimru.
+Set up Flimru in this Flutter checkout. On Apple Silicon, try downloading
+the binary and SHA256SUMS with gh release download v0.1.0 -R CreevekCZ/flimru.
+Verify the checksum and install the binary on PATH. If the download is
+unavailable, or on other platforms, clone CreevekCZ/flimru and install from
+the v0.1.0 tag if it exists, or main, with cargo install --locked --path /path/to/flimru.
 
 Use this project's Flutter or FVM SDK, installing it if needed. Keep the
 existing .vscode/launch.json, or create a Dart launch config if missing.
