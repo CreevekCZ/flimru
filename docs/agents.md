@@ -1,7 +1,9 @@
 # Flimru for agents
 
-Start with the [setup prompt](../README.md#install), or register the local
-stdio server yourself. Replace the path with the output of `command -v flimru`.
+## One-time setup
+
+On macOS or Linux, use the [setup prompt](../README.md#install), or run your
+client's command below. Replace the path with the output of `command -v flimru`.
 
 ```sh
 codex mcp add flimru -- /absolute/path/to/flimru mcp
@@ -9,13 +11,24 @@ claude mcp add --scope user --transport stdio flimru -- /absolute/path/to/flimru
 opencode mcp add flimru --global -- /absolute/path/to/flimru mcp
 ```
 
-Run only your provider's command. The OpenCode command is for V2. In T3 Code,
-use the selected local provider and restart the agent session after setup.
+Save the Flutter rule from the setup prompt in your client's global instructions.
 
-Open `flimru` in the Flutter checkout and start the agent in that same checkout
-as the same user. If the agent starts elsewhere, pass
-`mcp --project /absolute/path/to/flutter/project`. Verify with `flimru session list`
-or `flimru_sessions` over MCP. An empty list is a working connection.
+| Client | Default global instructions |
+| --- | --- |
+| Codex | [`~/.codex/AGENTS.md`](https://developers.openai.com/codex/guides/agents-md) |
+| Claude Code | [`~/.claude/CLAUDE.md`](https://code.claude.com/docs/en/memory) |
+| OpenCode V2 | [`~/.config/opencode/AGENTS.md`](https://opencode.ai/docs/instructions) |
+
+In T3 Code, use the settings for your selected local provider. Start a fresh
+agent session after registering the server.
+
+## Run from any Flutter checkout
+
+Open `flimru` and start your agent in the same checkout under your user account.
+Flimru MCP uses the folder it starts in to locate the checkout. Verify with
+`flimru_sessions`. An empty list means the connection works.
+If your client starts MCP elsewhere, use the CLI from the checkout or pass
+`flimru session --project /path/to/flutter/project list`.
 
 | Task | MCP | Shell |
 | --- | --- | --- |
