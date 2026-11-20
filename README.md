@@ -6,11 +6,19 @@ Pick a device, run a Flutter launch configuration, and hot reload from your term
 
 ## Install
 
+**Homebrew on Apple Silicon**
+
+```sh
+brew tap CreevekCZ/tap
+brew install CreevekCZ/tap/flimru
+```
+
 **With an agent:** Paste this prompt into your local coding assistant once.
 
 ```text
-Install Flimru on my PATH from https://github.com/CreevekCZ/flimru. Verify a
-published binary's checksum, or build from main with Cargo.
+Install Flimru on my PATH. On Apple Silicon with Homebrew, run
+brew install CreevekCZ/tap/flimru. Otherwise, clone https://github.com/CreevekCZ/flimru
+and install from that clone with cargo install --locked --path .
 
 In my user-level MCP settings, register a stdio server named flimru. Use the
 installed binary's absolute path with mcp as its only argument. Add this rule

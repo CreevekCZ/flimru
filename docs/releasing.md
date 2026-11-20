@@ -41,7 +41,8 @@ gh release create v0.1.0 flimru-v0.1.0-darwin-arm64.tar.gz SHA256SUMS \
 To refresh an existing draft, use `gh release edit v0.1.0 --draft --target COMMIT_SHA
 --notes-file release-notes.md`, then `gh release upload v0.1.0
 flimru-v0.1.0-darwin-arm64.tar.gz SHA256SUMS --clobber`. Verify the draft's target
-and attached SHA-256. Build a new version to change a published archive.
+and attached SHA-256, then publish with `gh release edit v0.1.0 --draft=false`.
+Build a new version to change a published archive.
 
 ## Homebrew
 
@@ -52,8 +53,6 @@ keep the generated checksum. The explicit version lets Homebrew resolve the
 local filename correctly. Run `brew style --formula`, `brew install --skip-link`,
 and `brew test --force` on the test formula. Verify `flimru --version` from its keg.
 
-The formula's GitHub URL needs an anonymously downloadable asset for a public
-install. Keep the formula local until an approved public binary URL exists.
-If the binary is hosted separately from the private source, regenerate the
-formula with that release URL. Verify the public download and its checksum,
-then commit and push the tap formula and test `brew install CreevekCZ/tap/flimru`.
+Download the published archive without authentication and verify its checksum.
+Commit and push the generated formula, then test the two Homebrew commands
+from the [README](../README.md#install).
